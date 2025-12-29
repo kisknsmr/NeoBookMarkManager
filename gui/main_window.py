@@ -9,7 +9,9 @@ import queue
 import configparser
 from urllib.parse import urlparse, quote_plus, urlunparse
 import tkinter as tk
-from tkinter import ttk, filedialog, simpledialog, messagebox
+from tkinter import filedialog, simpledialog, messagebox
+import ttkbootstrap as tb
+from ttkbootstrap.constants import *
 import tkinter.font as tkfont
 
 # Optional external libs — import defensively so module can be imported
@@ -28,15 +30,13 @@ try:
 except Exception:
     BeautifulSoup = None
 
-try:
-    from ttkthemes import ThemedTk as ThemedTkBase
-except Exception:
-    ThemedTkBase = tk.Tk
+class App(tb.Window):
+    def __init__(self):
+        super().__init__(themename="darkly")
 import logging
 from logging.handlers import RotatingFileHandler
-
 try:
-    from ai_classifier import AIBookmarkClassifier, BookmarkNode
+    from services.ai_classifier import AIBookmarkClassifier, BookmarkNode
 except Exception:
     AIBookmarkClassifier = None
     class BookmarkNode:
@@ -44,40 +44,24 @@ except Exception:
             self.title = title
             self.url = url
 
-from utils import is_valid_url, LRUCache
-from storage import ConfigManager, load_bookmarks, save_bookmarks
-from model import Node
+from core.utils import is_valid_url, LRUCache
+from core.storage import ConfigManager, load_bookmarks, save_bookmarks
+from core.model import Node
+from gui.dialogs import CustomPromptDialog
+from services.workers import fetch_preview, fix_titles
 
-
-class CustomPromptDialog(simpledialog.Dialog):
-    def __init__(self, parent, title=None, previous_prompts=None):
-        self.previous_prompts = previous_prompts or []
-        super().__init__(parent, title)
-
-    def body(self, master):
-        self.result = None
-        if self.previous_prompts:
-            ttk.Label(master, text="現在の指示:", font=("", 10, "bold")).pack(anchor="w", padx=5, pady=(5, 0))
-            history_text = tk.Text(master, height=4, width=60, wrap="word", relief="sunken", borderwidth=1)
-            history_text.pack(padx=5, pady=2, fill="x", expand=True)
-            display_str = "\n".join([f"- {p}" for p in self.previous_prompts])
-            history_text.insert("1.0", display_str)
-            history_text.config(state="disabled", background="#f0f0f0")
-        ttk.Label(master, text="追加の指示を入力:", font=("", 10, "bold")).pack(anchor="w", padx=5, pady=(10, 0))
-        self.text_widget = tk.Text(master, height=8, width=60, wrap="word")
-        self.text_widget.pack(padx=5, pady=5, fill="both", expand=True)
-        return self.text_widget
-
-    def apply(self):
-        self.result = self.text_widget.get("1.0", "end-1c").strip()
-
-
-class App(ThemedTkBase):
+class App(tb.Window):
     def __init__(self):
-        super().__init__(theme="clam")
+        super().__init__(themename="darkly")
         self.title("Bookmark Studio — Chrome Bookmarks Organizer")
         self.geometry("1400x800")
         self.minsize(1000, 600)
+        
+        # Ensure 'ttk' is available as 'tb' aliases or we use tb directly
+        # For compatibility with existing code that uses ttk.<Widget>, we can alias it or update code.
+        # Ideally, we update code to use tb.<Widget> for better styling, or ensure ttk is referencing ttkbootstrap's styling.
+        # ttkbootstrap automatically themes standard ttk widgets, so 'from tkinter import ttk' is fine IF we import ttkbootstrap.
+        # BUT, to get the specific bootstrap styles (primary, success, etc.), we should use tb widgets or bootstyle.
 
         self.logger = logging.getLogger(__name__)
         self._setup_logging()
@@ -172,7 +156,7 @@ class App(ThemedTkBase):
         toolsm.add_command(label="Sort by Title (A→Z)", command=lambda: self.cmd_sort("title"))
         toolsm.add_command(label="Sort by Domain (A→Z)", command=lambda: self.cmd_sort("domain"))
         toolsm.add_command(label="Deduplicate in Folder", command=self.cmd_dedupe)
-        toolsm.add_command(label="Merge Duplicate Folders", command=self.cmd_merge_folders)  # ★★★ 新機能 ★★★
+        toolsm.add_command(label="Merge Duplicate Folders", command=self.cmd_merge_folders)
         toolsm.add_separator()
         toolsm.add_command(label="Auto Classify (Rules)…", command=self.cmd_show_classify_preview)
         toolsm.add_command(label="Smart Classify (AI)…", command=self.cmd_smart_classify)
@@ -187,73 +171,90 @@ class App(ThemedTkBase):
 
         self.config(menu=menubar)
 
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=8, pady=6)
-        ttk.Label(top, text="Search:").pack(side="left")
+        # Top Bar
+        top = tb.Frame(self, bootstyle="secondary")
+        top.pack(fill="x", padx=10, pady=10)
+        
+        tb.Label(top, text="Search:", bootstyle="inverse-secondary").pack(side="left", padx=5)
+        
         self.search_var = tk.StringVar()
         self.search_var.trace("w", self._on_search_var_changed)
-        ent = ttk.Entry(top, textvariable=self.search_var, width=44)
-        ent.pack(side="left", padx=(6, 8))
-        ttk.Button(top, text="Clear", command=self._clear_search).pack(side="left", padx=(6, 0))
+        ent = tb.Entry(top, textvariable=self.search_var, width=40)
+        ent.pack(side="left", padx=5)
+        
+        tb.Button(top, text="Clear", command=self._clear_search, bootstyle="secondary-outline").pack(side="left", padx=5)
 
-        main = ttk.Panedwindow(self, orient="horizontal")
-        main.pack(fill="both", expand=True)
+        # Main Area
+        main = tb.Panedwindow(self, orient="horizontal", bootstyle="light")
+        main.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        left = ttk.Frame(main)
+        # Left Panel (Tree)
+        left = tb.Frame(main)
         main.add(left, weight=3)
 
         cols = ("url",)
-        self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="extended")
+        self.tree = tb.Treeview(left, columns=cols, show="tree headings", selectmode="extended", bootstyle="primary")
         self.tree.heading("#0", text="Title")
         self.tree.heading("url", text="URL")
         self.tree.column("#0", width=600, anchor="w")
         self.tree.column("url", width=500, anchor="w")
 
-        ysb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
-        xsb = ttk.Scrollbar(left, orient="horizontal", command=self.tree.xview)
+        ysb = tb.Scrollbar(left, orient="vertical", command=self.tree.yview, bootstyle="primary-round")
+        xsb = tb.Scrollbar(left, orient="horizontal", command=self.tree.xview, bootstyle="primary-round")
         self.tree.configure(yscroll=ysb.set, xscroll=xsb.set)
+        
         self.tree.grid(row=0, column=0, sticky="nsew")
         ysb.grid(row=0, column=1, sticky="ns")
         xsb.grid(row=1, column=0, sticky="ew")
+        
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
 
-        right = ttk.Frame(main, padding=8)
+        # Right Panel (Info & Actions)
+        right = tb.Frame(main, padding=10)
         main.add(right, weight=1)
+        
         self.info_title = tk.StringVar(value="—")
         self.info_url = tk.StringVar(value="—")
         self.preview_title = tk.StringVar(value="")
         self.preview_desc = tk.StringVar(value="")
-        ttk.Label(right, text="Selected:").pack(anchor="w")
-        ttk.Label(right, textvariable=self.info_title, font=("", 10, "bold")).pack(anchor="w", pady=(0, 6))
-        ttk.Label(right, text="URL:").pack(anchor="w")
-        ttk.Entry(right, textvariable=self.info_url, state="readonly").pack(fill="x")
 
-        ttk.Separator(right).pack(fill="x", pady=8)
-        ttk.Label(right, text="Preview:").pack(anchor="w")
-        ttk.Label(right, textvariable=self.preview_title, wraplength=200).pack(anchor="w")
-        ttk.Label(right, textvariable=self.preview_desc, wraplength=200).pack(anchor="w")
+        # Info Section
+        lbl_frame = tb.Labelframe(right, text="Selected Item", bootstyle="info", padding=10)
+        lbl_frame.pack(fill="x", pady=(0, 10))
+        
+        tb.Label(lbl_frame, textvariable=self.info_title, font=("", 11, "bold"), wraplength=300).pack(anchor="w", pady=(0, 5))
+        tb.Label(lbl_frame, text="URL:", bootstyle="secondary").pack(anchor="w")
+        tb.Entry(lbl_frame, textvariable=self.info_url, state="readonly", bootstyle="light").pack(fill="x", pady=(0, 5))
 
-        ttk.Separator(right).pack(fill="x", pady=8)
-        ttk.Button(right, text="New Folder", command=self.cmd_new_folder).pack(fill="x")
-        ttk.Button(right, text="New Bookmark", command=self.cmd_new_bookmark).pack(fill="x", pady=6)
-        ttk.Button(right, text="Rename (F2)", command=self.cmd_rename).pack(fill="x")
-        ttk.Button(right, text="Edit URL", command=self.cmd_edit_url).pack(fill="x", pady=6)
-        ttk.Button(right, text="Move to Folder…", command=self.cmd_move_to_folder).pack(fill="x")
-        ttk.Button(right, text="Move Up (Ctrl+Up)", command=self.cmd_move_up).pack(fill="x", pady=6)
-        ttk.Button(right, text="Delete", command=self.cmd_delete).pack(fill="x")
+        # Preview Section
+        prev_frame = tb.Labelframe(right, text="Preview", bootstyle="success", padding=10)
+        prev_frame.pack(fill="x", pady=(0, 10))
+        tb.Label(prev_frame, textvariable=self.preview_title, font=("", 10, "bold"), wraplength=300, bootstyle="success").pack(anchor="w")
+        tb.Label(prev_frame, textvariable=self.preview_desc, wraplength=300).pack(anchor="w", pady=(5, 0))
 
-        ttk.Separator(right).pack(fill="x", pady=8)
-        ttk.Button(right, text="Sort by Title", command=lambda: self.cmd_sort("title")).pack(fill="x")
-        ttk.Button(right, text="Sort by Domain", command=lambda: self.cmd_sort("domain")).pack(fill="x", pady=6)
-        ttk.Button(right, text="Deduplicate in Folder", command=self.cmd_dedupe).pack(fill="x")
-        ttk.Button(right, text="Merge Duplicate Folders", command=self.cmd_merge_folders).pack(fill="x",
-                                                                                               pady=6)  # ★★★ 新機能 ★★★
-        ttk.Button(right, text="Auto Classify…", command=self.cmd_show_classify_preview).pack(fill="x")
-        ttk.Button(right, text="Smart Classify (AI)…", command=self.cmd_smart_classify).pack(fill="x", pady=6)
-        ttk.Separator(right).pack(fill="x", pady=8)
-        ttk.Button(right, text="Expand All", command=self.cmd_expand_all).pack(fill="x")
-        ttk.Button(right, text="Collapse All", command=self.cmd_collapse_all).pack(fill="x", pady=6)
+        # Actions Section
+        act_frame = tb.Labelframe(right, text="Actions", bootstyle="warning", padding=10)
+        act_frame.pack(fill="both", expand=True)
+
+        tb.Button(act_frame, text="New Folder", command=self.cmd_new_folder, bootstyle="info-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="New Bookmark", command=self.cmd_new_bookmark, bootstyle="info-outline").pack(fill="x", pady=2)
+        
+        tb.Separator(act_frame, orient="horizontal").pack(fill="x", pady=5)
+        
+        tb.Button(act_frame, text="Rename (F2)", command=self.cmd_rename, bootstyle="secondary-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Edit URL", command=self.cmd_edit_url, bootstyle="secondary-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Move to Folder…", command=self.cmd_move_to_folder, bootstyle="secondary-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Move Up (Ctrl+Up)", command=self.cmd_move_up, bootstyle="secondary-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Delete", command=self.cmd_delete, bootstyle="danger").pack(fill="x", pady=2)
+
+        tb.Separator(act_frame, orient="horizontal").pack(fill="x", pady=5)
+
+        tb.Button(act_frame, text="Sort by Title", command=lambda: self.cmd_sort("title"), bootstyle="dark-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Sort by Domain", command=lambda: self.cmd_sort("domain"), bootstyle="dark-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Deduplicate", command=self.cmd_dedupe, bootstyle="dark-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Merge Folders", command=self.cmd_merge_folders, bootstyle="dark-outline").pack(fill="x", pady=2)
+        tb.Button(act_frame, text="Smart Classify (AI)", command=self.cmd_smart_classify, bootstyle="primary").pack(fill="x", pady=10)
 
         self.ctx = tk.Menu(self, tearoff=0)
         self.ctx.add_command(label="New Folder", command=self.cmd_new_folder)
@@ -264,7 +265,7 @@ class App(ThemedTkBase):
         self.ctx.add_command(label="Move to Folder…", command=self.cmd_move_to_folder)
         self.ctx.add_command(label="Move Up", command=self.cmd_move_up)
         self.ctx.add_separator()
-        self.ctx.add_command(label="Merge Duplicate Folders", command=self.cmd_merge_folders)  # ★★★ 新機能 ★★★
+        self.ctx.add_command(label="Merge Duplicate Folders", command=self.cmd_merge_folders)
         self.ctx.add_separator()
         self.ctx.add_command(label="Delete", command=self.cmd_delete)
         self.tree.bind("<Button-3>", self._popup_ctx)
@@ -290,14 +291,21 @@ class App(ThemedTkBase):
         bold_font = default_font.copy()
         bold_font.configure(weight="bold")
 
-        self.tree.tag_configure('oddrow', background='#FFFFFF')
-        self.tree.tag_configure('evenrow', background='#F0F0F0')
-        self.tree.tag_configure('nourl', foreground='gray')
-        self.tree.tag_configure('folder', font=bold_font)
-        self.tree.tag_configure("match", background="#FFFACD")
+        # Configure tags for treeview
+        # Note: ttkbootstrap might override some tag configs, but we can still set them.
+        self.tree.tag_configure('oddrow', background='#2C3E50') # Example dark color, but bootstrap handles rows usually
+        self.tree.tag_configure('evenrow', background='#34495E')
+        # For 'darkly' theme, these explicit colors might clash. Let's rely on default or set compatible colors.
+        # Actually with ttkbootstrap, it's better to let it handle row striping if enabled (bootstyle="striped")
+        # But we implement manual striping. Let's adjust or remove explicit background if it looks bad.
+        # For now, I will comment out explicit background to see how it looks natively.
+        # self.tree.tag_configure('oddrow', background='#FFFFFF')
+        # self.tree.tag_configure('evenrow', background='#F0F0F0')
+        
+        self.tree.tag_configure('nourl', foreground='#95a5a6')
+        self.tree.tag_configure('folder', font=bold_font, foreground='#f39c12') # Orange for folders
+        self.tree.tag_configure("match", background="#e74c3c", foreground="white") # Red highlight
 
-        style = ttk.Style()
-        style.configure("Line.TFrame", background="blue")
         self._refresh_tree()
 
     def _process_ui_queue(self):
@@ -400,53 +408,8 @@ class App(ThemedTkBase):
 
     def _fetch_preview_worker(self, url: str):
         """ブックマークのプレビュー情報を非同期で取得（リトライ機能付き）。"""
-        max_retries = 3
-        retry_delay = 1
-
-        for attempt in range(max_retries):
-            try:
-                proxy_info = self._get_proxies_for_requests()
-                proxies = proxy_info['proxies'] if proxy_info else None
-                auth = proxy_info['auth'] if proxy_info else None
-
-                resp = requests.get(
-                    url,
-                    timeout=5,
-                    headers={'User-Agent': 'Mozilla/5.0'},
-                    proxies=proxies,
-                    auth=auth
-                )
-                resp.raise_for_status()
-
-                soup = BeautifulSoup(resp.text, "html.parser")
-                title_tag = soup.find("meta", property="og:title") or soup.find("title")
-                title = title_tag.get("content") if title_tag and title_tag.name == "meta" else (
-                    title_tag.text if title_tag else "")
-                desc_tag = soup.find("meta", property="og:description") or soup.find("meta",
-                                                                                     attrs={"name": "description"})
-                desc = desc_tag.get("content") if desc_tag else ""
-                result = {"title": title.strip(), "description": desc.strip()}
-                self.ui_queue.put(('preview', (url, result)))
-                return
-
-            except requests.exceptions.Timeout as e:
-                self.logger.warning(f"Timeout for {url} (attempt {attempt + 1}): {e}")
-            except requests.exceptions.ConnectionError as e:
-                self.logger.warning(f"Connection error for {url} (attempt {attempt + 1}): {e}")
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 404:
-                    self.logger.warning(f"URL not found (404) for {url}. No retries.")
-                    break
-                self.logger.warning(f"HTTP error for {url} (attempt {attempt + 1}): {e}")
-            except Exception as e:
-                self.logger.error(f"Unexpected error for {url}: {e}")
-                break
-
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (2 ** attempt))
-
-        result = {"title": "Could not load preview", "description": ""}
-        self.ui_queue.put(('preview', (url, result)))
+        proxy_info = self._get_proxies_for_requests()
+        fetch_preview(url, self.ui_queue, proxy_info)
 
     def _popup_ctx(self, e) -> None:
         try:
@@ -1451,37 +1414,9 @@ class App(ThemedTkBase):
 
     def _fix_titles_worker(self, nodes):
         """別スレッド：各URLにアクセスし、タイトルを上書き。"""
-        processed = 0
-        total = len(nodes)
-        for n in nodes:
-            if getattr(self, "_titlefix_cancelled", False): break
-            new_title = None
-            try:
-                proxy_info = self._get_proxies_for_requests()
-                proxies = proxy_info['proxies'] if proxy_info else None
-                auth = proxy_info['auth'] if proxy_info else None
-
-                resp = requests.get(n.url, headers={'User-Agent': 'Mozilla/5.0'}, proxies=proxies, auth=auth,
-                                    timeout=self.fetch_timeout)
-                resp.raise_for_status()
-                soup = BeautifulSoup(resp.text, "html.parser")
-                title_tag = soup.find("meta", property="og:title") or soup.find("title")
-                if title_tag and title_tag.name == "meta":
-                    new_title = title_tag.get("content")
-                elif title_tag:
-                    new_title = title_tag.text
-                if new_title: new_title = new_title.strip()
-                if not new_title: new_title = "ERROR: No Title Found"
-            except Exception as e:
-                try:
-                    self.logger.warning("Title fix failed for %s: %s", n.url, str(e))
-                except Exception:
-                    pass
-                new_title = f"ERROR: {type(e).__name__}"
-            n.title = new_title
-            processed += 1
-            self.ui_queue.put(('titlefix_progress', (processed, total)))
-        self.ui_queue.put(('titlefix_done', None))
+        proxy_info = self._get_proxies_for_requests()
+        check_cancel = lambda: getattr(self, "_titlefix_cancelled", False)
+        fix_titles(nodes, self.ui_queue, proxy_info, self.fetch_timeout, self.logger, check_cancel)
 
     # ★★★ 新機能 ★★★
     def cmd_merge_folders(self) -> None:

@@ -38,7 +38,7 @@ class ConfigManager:
         return [term.strip() for term in terms_str.split(',') if term.strip()]
 
 
-from model import NetscapeBookmarkParser, export_netscape_html
+from .model import NetscapeBookmarkParser, export_netscape_html
 
 
 def load_bookmarks(path: str):
