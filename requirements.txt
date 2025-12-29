@@ -1,0 +1,16 @@
+# モダンGUI・テーマ関連
+customtkinter
+ttkthemes
+
+# 画像処理 (ファビコン・プレビュー表示用)
+Pillow
+
+# ネットワーク・スクレイピング (プレビュー取得用)
+requests
+beautifulsoup4
+
+# AI関連 (Gemini API)
+google-generativeai
+
+# ユーティリティ
+pyperclip
