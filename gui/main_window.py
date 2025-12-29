@@ -30,11 +30,9 @@ try:
 except Exception:
     BeautifulSoup = None
 
-class App(tb.Window):
-    def __init__(self):
-        super().__init__(themename="darkly")
 import logging
 from logging.handlers import RotatingFileHandler
+
 try:
     from services.ai_classifier import AIBookmarkClassifier, BookmarkNode
 except Exception:
@@ -597,7 +595,7 @@ class App(tb.Window):
         x_offset = 25
         x += x_offset
         w -= x_offset
-        entry = ttk.Entry(self.tree)
+        entry = tb.Entry(self.tree)
         entry.place(x=x, y=y, width=w, height=h)
         entry.insert(0, node.title)
         entry.select_range(0, 'end')

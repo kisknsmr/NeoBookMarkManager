@@ -1,4 +1,6 @@
 import time
+import logging
+
 try:
     import requests
 except ImportError:
