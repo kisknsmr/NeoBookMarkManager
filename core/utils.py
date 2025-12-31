@@ -8,6 +8,36 @@ from collections import OrderedDict
 - `LRUCache` : シンプルな LRU キャッシュ
 """
 
+# アプリケーション定数
+class AppConstants:
+    """アプリケーション全体で使用する定数"""
+    
+    # プレビュー関連
+    PREVIEW_CACHE_SIZE = 50
+    IMAGE_CACHE_SIZE = 200
+    
+    # タイムアウト設定
+    DEFAULT_FETCH_TIMEOUT = 10
+    MIN_FETCH_TIMEOUT = 2
+    MAX_FETCH_TIMEOUT = 60
+    PREVIEW_FETCH_TIMEOUT = 5
+    PROXY_TEST_TIMEOUT = 10
+    
+    # リトライ設定
+    MAX_RETRIES = 3
+    RETRY_DELAY_BASE = 1
+    
+    # AI分類関連
+    DEFAULT_MAX_SMART_ITEMS = 300
+    MIN_SMART_ITEMS = 50
+    MAX_SMART_ITEMS = 1000
+    
+    # AI API設定
+    AI_REQUEST_TIMEOUT = 90
+    
+    # 検索関連
+    SEARCH_DELAY_MS = 200
+
 
 def is_valid_url(url: str) -> bool:
     """より厳密なURL検証（元の `bookmark_editor.py` から移植）。"""

@@ -1,4 +1,5 @@
 import os
+import sys
 import io
 import json
 import html
@@ -7,6 +8,8 @@ import re
 import threading
 import queue
 import configparser
+import base64
+from typing import Optional
 from urllib.parse import urlparse, quote_plus, urlunparse
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox
@@ -42,15 +45,15 @@ except Exception:
             self.title = title
             self.url = url
 
-from core.utils import is_valid_url, LRUCache
+from core.utils import is_valid_url, LRUCache, AppConstants
 from core.storage import ConfigManager, load_bookmarks, save_bookmarks
 from core.model import Node
 from gui.dialogs import CustomPromptDialog
-from services.workers import fetch_preview, fix_titles
+from services.workers import fetch_preview, fix_titles, fetch_favicon
 
 class App(tb.Window):
     def __init__(self):
-        super().__init__(themename="darkly")
+        super().__init__(themename="cosmo")  # モダンで洗練されたライトテーマ
         self.title("Bookmark Studio — Chrome Bookmarks Organizer")
         self.geometry("1400x800")
         self.minsize(1000, 600)
@@ -71,18 +74,23 @@ class App(tb.Window):
         self.rules = self._default_rules()
         self.rules_path = None
         self._iid_to_node = {}
-        self.preview_cache = LRUCache(maxsize=50)
+        self.preview_cache = LRUCache(maxsize=AppConstants.PREVIEW_CACHE_SIZE)
+        self._preview_fetching = set()  # リクエスト中のURLを追跡（重複防止）
         self.ui_queue = queue.Queue()
         self._search_after_id = None
         self.open_nodes = set()
         self.search_index = {}
         self.dragging_iids = None
         self.drag_start_iid = None
+        self.drag_start_pos = None  # ドラッグ開始位置 (x, y)
         self.drag_window = None
         self.drop_line = None
         self.drop_target_info = None
-        self._img_cache = LRUCache(maxsize=200)
-        self.max_smart_items = 300
+        self._drag_threshold = 5  # ドラッグ開始の閾値（ピクセル）
+        self._img_cache = LRUCache(maxsize=AppConstants.IMAGE_CACHE_SIZE)
+        self._favicon_cache = {}  # iid -> PhotoImage のマッピング
+        self._favicon_fetching = set()  # 取得中のURLを追跡
+        self.max_smart_items = AppConstants.DEFAULT_MAX_SMART_ITEMS
         self.progress_history = []
         self.use_proxy_var = tk.BooleanVar(value=True)
 
@@ -99,7 +107,7 @@ class App(tb.Window):
         self._titlefix_cancelled = False
         self._titlefix_var = None
         self._titlefix_label = None
-        self.fetch_timeout = 10
+        self.fetch_timeout = AppConstants.DEFAULT_FETCH_TIMEOUT
 
         self._build_ui()
         self._build_search_index()
@@ -145,6 +153,9 @@ class App(tb.Window):
         editm.add_command(label="Move to Folder…", command=self.cmd_move_to_folder)
         editm.add_command(label="Move Up", command=self.cmd_move_up, accelerator="Ctrl+Up")
         editm.add_command(label="Delete", command=self.cmd_delete, accelerator="Delete")
+        editm.add_separator()
+        editm.add_command(label="Expand All", command=self.cmd_expand_all, accelerator="Ctrl+Plus")
+        editm.add_command(label="Collapse All", command=self.cmd_collapse_all, accelerator="Ctrl+Minus")
         menubar.add_cascade(label="Edit", menu=editm)
 
         toolsm = tk.Menu(menubar, tearoff=0)
@@ -169,33 +180,96 @@ class App(tb.Window):
 
         self.config(menu=menubar)
 
-        # Top Bar
-        top = tb.Frame(self, bootstyle="secondary")
-        top.pack(fill="x", padx=10, pady=10)
+        # ========== トップツールバー（洗練されたライトデザイン） ==========
+        toolbar_container = tb.Frame(self, bootstyle="light")
+        toolbar_container.pack(fill="x", padx=0, pady=0)
         
-        tb.Label(top, text="Search:", bootstyle="inverse-secondary").pack(side="left", padx=5)
+        # ツールバー内側のフレーム（パディング付き、背景色付き）
+        toolbar = tb.Frame(toolbar_container, bootstyle="light")
+        toolbar.pack(fill="x", padx=12, pady=10)
+        
+        # 左側：検索バー
+        search_frame = tb.Frame(toolbar, bootstyle="light")
+        search_frame.pack(side="left", fill="y", padx=(0, 20))
+        
+        search_label = tb.Label(search_frame, text="🔍 Search:", 
+                               font=("", 11, "bold"), bootstyle="primary")
+        search_label.pack(side="left", padx=(0, 10))
         
         self.search_var = tk.StringVar()
         self.search_var.trace("w", self._on_search_var_changed)
-        ent = tb.Entry(top, textvariable=self.search_var, width=40)
-        ent.pack(side="left", padx=5)
+        self.search_entry = tb.Entry(search_frame, textvariable=self.search_var, 
+                                    width=50, bootstyle="primary")
+        self.search_entry.pack(side="left", padx=(0, 8))
         
-        tb.Button(top, text="Clear", command=self._clear_search, bootstyle="secondary-outline").pack(side="left", padx=5)
+        clear_btn = tb.Button(search_frame, text="Clear", command=self._clear_search, 
+                            bootstyle="secondary-outline", width=10)
+        clear_btn.pack(side="left", padx=3)
+        
+        # セパレーター（視覚的な区切り）
+        tb.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=20, pady=5)
+        
+        # 中央：ツールボタン
+        tools_frame = tb.Frame(toolbar, bootstyle="light")
+        tools_frame.pack(side="left", fill="y")
+        
+        expand_btn = tb.Button(tools_frame, text="📂 Expand All", command=self.cmd_expand_all,
+                               bootstyle="info-outline", width=16)
+        expand_btn.pack(side="left", padx=4)
+        
+        collapse_btn = tb.Button(tools_frame, text="📁 Collapse All", command=self.cmd_collapse_all,
+                                bootstyle="info-outline", width=16)
+        collapse_btn.pack(side="left", padx=4)
+        
+        # セパレーター
+        tb.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=20, pady=5)
+        
+        # 右側：統計情報
+        stats_frame = tb.Frame(toolbar, bootstyle="light")
+        stats_frame.pack(side="right")
+        
+        self.stats_label = tb.Label(stats_frame, text="📊 0 bookmarks", 
+                                   font=("", 10), bootstyle="primary")
+        self.stats_label.pack(side="right", padx=5)
+        
+        # ツールバーの下に罫線（視覚的な区切り）
+        toolbar_separator = tb.Separator(self, orient="horizontal")
+        toolbar_separator.pack(fill="x", padx=0, pady=0)
 
-        # Main Area
-        main = tb.Panedwindow(self, orient="horizontal", bootstyle="light")
-        main.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # ========== メインエリア（洗練されたレイアウト） ==========
+        main_container = tb.Frame(self, bootstyle="light")
+        main_container.pack(fill="both", expand=True, padx=0, pady=0)
+        
+        main = tb.Panedwindow(main_container, orient="horizontal", bootstyle="light")
+        main.pack(fill="both", expand=True, padx=15, pady=15)
 
-        # Left Panel (Tree)
-        left = tb.Frame(main)
-        main.add(left, weight=3)
+        # ========== 左パネル（ツリービュー） ==========
+        left_container = tb.Frame(main, bootstyle="light")
+        main.add(left_container, weight=3)
+        
+        # パネルヘッダー（洗練されたデザイン）
+        left_header = tb.Frame(left_container, bootstyle="primary")
+        left_header.pack(fill="x", padx=0, pady=(0, 3))
+        
+        left_title = tb.Label(left_header, text="📚 Bookmarks", 
+                             font=("", 12, "bold"), bootstyle="inverse-primary")
+        left_title.pack(side="left", padx=15, pady=10)
+        
+        # ヘッダーの下に罫線
+        header_sep = tb.Separator(left_container, orient="horizontal")
+        header_sep.pack(fill="x", padx=0, pady=0)
+        
+        # ツリービューフレーム（適切な余白）
+        left = tb.Frame(left_container, bootstyle="light")
+        left.pack(fill="both", expand=True, padx=3, pady=3)
 
         cols = ("url",)
-        self.tree = tb.Treeview(left, columns=cols, show="tree headings", selectmode="extended", bootstyle="primary")
-        self.tree.heading("#0", text="Title")
-        self.tree.heading("url", text="URL")
-        self.tree.column("#0", width=600, anchor="w")
-        self.tree.column("url", width=500, anchor="w")
+        self.tree = tb.Treeview(left, columns=cols, show="tree headings", 
+                               selectmode="extended", bootstyle="primary")
+        self.tree.heading("#0", text="📑 Title")
+        self.tree.heading("url", text="🔗 URL")
+        self.tree.column("#0", width=600, anchor="w", minwidth=200)
+        self.tree.column("url", width=500, anchor="w", minwidth=150)
 
         ysb = tb.Scrollbar(left, orient="vertical", command=self.tree.yview, bootstyle="primary-round")
         xsb = tb.Scrollbar(left, orient="horizontal", command=self.tree.xview, bootstyle="primary-round")
@@ -208,51 +282,151 @@ class App(tb.Window):
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
 
-        # Right Panel (Info & Actions)
-        right = tb.Frame(main, padding=10)
-        main.add(right, weight=1)
+        # ========== 右パネル（情報とアクション） ==========
+        right_container = tb.Frame(main, bootstyle="light")
+        main.add(right_container, weight=1)
+        
+        right = tb.Frame(right_container, bootstyle="light")
+        right.pack(fill="both", expand=True, padx=3, pady=3)
         
         self.info_title = tk.StringVar(value="—")
         self.info_url = tk.StringVar(value="—")
         self.preview_title = tk.StringVar(value="")
         self.preview_desc = tk.StringVar(value="")
 
-        # Info Section
-        lbl_frame = tb.Labelframe(right, text="Selected Item", bootstyle="info", padding=10)
-        lbl_frame.pack(fill="x", pady=(0, 10))
+        # ========== 選択アイテム情報セクション ==========
+        info_header = tb.Frame(right, bootstyle="info")
+        info_header.pack(fill="x", pady=(0, 3))
         
-        tb.Label(lbl_frame, textvariable=self.info_title, font=("", 11, "bold"), wraplength=300).pack(anchor="w", pady=(0, 5))
-        tb.Label(lbl_frame, text="URL:", bootstyle="secondary").pack(anchor="w")
-        tb.Entry(lbl_frame, textvariable=self.info_url, state="readonly", bootstyle="light").pack(fill="x", pady=(0, 5))
-
-        # Preview Section
-        prev_frame = tb.Labelframe(right, text="Preview", bootstyle="success", padding=10)
-        prev_frame.pack(fill="x", pady=(0, 10))
-        tb.Label(prev_frame, textvariable=self.preview_title, font=("", 10, "bold"), wraplength=300, bootstyle="success").pack(anchor="w")
-        tb.Label(prev_frame, textvariable=self.preview_desc, wraplength=300).pack(anchor="w", pady=(5, 0))
-
-        # Actions Section
-        act_frame = tb.Labelframe(right, text="Actions", bootstyle="warning", padding=10)
-        act_frame.pack(fill="both", expand=True)
-
-        tb.Button(act_frame, text="New Folder", command=self.cmd_new_folder, bootstyle="info-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="New Bookmark", command=self.cmd_new_bookmark, bootstyle="info-outline").pack(fill="x", pady=2)
+        info_title_label = tb.Label(info_header, text="ℹ️ Selected Item", 
+                                   font=("", 11, "bold"), bootstyle="inverse-info")
+        info_title_label.pack(side="left", padx=12, pady=8)
         
-        tb.Separator(act_frame, orient="horizontal").pack(fill="x", pady=5)
+        info_sep = tb.Separator(right, orient="horizontal")
+        info_sep.pack(fill="x", pady=(0, 10))
         
-        tb.Button(act_frame, text="Rename (F2)", command=self.cmd_rename, bootstyle="secondary-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Edit URL", command=self.cmd_edit_url, bootstyle="secondary-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Move to Folder…", command=self.cmd_move_to_folder, bootstyle="secondary-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Move Up (Ctrl+Up)", command=self.cmd_move_up, bootstyle="secondary-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Delete", command=self.cmd_delete, bootstyle="danger").pack(fill="x", pady=2)
+        lbl_frame = tb.Frame(right, bootstyle="light", relief="flat")
+        lbl_frame.pack(fill="x", padx=10, pady=(0, 15))
+        
+        # コンテンツエリア（適切な余白）
+        info_content = tb.Frame(lbl_frame, bootstyle="light")
+        info_content.pack(fill="x", padx=10, pady=10)
+        
+        tb.Label(info_content, textvariable=self.info_title, 
+                font=("", 12, "bold"), wraplength=280, 
+                bootstyle="primary", foreground="#2C3E50").pack(anchor="w", pady=(0, 10))
+        
+        url_label_frame = tb.Frame(info_content, bootstyle="light")
+        url_label_frame.pack(fill="x", pady=(0, 6))
+        
+        tb.Label(url_label_frame, text="🔗 URL:", 
+                font=("", 10, "bold"), bootstyle="secondary").pack(side="left", padx=(0, 8))
+        
+        url_entry = tb.Entry(info_content, textvariable=self.info_url, 
+                           state="readonly", bootstyle="light")
+        url_entry.pack(fill="x", pady=(0, 10))
 
-        tb.Separator(act_frame, orient="horizontal").pack(fill="x", pady=5)
+        # ========== プレビューセクション ==========
+        preview_header = tb.Frame(right, bootstyle="success")
+        preview_header.pack(fill="x", pady=(0, 3))
+        
+        preview_title_label = tb.Label(preview_header, text="👁️ Preview", 
+                                      font=("", 11, "bold"), bootstyle="inverse-success")
+        preview_title_label.pack(side="left", padx=12, pady=8)
+        
+        preview_sep = tb.Separator(right, orient="horizontal")
+        preview_sep.pack(fill="x", pady=(0, 10))
+        
+        prev_frame = tb.Frame(right, bootstyle="light", relief="flat")
+        prev_frame.pack(fill="x", padx=10, pady=(0, 15))
+        
+        preview_content = tb.Frame(prev_frame, bootstyle="light")
+        preview_content.pack(fill="x", padx=10, pady=10)
+        
+        preview_title_widget = tb.Label(preview_content, textvariable=self.preview_title, 
+                                       font=("", 11, "bold"), wraplength=280, 
+                                       bootstyle="success", foreground="#27AE60")
+        preview_title_widget.pack(anchor="w", pady=(0, 8))
+        
+        preview_desc_widget = tb.Label(preview_content, textvariable=self.preview_desc, 
+                                      wraplength=280, font=("", 10), 
+                                      bootstyle="light", foreground="#34495E")
+        preview_desc_widget.pack(anchor="w")
 
-        tb.Button(act_frame, text="Sort by Title", command=lambda: self.cmd_sort("title"), bootstyle="dark-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Sort by Domain", command=lambda: self.cmd_sort("domain"), bootstyle="dark-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Deduplicate", command=self.cmd_dedupe, bootstyle="dark-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Merge Folders", command=self.cmd_merge_folders, bootstyle="dark-outline").pack(fill="x", pady=2)
-        tb.Button(act_frame, text="Smart Classify (AI)", command=self.cmd_smart_classify, bootstyle="primary").pack(fill="x", pady=10)
+        # ========== アクションセクション ==========
+        actions_header = tb.Frame(right, bootstyle="warning")
+        actions_header.pack(fill="x", pady=(0, 3))
+        
+        actions_title_label = tb.Label(actions_header, text="⚡ Actions", 
+                                      font=("", 11, "bold"), bootstyle="inverse-warning")
+        actions_title_label.pack(side="left", padx=12, pady=8)
+        
+        actions_sep = tb.Separator(right, orient="horizontal")
+        actions_sep.pack(fill="x", pady=(0, 10))
+        
+        act_frame = tb.Frame(right, bootstyle="light", relief="flat")
+        act_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        actions_content = tb.Frame(act_frame, bootstyle="light")
+        actions_content.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # 作成セクション
+        create_section = tb.Label(actions_content, text="Create", 
+                                 font=("", 10, "bold"), bootstyle="primary", 
+                                 foreground="#2C3E50")
+        create_section.pack(anchor="w", pady=(0, 6))
+        
+        tb.Button(actions_content, text="📁 New Folder", command=self.cmd_new_folder, 
+                 bootstyle="info-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🔖 New Bookmark", command=self.cmd_new_bookmark, 
+                 bootstyle="info-outline", width=24).pack(fill="x", pady=4)
+        
+        tb.Separator(actions_content, orient="horizontal").pack(fill="x", pady=10)
+        
+        # 編集セクション
+        edit_section = tb.Label(actions_content, text="Edit", 
+                               font=("", 10, "bold"), bootstyle="primary", 
+                               foreground="#2C3E50")
+        edit_section.pack(anchor="w", pady=(0, 6))
+        
+        tb.Button(actions_content, text="✏️ Rename (F2)", command=self.cmd_rename, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🔗 Edit URL", command=self.cmd_edit_url, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="📦 Move to Folder…", command=self.cmd_move_to_folder, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="⬆️ Move Up (Ctrl+↑)", command=self.cmd_move_up, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🗑️ Delete", command=self.cmd_delete, 
+                 bootstyle="danger-outline", width=24).pack(fill="x", pady=4)
+
+        tb.Separator(actions_content, orient="horizontal").pack(fill="x", pady=10)
+
+        # 整理セクション
+        organize_section = tb.Label(actions_content, text="Organize", 
+                                   font=("", 10, "bold"), bootstyle="primary", 
+                                   foreground="#2C3E50")
+        organize_section.pack(anchor="w", pady=(0, 6))
+        
+        tb.Button(actions_content, text="🔤 Sort by Title", command=lambda: self.cmd_sort("title"), 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🌐 Sort by Domain", command=lambda: self.cmd_sort("domain"), 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🔍 Deduplicate", command=self.cmd_dedupe, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        tb.Button(actions_content, text="🔀 Merge Folders", command=self.cmd_merge_folders, 
+                 bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
+        
+        tb.Separator(actions_content, orient="horizontal").pack(fill="x", pady=10)
+        
+        # AI機能
+        ai_section = tb.Label(actions_content, text="AI Features", 
+                             font=("", 10, "bold"), bootstyle="primary", 
+                             foreground="#2C3E50")
+        ai_section.pack(anchor="w", pady=(0, 6))
+        
+        tb.Button(actions_content, text="🤖 Smart Classify (AI)", command=self.cmd_smart_classify, 
+                 bootstyle="primary", width=24).pack(fill="x", pady=6)
 
         self.ctx = tk.Menu(self, tearoff=0)
         self.ctx.add_command(label="New Folder", command=self.cmd_new_folder)
@@ -276,6 +450,9 @@ class App(tb.Window):
         self.bind_all("<Delete>", lambda e: self.cmd_delete())
         self.bind_all("<F2>", lambda e: self.cmd_rename())
         self.bind_all("<Control-Up>", lambda e: self.cmd_move_up())
+        self.bind_all("<Control-plus>", lambda e: self.cmd_expand_all())
+        self.bind_all("<Control-equal>", lambda e: self.cmd_expand_all())  # + without shift
+        self.bind_all("<Control-minus>", lambda e: self.cmd_collapse_all())
 
         self.tree.bind("<<TreeviewSelect>>", self._update_info_from_selection)
         self.tree.bind("<ButtonPress-1>", self._on_tree_press)
@@ -289,22 +466,70 @@ class App(tb.Window):
         bold_font = default_font.copy()
         bold_font.configure(weight="bold")
 
-        # Configure tags for treeview
-        # Note: ttkbootstrap might override some tag configs, but we can still set them.
-        self.tree.tag_configure('oddrow', background='#2C3E50') # Example dark color, but bootstrap handles rows usually
-        self.tree.tag_configure('evenrow', background='#34495E')
-        # For 'darkly' theme, these explicit colors might clash. Let's rely on default or set compatible colors.
-        # Actually with ttkbootstrap, it's better to let it handle row striping if enabled (bootstyle="striped")
-        # But we implement manual striping. Let's adjust or remove explicit background if it looks bad.
-        # For now, I will comment out explicit background to see how it looks natively.
-        # self.tree.tag_configure('oddrow', background='#FFFFFF')
-        # self.tree.tag_configure('evenrow', background='#F0F0F0')
+        # Configure tags for treeview（ライトテーマ用の洗練されたカラー）
+        self.tree.tag_configure('oddrow', background='#FFFFFF')
+        self.tree.tag_configure('evenrow', background='#F8F9FA')
+        self.tree.tag_configure('nourl', foreground='#95A5A6')
+        self.tree.tag_configure('folder', font=bold_font, foreground='#E67E22')  # オレンジ系
+        self.tree.tag_configure("match", background="#FFE5E5", foreground="#C0392B")  # 検索ハイライト
         
-        self.tree.tag_configure('nourl', foreground='#95a5a6')
-        self.tree.tag_configure('folder', font=bold_font, foreground='#f39c12') # Orange for folders
-        self.tree.tag_configure("match", background="#e74c3c", foreground="white") # Red highlight
+        # ツリービューのスタイリング改善（読みやすく洗練されたデザイン）
+        style = tb.Style()
+        base_font = ("Segoe UI", 11) if sys.platform == "win32" else ("", 11)
+        style.configure("Treeview", 
+                       rowheight=28,  # より広い行間で読みやすく
+                       font=base_font,
+                       background="#FFFFFF",
+                       foreground="#2C3E50",
+                       fieldbackground="#FFFFFF",
+                       borderwidth=1,
+                       relief="flat")
+        style.configure("Treeview.Heading", 
+                       font=(base_font[0], base_font[1], "bold"),
+                       background="#ECF0F1",
+                       foreground="#2C3E50",
+                       relief="flat",
+                       borderwidth=1)
+        style.map("Treeview.Heading",
+                 background=[("active", "#3498DB")],
+                 foreground=[("active", "white")])
+        style.map("Treeview",
+                 background=[("selected", "#3498DB")],
+                 foreground=[("selected", "white")])
 
         self._refresh_tree()
+        
+        # ========== ステータスバー（洗練されたデザイン） ==========
+        status_separator = tb.Separator(self, orient="horizontal")
+        status_separator.pack(fill="x", padx=0, pady=0)
+        
+        status_bar = tb.Frame(self, bootstyle="light", height=32)
+        status_bar.pack(fill="x", side="bottom", padx=0, pady=0)
+        status_bar.pack_propagate(False)
+        
+        # 左側：ファイル情報
+        status_left = tb.Frame(status_bar, bootstyle="light")
+        status_left.pack(side="left", fill="y", padx=15, pady=6)
+        
+        self.status_file_label = tb.Label(status_left, text="📄 No file loaded", 
+                                         font=("", 10), bootstyle="secondary")
+        self.status_file_label.pack(side="left", padx=(0, 20))
+        
+        # 中央：統計情報
+        status_center = tb.Frame(status_bar, bootstyle="light")
+        status_center.pack(side="left", fill="y", expand=True, padx=15, pady=6)
+        
+        self.status_stats_label = tb.Label(status_center, text="", 
+                                          font=("", 10), bootstyle="secondary")
+        self.status_stats_label.pack(side="left")
+        
+        # 右側：その他の情報
+        status_right = tb.Frame(status_bar, bootstyle="light")
+        status_right.pack(side="right", fill="y", padx=15, pady=6)
+        
+        self.status_info_label = tb.Label(status_right, text="Ready", 
+                                         font=("", 10), bootstyle="secondary")
+        self.status_info_label.pack(side="right")
 
     def _process_ui_queue(self):
         """UIキューを処理してスレッドセーフな更新を行う。"""
@@ -356,11 +581,22 @@ class App(tb.Window):
                 elif task_type == 'preview':
                     url, preview_data = data
                     self.preview_cache[url] = preview_data
+                    self._preview_fetching.discard(url)  # リクエスト完了を記録
                     sels = self.tree.selection()
                     if len(sels) == 1:
                         node = self._node_of(sels[0])
                         if node and node.url == url:
                             self._update_preview_pane(preview_data)
+                elif task_type == 'favicon':
+                    url, favicon_data = data
+                    # 該当するノードを探してファビコンを更新
+                    for iid, node in self._iid_to_node.items():
+                        if node.url == url and node.type == "bookmark":
+                            node.icon = favicon_data
+                            favicon_image = self._get_favicon_image(url, favicon_data)
+                            if favicon_image:
+                                self.tree.item(iid, image=favicon_image)
+                            break
                 elif task_type == 'titlefix_progress':
                     processed, total = data
                     if self._titlefix_dialog and self._titlefix_dialog.winfo_exists():
@@ -384,25 +620,8 @@ class App(tb.Window):
             self.after(100, self._process_ui_queue)
 
     def _get_proxies_for_requests(self):
-        """requestsライブラリ用にプロキシ設定を返す。"""
-        if not self.use_proxy_var.get():
-            return None
-
-        settings = self.config_manager.get_proxy_settings()
-        if not settings or not settings.get('url'):
-            return None
-
-        proxy_url = settings['url']
-        user = settings['user']
-        password = settings['password']
-
-        auth = (user, password) if user and password else None
-
-        proxies = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-        return {'proxies': proxies, 'auth': auth}
+        """requestsライブラリ用にプロキシ設定を返す（ConfigManager経由）。"""
+        return self.config_manager.get_proxies_for_requests(self.use_proxy_var.get())
 
     def _fetch_preview_worker(self, url: str):
         """ブックマークのプレビュー情報を非同期で取得（リトライ機能付き）。"""
@@ -428,13 +647,36 @@ class App(tb.Window):
                 self.row_counter += 1
                 tags_to_add = [tag]
                 if ch.type == "folder": tags_to_add.append('folder')
-                icon = "📁 " if ch.type == "folder" else ""
-                text = icon + (ch.title or "")
+                
+                # テキストとアイコンの準備
+                text = ch.title or ""
+                image = None
+                
+                if ch.type == "folder":
+                    # フォルダは絵文字アイコン
+                    text = "📁 " + text
+                elif ch.type == "bookmark" and ch.url:
+                    # ブックマークはファビコンを表示
+                    image = self._get_favicon_image(ch.url, ch.icon)
+                    if not image:
+                        # ファビコンが取得できない場合は非同期で取得
+                        self._fetch_favicon_async(ch.url, ch)
+                
                 url_display = ch.url
                 if not ch.url and ch.type == 'bookmark':
                     url_display = '(None)'
                     tags_to_add.append('nourl')
-                iid = self.tree.insert(parent_iid, "end", text=text, values=(url_display,), tags=tuple(tags_to_add))
+                
+                # imageがNoneの場合はパラメータに含めない
+                insert_kwargs = {
+                    "text": text,
+                    "values": (url_display,),
+                    "tags": tuple(tags_to_add)
+                }
+                if image is not None:
+                    insert_kwargs["image"] = image
+                
+                iid = self.tree.insert(parent_iid, "end", **insert_kwargs)
                 self._iid_to_node[iid] = ch
                 if ch.type == "folder": add_items(iid, ch)
 
@@ -447,11 +689,37 @@ class App(tb.Window):
             self.tree.selection_set(new_iids_to_select)
             self.tree.see(new_iids_to_select[-1])
         self._build_search_index()
+        self._update_statistics()
 
-    def _build_search_index(self):
-        """検索インデックスを単語ベースの辞書形式で構築"""
-        self.search_index = {}
-        for iid, node in self._iid_to_node.items():
+    def _build_search_index(self, updated_nodes: Optional[set] = None):
+        """
+        検索インデックスを単語ベースの辞書形式で構築
+        
+        Args:
+            updated_nodes: 更新されたノードのセット（Noneの場合は全ノードを再構築）
+        """
+        if updated_nodes is None:
+            # 全ノードを再構築
+            self.search_index = {}
+            nodes_to_index = self._iid_to_node.items()
+        else:
+            # 差分更新：更新されたノードに関連するインデックスエントリを削除
+            for iid, node in list(self._iid_to_node.items()):
+                if node in updated_nodes or iid in updated_nodes:
+                    # 既存のインデックスエントリを削除
+                    full_text = f"{(node.title or '').lower()} {(node.url or '').lower()}"
+                    words = set(re.split(r'\W+', full_text))
+                    for word in words:
+                        if word and word in self.search_index:
+                            self.search_index[word].discard(iid)
+                            if not self.search_index[word]:
+                                del self.search_index[word]
+            # 更新されたノードのみをインデックス化
+            nodes_to_index = [(iid, node) for iid, node in self._iid_to_node.items() 
+                            if node in updated_nodes or iid in updated_nodes]
+        
+        # インデックスを構築
+        for iid, node in nodes_to_index:
             full_text = f"{(node.title or '').lower()} {(node.url or '').lower()}"
             words = set(re.split(r'\W+', full_text))
             for word in words:
@@ -501,14 +769,23 @@ class App(tb.Window):
             if node.type == "bookmark" and node.url:
                 if node.url in self.preview_cache:
                     self._update_preview_pane(self.preview_cache[node.url])
-                else:
+                elif node.url not in self._preview_fetching:  # 重複リクエスト防止
+                    self._preview_fetching.add(node.url)  # リクエスト開始を記録
                     self.preview_title.set("Loading preview...")
                     self.preview_desc.set("")
                     threading.Thread(target=self._fetch_preview_worker, args=(node.url,), daemon=True).start()
 
     def cmd_open(self) -> None:
+        # Ubuntuでは大文字小文字が厳格なので、すべてのパターンを明示的に指定
         path = filedialog.askopenfilename(
-            title="Open Chrome Bookmarks HTML", filetypes=[("HTML files", "*.html;*.htm"), ("All files", "*.*")],
+            title="Open Chrome Bookmarks HTML",
+            filetypes=[
+                ("HTML files", "*.html"),
+                ("HTML files", "*.HTML"),
+                ("HTML files", "*.htm"),
+                ("HTML files", "*.HTM"),
+                ("All files", "*.*")
+            ],
         )
         if not path: return
         try:
@@ -529,6 +806,9 @@ class App(tb.Window):
                 self.open_nodes.add(first_node)
                 self.tree.item(roots[0], open=True)
         self.title(f"Bookmark Studio — {os.path.basename(path)}")
+        if hasattr(self, 'status_file_label'):
+            self.status_file_label.config(text=f"📄 {os.path.basename(path)}")
+        self._update_status(f"Loaded: {os.path.basename(path)}")
 
     def cmd_save(self) -> None:
         if not self.current_file:
@@ -543,8 +823,17 @@ class App(tb.Window):
 
     def cmd_save_as(self) -> None:
         if not self.root_node: return
+        # Ubuntuでは大文字小文字が厳格なので、すべてのパターンを明示的に指定
         path = filedialog.asksaveasfilename(
-            title="Export Chrome HTML", defaultextension=".html", filetypes=[("HTML files", "*.html;*.htm")],
+            title="Export Chrome HTML",
+            defaultextension=".html",
+            filetypes=[
+                ("HTML files", "*.html"),
+                ("HTML files", "*.HTML"),
+                ("HTML files", "*.htm"),
+                ("HTML files", "*.HTM"),
+                ("All files", "*.*")
+            ],
         )
         if not path: return
         try:
@@ -578,13 +867,16 @@ class App(tb.Window):
         if url and not is_valid_url(url):
             messagebox.showerror("Error", "無効なURL形式です。http:// または https:// で始まるURLを入力してください。")
             return
-        n = Node("bookmark", title=title, url=url)
+        n = Node("bookmark", title=title, url=url, icon="")
         parent.append(n)
         self._refresh_tree()
         new_iid = self._iid_of_node(n)
         if new_iid:
             self.tree.selection_set(new_iid)
             self.tree.see(new_iid)
+            # 新規ブックマークのファビコンを非同期で取得
+            if url:
+                self._fetch_favicon_async(url, n)
 
     def _start_inline_editor(self, iid: str) -> None:
         node = self._node_of(iid)
@@ -609,7 +901,8 @@ class App(tb.Window):
                 icon = "📁 " if node.type == "folder" else ""
                 text = icon + (node.title or "")
                 self.tree.item(iid, text=text)
-                self._build_search_index()
+                # 差分更新：変更されたノードのみインデックス更新
+                self._build_search_index(updated_nodes={node})
 
         def cancel(event):
             entry.destroy()
@@ -640,6 +933,8 @@ class App(tb.Window):
             messagebox.showerror("Error", "無効なURL形式です。http:// または https:// で始まるURLを入力してください。")
             return
         node.url = new_url
+        # URL変更時も検索インデックスを更新
+        self._build_search_index(updated_nodes={node})
         self._refresh_tree()
         new_iid = self._iid_of_node(node)
         if new_iid: self.tree.selection_set(new_iid)
@@ -767,6 +1062,7 @@ class App(tb.Window):
         messagebox.showinfo("Deduplicate", f"Removed {removed} duplicated bookmark(s).")
 
     def cmd_expand_all(self):
+        """すべてのフォルダを展開する"""
         self.open_nodes.clear()
 
         def collect_all_folders(node):
@@ -777,14 +1073,110 @@ class App(tb.Window):
 
         collect_all_folders(self.root_node)
         self._refresh_tree()
+        self._update_status("All folders expanded")
 
     def cmd_collapse_all(self):
+        """すべてのフォルダを折りたたむ"""
         self.open_nodes.clear()
         self._refresh_tree()
+        self._update_status("All folders collapsed")
+    
+    def _get_favicon_image(self, url: str, icon_data: str = "") -> Optional[tk.PhotoImage]:
+        """
+        ファビコン画像を取得する（キャッシュから、またはicon_dataから）
+        
+        Args:
+            url: ブックマークのURL
+            icon_data: HTMLから読み込んだICON属性（base64データURI）
+            
+        Returns:
+            PhotoImageオブジェクト、またはNone
+        """
+        if not Image or not ImageTk:
+            return None
+        
+        # キャッシュを確認
+        cache_key = url
+        if cache_key in self._img_cache:
+            return self._img_cache[cache_key]
+        
+        # icon_dataから画像を作成
+        if icon_data:
+            try:
+                if icon_data.startswith("data:image"):
+                    # data:image/png;base64,... 形式
+                    header, data = icon_data.split(",", 1)
+                    img_data = base64.b64decode(data)
+                    img = Image.open(io.BytesIO(img_data))
+                    # Pillowのバージョン互換性を考慮
+                    try:
+                        img = img.resize((16, 16), Image.Resampling.LANCZOS)
+                    except AttributeError:
+                        # 古いバージョンのPillow
+                        img = img.resize((16, 16), Image.LANCZOS)
+                    photo = ImageTk.PhotoImage(img)
+                    self._img_cache[cache_key] = photo
+                    return photo
+            except Exception:
+                pass
+        
+        return None
+    
+    def _fetch_favicon_async(self, url: str, node: Node):
+        """ファビコンを非同期で取得する"""
+        if url in self._favicon_fetching:
+            return
+        self._favicon_fetching.add(url)
+        
+        def worker():
+            try:
+                proxy_info = self.config_manager.get_proxies_for_requests(self.use_proxy_var.get())
+                favicon_data = fetch_favicon(url, proxy_info)
+                if favicon_data:
+                    node.icon = favicon_data
+                    self.ui_queue.put(('favicon', (url, favicon_data)))
+            except Exception as e:
+                self.logger.debug(f"Failed to fetch favicon for {url}: {e}")
+            finally:
+                self._favicon_fetching.discard(url)
+        
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _update_statistics(self):
+        """統計情報を更新する"""
+        def count_items(node):
+            folders = 0
+            bookmarks = 0
+            if node.type == 'folder':
+                folders += 1
+            else:
+                bookmarks += 1
+            for child in node.children:
+                f, b = count_items(child)
+                folders += f
+                bookmarks += b
+            return folders, bookmarks
+        
+        folders, bookmarks = count_items(self.root_node)
+        # ルートノード自体を除外
+        folders = max(0, folders - 1)
+        
+        stats_text = f"📊 {bookmarks} bookmarks, {folders} folders"
+        if hasattr(self, 'stats_label'):
+            self.stats_label.config(text=stats_text)
+        if hasattr(self, 'status_stats_label'):
+            self.status_stats_label.config(text=stats_text)
+    
+    def _update_status(self, message: str, duration: int = 3000):
+        """ステータスバーにメッセージを表示"""
+        if hasattr(self, 'status_info_label'):
+            self.status_info_label.config(text=message)
+            if duration > 0:
+                self.after(duration, lambda: self.status_info_label.config(text="Ready"))
 
     def _on_search_var_changed(self, *args):
         if self._search_after_id: self.after_cancel(self._search_after_id)
-        self._search_after_id = self.after(200, self._apply_search)
+        self._search_after_id = self.after(AppConstants.SEARCH_DELAY_MS, self._apply_search)
 
     def _apply_search(self) -> None:
         for tag in self.tree.tag_names():
@@ -819,33 +1211,74 @@ class App(tb.Window):
                 if p_node: self.open_nodes.add(p_node)
 
     def _clear_search(self) -> None:
+        """検索バーをクリアする"""
         self.search_var.set("")
+        self.search_entry.focus_set()
+        self._update_status("Search cleared")
 
     def _on_tree_press(self, event) -> None:
+        """マウスボタン押下時の処理"""
         self.drag_start_iid = self.tree.identify_row(event.y)
+        self.drag_start_pos = (event.x_root, event.y_root)  # ドラッグ開始位置を記録
+        self.dragging_iids = None  # リセット
+        self.drop_target_info = None
+        
         if self.drag_start_iid and self.drag_start_iid not in self.tree.selection():
-            if not (event.state & 0x0004) and not (event.state & 0x0001):
+            if not (event.state & 0x0004) and not (event.state & 0x0001):  # Ctrl/Shiftキーが押されていない
                 self.tree.selection_set(self.drag_start_iid)
 
     def _on_tree_drag(self, event) -> None:
-        if self.drag_start_iid:
+        """ドラッグ中の処理"""
+        if not self.drag_start_iid or not self.drag_start_pos:
+            return
+        
+        # ドラッグ距離を計算
+        dx = abs(event.x_root - self.drag_start_pos[0])
+        dy = abs(event.y_root - self.drag_start_pos[1])
+        drag_distance = (dx ** 2 + dy ** 2) ** 0.5
+        
+        # 閾値を超えたらドラッグ開始
+        if drag_distance < self._drag_threshold:
+            return
+        
+        # ドラッグ開始（初回のみ）
+        if not self.dragging_iids:
             self.dragging_iids = list(self.tree.selection())
-            if self.drag_start_iid in self.dragging_iids:
-                self.config(cursor="fleur")
-                self._create_drag_window()
-            else:
+            if self.drag_start_iid not in self.dragging_iids:
                 self.dragging_iids = None
-            self.drag_start_iid = None
-        if not self.dragging_iids: return
-        if self.drag_window: self.drag_window.geometry(f"+{event.x_root + 15}+{event.y_root + 10}")
+                return
+            
+            # ドラッグ開始の視覚的フィードバック
+            self.config(cursor="fleur")
+            self._create_drag_window()
+        
+        if not self.dragging_iids:
+            return
+        
+        # ドラッグウィンドウの位置を更新
+        if self.drag_window:
+            self.drag_window.geometry(f"+{event.x_root + 15}+{event.y_root + 10}")
+        
+        # ドロップ位置のインジケーターを更新
         self._update_drop_indicator(event.x, event.y)
 
     def _on_tree_release(self, event) -> None:
+        """マウスボタン解放時の処理（ドロップ処理）"""
         self._destroy_drag_window()
         self._destroy_drop_line()
         self.config(cursor="")
-        if not self.dragging_iids or not self.drop_target_info:
-            self.dragging_iids = None;
+        
+        # ドラッグが開始されていなかった場合は何もしない
+        if not self.dragging_iids:
+            self.drag_start_iid = None
+            self.drag_start_pos = None
+            return
+        
+        # ドロップ位置が設定されていない場合はキャンセル
+        if not self.drop_target_info:
+            self.dragging_iids = None
+            self.drag_start_iid = None
+            self.drag_start_pos = None
             return
         target_iid = self.drop_target_info["iid"]
         drop_pos = self.drop_target_info["pos"]
@@ -882,9 +1315,16 @@ class App(tb.Window):
                     parent.append(dn)
         self._refresh_tree()
         new_iids = [self._iid_of_node(n) for n in dragged_nodes if self._iid_of_node(n)]
-        if new_iids: self.tree.selection_set(new_iids)
+        if new_iids: 
+            self.tree.selection_set(new_iids)
+            self.tree.see(new_iids[0])  # 移動先を表示
+        
+        # 状態をリセット
         self.dragging_iids = None
         self.drop_target_info = None
+        self.drag_start_iid = None
+        self.drag_start_pos = None
+        self._update_status("Items moved successfully")
 
     def _create_drag_window(self):
         if self.drag_window: self.drag_window.destroy()
@@ -905,28 +1345,54 @@ class App(tb.Window):
             self.drag_window = None
 
     def _update_drop_indicator(self, x, y):
+        """ドロップ位置のインジケーターを更新"""
         self._destroy_drop_line()
         self.drop_target_info = None
+        
+        # 前回のドロップフォルダハイライトをクリア
         for iid in self._iid_to_node:
             tags = list(self.tree.item(iid, "tags"))
             if "drop_folder" in tags:
                 tags.remove("drop_folder")
                 self.tree.item(iid, tags=tuple(tags))
+        
+        # マウス位置のアイテムを取得
         iid = self.tree.identify_row(y)
-        if not iid or iid in self.dragging_iids: return
+        if not iid or iid in self.dragging_iids:
+            return
+        
         bbox = self.tree.bbox(iid)
-        if not bbox: return
+        if not bbox:
+            return
+        
         line_x, line_y, line_w, line_h = bbox
         target_node = self._node_of(iid)
+        
+        if not target_node:
+            return
+        
+        # フォルダの場合は、アイコン部分（左側）にマウスがある場合は「中に入れる」
+        # 右側のテキスト部分にマウスがある場合は「前後に入れる」
         if target_node.type == 'folder':
-            self.drop_target_info = {"iid": iid, "pos": "in"}
-            self.tree.item(iid, tags=self.tree.item(iid, "tags") + ('drop_folder',))
+            folder_icon_width = 30  # フォルダアイコンの推定幅
+            if x < folder_icon_width:
+                # フォルダの中に入れる
+                self.drop_target_info = {"iid": iid, "pos": "in"}
+                self.tree.item(iid, tags=self.tree.item(iid, "tags") + ('drop_folder',))
+            else:
+                # フォルダの前後に挿入
+                drop_pos = 'after' if y > (line_y + line_h / 2) else 'before'
+                self.drop_target_info = {"iid": iid, "pos": drop_pos}
+                line_y_pos = line_y if drop_pos == 'before' else line_y + line_h
+                self.drop_line = tk.Frame(self.tree, height=2, bg="#3498DB")
+                self.drop_line.place(x=0, y=line_y_pos, width=self.tree.winfo_width())
         else:
+            # ブックマークの場合は前後に挿入
             drop_pos = 'after' if y > (line_y + line_h / 2) else 'before'
             self.drop_target_info = {"iid": iid, "pos": drop_pos}
             line_y_pos = line_y if drop_pos == 'before' else line_y + line_h
-            self.drop_line = ttk.Frame(self.tree, height=2, style="Line.TFrame")
-            self.drop_line.place(x=line_x, y=line_y_pos, width=self.tree.winfo_width())
+            self.drop_line = tk.Frame(self.tree, height=2, bg="#3498DB")
+            self.drop_line.place(x=0, y=line_y_pos, width=self.tree.winfo_width())
 
     def _destroy_drop_line(self):
         if self.drop_line:
@@ -1235,7 +1701,12 @@ class App(tb.Window):
         def worker():
             try:
                 test_url = "http://www.google.com/generate_204"
-                response = requests.get(test_url, proxies=proxy_info['proxies'], auth=proxy_info['auth'], timeout=10)
+                response = requests.get(
+                    test_url, 
+                    proxies=proxy_info['proxies'], 
+                    auth=proxy_info['auth'], 
+                    timeout=AppConstants.PROXY_TEST_TIMEOUT
+                )
                 response.raise_for_status()
                 self.ui_queue.put(('proxy_check_success', dialog))
             except Exception as e:
@@ -1246,16 +1717,24 @@ class App(tb.Window):
     def cmd_set_smart_classify_limit(self) -> None:
         current_limit = self.max_smart_items
         new_limit = simpledialog.askinteger(
-            "Smart Classify Limit", "スマート分類の最大ブックマーク数を入力してください（50～1000）：",
-            initialvalue=current_limit, minvalue=50, maxvalue=1000, parent=self
+            "Smart Classify Limit", 
+            f"スマート分類の最大ブックマーク数を入力してください（{AppConstants.MIN_SMART_ITEMS}～{AppConstants.MAX_SMART_ITEMS}）：",
+            initialvalue=current_limit, 
+            minvalue=AppConstants.MIN_SMART_ITEMS, 
+            maxvalue=AppConstants.MAX_SMART_ITEMS, 
+            parent=self
         )
         if new_limit is not None: self.max_smart_items = new_limit
         messagebox.showinfo("Smart Classify Limit", f"最大処理数を {new_limit} に設定しました。")
 
     def cmd_set_title_fetch_timeout(self) -> None:
         new_timeout = simpledialog.askinteger(
-            "Title Fetch Timeout", "タイトル取得のタイムアウト秒数を入力してください（2～60）：",
-            initialvalue=self.fetch_timeout, minvalue=2, maxvalue=60, parent=self
+            "Title Fetch Timeout", 
+            f"タイトル取得のタイムアウト秒数を入力してください（{AppConstants.MIN_FETCH_TIMEOUT}～{AppConstants.MAX_FETCH_TIMEOUT}）：",
+            initialvalue=self.fetch_timeout, 
+            minvalue=AppConstants.MIN_FETCH_TIMEOUT, 
+            maxvalue=AppConstants.MAX_FETCH_TIMEOUT, 
+            parent=self
         )
         if new_timeout is not None:
             self.fetch_timeout = new_timeout

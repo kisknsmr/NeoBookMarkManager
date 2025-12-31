@@ -4,11 +4,11 @@ import os
 import json
 import time
 import logging
-import configparser
 import datetime
-from urllib.parse import quote_plus, urlparse, urlunparse
+from urllib.parse import urlparse
 from typing import List, Dict, Optional, Callable
 import google.generativeai as genai
+from core.storage import ConfigManager
 
 
 class BookmarkNode:
@@ -33,7 +33,7 @@ class AIBookmarkClassifier:
     """AIを使用したブックマーク分類器（外部プロンプトファイル参照型）"""
 
     def __init__(self, config_path: str = "config.ini", logger: Optional[logging.Logger] = None):
-        self.config_path = config_path
+        self.config_manager = ConfigManager(config_path)
         self.logger = logger or logging.getLogger(__name__)
         self.traffic_sent = 0
         self.traffic_received = 0
@@ -41,25 +41,24 @@ class AIBookmarkClassifier:
         self.progress_callback: Optional[Callable] = None
 
     def _log_immediate(self, message: str):
-        """イミディエイトウィンドウへのログ出力（正式版リリースまで）"""
+        """ログ出力（正式版リリースまで）"""
         now = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[{now}] [AI_ENGINE] {message}")
+        if self.logger:
+            self.logger.info(f"[{now}] [AI_ENGINE] {message}")
+        else:
+            print(f"[{now}] [AI_ENGINE] {message}")
 
     def set_progress_callback(self, callback: Callable[[int, int, int, int], None]):
+        """進捗コールバックを設定する"""
         self.progress_callback = callback
 
     def cancel(self):
+        """処理をキャンセルする"""
         self.is_cancelled = True
 
     def _read_api_key(self) -> Optional[str]:
-        key = os.environ.get("GENAI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if key: return key
-        if os.path.exists(self.config_path):
-            cfg = configparser.ConfigParser()
-            cfg.read(self.config_path, encoding="utf-8")
-            if cfg.has_section("API"):
-                return cfg.get("API", "api_key", fallback=None)
-        return None
+        """APIキーを取得する（ConfigManager経由）"""
+        return self.config_manager.get_api_key()
 
     def _get_domain(self, url: str) -> str:
         """AIが判断しやすいようにURLからドメインを抽出"""
@@ -115,9 +114,11 @@ class AIBookmarkClassifier:
 
         self.traffic_sent += len(final_prompt.encode('utf-8')) + len(data_json.encode('utf-8'))
 
+        from core.utils import AppConstants
+        
         resp = model.generate_content(
             [final_prompt, data_json],
-            request_options={"timeout": 90},
+            request_options={"timeout": AppConstants.AI_REQUEST_TIMEOUT},
             generation_config={"response_mime_type": "application/json"}
         )
 

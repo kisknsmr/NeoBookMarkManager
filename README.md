@@ -37,11 +37,69 @@ Bookmark Studioは、Chrome等のブラウザからエクスポートしたブ�
 
 ### セットアップ
 
-同梱の `requirements.txt` を使用して、必要なライブラリをインストールしてください。
+#### 方法1: 仮想環境を使用（推奨）
 
+仮想環境を使用することで、システムのPython環境を汚染せずに依存関係を管理できます。
+
+**簡単な方法（自動スクリプト）**：
 ```bash
+./run.sh
+```
+このスクリプトは仮想環境の作成、依存関係のインストール、プログラムの起動を自動で行います。
+
+**手動で仮想環境をセットアップする場合**：
+```bash
+# 1. 仮想環境を作成（既に存在する場合はスキップ）
+python3 -m venv .venv
+
+# 2. 仮想環境を有効化
+source .venv/bin/activate
+# または
+. activate_venv.sh
+
+# 3. 依存関係をインストール
 pip install -r requirements.txt
 
+# 4. インストール確認
+python3 test_imports.py
+
+# 5. プログラムを実行
+python3 main.py
+
+# 仮想環境を無効化する場合
+deactivate
+```
+
+#### 方法2: システム環境に直接インストール
+
+**自動インストールスクリプト**：
+```bash
+./install_dependencies.sh
+```
+
+**手動インストール**：
+
+1. **システムパッケージのインストール**（Linuxの場合）：
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y python3-tk python3-pip
+   ```
+
+2. **Pythonパッケージのインストール**：
+   ```bash
+   pip install -r requirements.txt
+   ```
+   または、ユーザー環境にインストールする場合：
+   ```bash
+   pip install --user -r requirements.txt
+   ```
+
+#### インストール確認
+
+以下のコマンドで依存関係が正しくインストールされたか確認できます：
+
+```bash
+python3 test_imports.py
 ```
 
 ### 設定 (`config.ini`)
@@ -49,6 +107,25 @@ pip install -r requirements.txt
 AI APIキーやプロキシ設定、優先分類用語を `config.ini` に記述することで、本ツールの全ての機能が利用可能になります。
 
 ## 📖 基本的な使い方
+
+### プログラムの起動
+
+**仮想環境を使用する場合**（推奨）：
+```bash
+./run.sh
+```
+または
+```bash
+source .venv/bin/activate
+python3 main.py
+```
+
+**システム環境を使用する場合**：
+```bash
+python3 main.py
+```
+
+### アプリケーションの使い方
 
 1. **読み込み**: **[File] > [Open HTML]** からブックマークファイルを読み込みます。
 2. **AI分類**: 整理したいフォルダやブックマークを選択し、**[Tools] > [Smart Classify (AI)]** をクリックします。

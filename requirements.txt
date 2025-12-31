@@ -3,6 +3,7 @@ customtkinter>=5.2.0
 
 # 旧UIとの互換性（既存コードで使用）
 ttkthemes
+ttkbootstrap>=1.19.0
 
 # 画像処理 (ファビコン・プレビュー表示用)
 Pillow>=9.0.0
