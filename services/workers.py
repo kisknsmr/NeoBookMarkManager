@@ -81,7 +81,7 @@ def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[s
                 auth=auth
             )
             resp.raise_for_status()
-            
+
             # 共通のHTMLパース関数を使用
             result = _extract_title_and_description(resp.text)
             ui_queue.put(('preview', (url, result)))

@@ -46,7 +46,7 @@ class AIBookmarkClassifier:
         if self.logger:
             self.logger.info(f"[{now}] [AI_ENGINE] {message}")
         else:
-            print(f"[{now}] [AI_ENGINE] {message}")
+        print(f"[{now}] [AI_ENGINE] {message}")
 
     def set_progress_callback(self, callback: Callable[[int, int, int, int], None]):
         """進捗コールバックを設定する"""
@@ -115,7 +115,7 @@ class AIBookmarkClassifier:
         self.traffic_sent += len(final_prompt.encode('utf-8')) + len(data_json.encode('utf-8'))
 
         from core.utils import AppConstants
-        
+
         resp = model.generate_content(
             [final_prompt, data_json],
             request_options={"timeout": AppConstants.AI_REQUEST_TIMEOUT},

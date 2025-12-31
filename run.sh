@@ -14,6 +14,9 @@ fi
 # 仮想環境を有効化
 source "$VENV_DIR/bin/activate"
 
+# プロジェクトディレクトリに移動
+cd "$SCRIPT_DIR"
+
 # 依存関係をインストール（必要に応じて）
 if [ ! -f "$VENV_DIR/.installed" ]; then
     echo "依存関係をインストールしています..."

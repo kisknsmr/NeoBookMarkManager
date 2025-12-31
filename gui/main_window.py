@@ -205,7 +205,7 @@ class App(tb.Window):
         clear_btn = tb.Button(search_frame, text="Clear", command=self._clear_search, 
                             bootstyle="secondary-outline", width=10)
         clear_btn.pack(side="left", padx=3)
-        
+
         # セパレーター（視覚的な区切り）
         tb.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=20, pady=5)
         
@@ -286,13 +286,34 @@ class App(tb.Window):
         right_container = tb.Frame(main, bootstyle="light")
         main.add(right_container, weight=1)
         
-        right = tb.Frame(right_container, bootstyle="light")
-        right.pack(fill="both", expand=True, padx=3, pady=3)
+        # スクロール可能な右パネル（Canvas + Scrollbar）
+        right_canvas = tk.Canvas(right_container, highlightthickness=0, bg="#FFFFFF")
+        right_scrollbar = tb.Scrollbar(right_container, orient="vertical", command=right_canvas.yview, bootstyle="primary-round")
+        right_scrollable_frame = tb.Frame(right_canvas, bootstyle="light")
+        
+        right_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        )
+        
+        right_canvas.create_window((0, 0), window=right_scrollable_frame, anchor="nw")
+        right_canvas.configure(yscrollcommand=right_scrollbar.set)
+        
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scrollbar.pack(side="right", fill="y")
+        
+        # マウスホイールでスクロール
+        def _on_mousewheel(event):
+            right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        right_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        right = right_scrollable_frame
         
         self.info_title = tk.StringVar(value="—")
         self.info_url = tk.StringVar(value="—")
         self.preview_title = tk.StringVar(value="")
         self.preview_desc = tk.StringVar(value="")
+        self.right_canvas = right_canvas  # 後でwraplength計算に使用
 
         # ========== 選択アイテム情報セクション ==========
         info_header = tb.Frame(right, bootstyle="info")
@@ -312,9 +333,11 @@ class App(tb.Window):
         info_content = tb.Frame(lbl_frame, bootstyle="light")
         info_content.pack(fill="x", padx=10, pady=10)
         
-        tb.Label(info_content, textvariable=self.info_title, 
-                font=("", 12, "bold"), wraplength=280, 
-                bootstyle="primary", foreground="#2C3E50").pack(anchor="w", pady=(0, 10))
+        # wraplengthを動的に計算するラベル
+        self.info_title_label = tb.Label(info_content, textvariable=self.info_title, 
+                font=("", 12, "bold"), 
+                bootstyle="primary", foreground="#2C3E50")
+        self.info_title_label.pack(anchor="w", pady=(0, 10))
         
         url_label_frame = tb.Frame(info_content, bootstyle="light")
         url_label_frame.pack(fill="x", pady=(0, 6))
@@ -343,20 +366,36 @@ class App(tb.Window):
         preview_content = tb.Frame(prev_frame, bootstyle="light")
         preview_content.pack(fill="x", padx=10, pady=10)
         
-        preview_title_widget = tb.Label(preview_content, textvariable=self.preview_title, 
-                                       font=("", 11, "bold"), wraplength=280, 
+        # wraplengthを動的に計算するラベル
+        self.preview_title_widget = tb.Label(preview_content, textvariable=self.preview_title, 
+                                       font=("", 11, "bold"), 
                                        bootstyle="success", foreground="#27AE60")
-        preview_title_widget.pack(anchor="w", pady=(0, 8))
+        self.preview_title_widget.pack(anchor="w", pady=(0, 8))
         
-        preview_desc_widget = tb.Label(preview_content, textvariable=self.preview_desc, 
-                                      wraplength=280, font=("", 10), 
-                                      bootstyle="light", foreground="#34495E")
-        preview_desc_widget.pack(anchor="w")
+        # 説明テキストはTextウィジェットでスクロール可能に（マテリアルデザイン風）
+        preview_desc_frame = tb.Frame(preview_content, bootstyle="light")
+        preview_desc_frame.pack(fill="both", expand=True, anchor="w")
+        
+        self.preview_desc_text = tk.Text(preview_desc_frame, 
+                                        font=("", 10), 
+                                        wrap="word",
+                                        height=4,
+                                        relief="flat",
+                                        bg="#F8F9FA",
+                                        fg="#34495E",
+                                        padx=8,
+                                        pady=6,
+                                        borderwidth=0,
+                                        highlightthickness=1,
+                                        highlightbackground="#E0E0E0",
+                                        highlightcolor="#2196F3",
+                                        state="disabled")
+        self.preview_desc_text.pack(fill="both", expand=True)
 
         # ========== アクションセクション ==========
         actions_header = tb.Frame(right, bootstyle="warning")
         actions_header.pack(fill="x", pady=(0, 3))
-        
+
         actions_title_label = tb.Label(actions_header, text="⚡ Actions", 
                                       font=("", 11, "bold"), bootstyle="inverse-warning")
         actions_title_label.pack(side="left", padx=12, pady=8)
@@ -366,7 +405,7 @@ class App(tb.Window):
         
         act_frame = tb.Frame(right, bootstyle="light", relief="flat")
         act_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        
+
         actions_content = tb.Frame(act_frame, bootstyle="light")
         actions_content.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -407,7 +446,7 @@ class App(tb.Window):
                                    font=("", 10, "bold"), bootstyle="primary", 
                                    foreground="#2C3E50")
         organize_section.pack(anchor="w", pady=(0, 6))
-        
+
         tb.Button(actions_content, text="🔤 Sort by Title", command=lambda: self.cmd_sort("title"), 
                  bootstyle="secondary-outline", width=24).pack(fill="x", pady=4)
         tb.Button(actions_content, text="🌐 Sort by Domain", command=lambda: self.cmd_sort("domain"), 
@@ -472,6 +511,8 @@ class App(tb.Window):
         self.tree.tag_configure('nourl', foreground='#95A5A6')
         self.tree.tag_configure('folder', font=bold_font, foreground='#E67E22')  # オレンジ系
         self.tree.tag_configure("match", background="#FFE5E5", foreground="#C0392B")  # 検索ハイライト
+        self.tree.tag_configure("drop_folder", background="#E3F2FD", foreground="#1976D2")  # ドロップフォルダハイライト
+        self.tree.tag_configure("drop_target", background="#FFF3E0", foreground="#F57C00")  # ドロップターゲットハイライト
         
         # ツリービューのスタイリング改善（読みやすく洗練されたデザイン）
         style = tb.Style()
@@ -498,6 +539,9 @@ class App(tb.Window):
                  foreground=[("selected", "white")])
 
         self._refresh_tree()
+        
+        # ウィンドウサイズ変更時にwraplengthを更新
+        self.bind("<Configure>", lambda e: self._update_wraplengths())
         
         # ========== ステータスバー（洗練されたデザイン） ==========
         status_separator = tb.Separator(self, orient="horizontal")
@@ -752,7 +796,13 @@ class App(tb.Window):
 
     def _update_preview_pane(self, preview_data):
         self.preview_title.set(preview_data.get("title", ""))
-        self.preview_desc.set(preview_data.get("description", ""))
+        # Textウィジェットに説明を設定
+        self.preview_desc_text.config(state="normal")
+        self.preview_desc_text.delete("1.0", tk.END)
+        self.preview_desc_text.insert("1.0", preview_data.get("description", ""))
+        self.preview_desc_text.config(state="disabled")
+        # wraplengthを動的に更新
+        self._update_wraplengths()
 
     def _update_info_from_selection(self, event=None) -> None:
         sels = self.tree.selection()
@@ -772,7 +822,9 @@ class App(tb.Window):
                 elif node.url not in self._preview_fetching:  # 重複リクエスト防止
                     self._preview_fetching.add(node.url)  # リクエスト開始を記録
                     self.preview_title.set("Loading preview...")
-                    self.preview_desc.set("")
+                    self.preview_desc_text.config(state="normal")
+                    self.preview_desc_text.delete("1.0", tk.END)
+                    self.preview_desc_text.config(state="disabled")
                     threading.Thread(target=self._fetch_preview_worker, args=(node.url,), daemon=True).start()
 
     def cmd_open(self) -> None:
@@ -1167,6 +1219,23 @@ class App(tb.Window):
         if hasattr(self, 'status_stats_label'):
             self.status_stats_label.config(text=stats_text)
     
+    def _update_wraplengths(self):
+        """右パネルのラベルのwraplengthを動的に更新"""
+        try:
+            if hasattr(self, 'right_canvas') and self.right_canvas.winfo_width() > 0:
+                # パディングを考慮してwraplengthを計算（左右各20px + スクロールバー幅）
+                canvas_width = self.right_canvas.winfo_width()
+                scrollbar_width = 20  # スクロールバーの推定幅
+                content_width = canvas_width - scrollbar_width - 40  # 左右パディング
+                
+                if content_width > 100:  # 最小幅を確保
+                    if hasattr(self, 'info_title_label'):
+                        self.info_title_label.config(wraplength=content_width)
+                    if hasattr(self, 'preview_title_widget'):
+                        self.preview_title_widget.config(wraplength=content_width)
+        except tk.TclError:
+            pass  # ウィンドウがまだ作成されていない場合は無視
+    
     def _update_status(self, message: str, duration: int = 3000):
         """ステータスバーにメッセージを表示"""
         if hasattr(self, 'status_info_label'):
@@ -1249,8 +1318,8 @@ class App(tb.Window):
                 return
             
             # ドラッグ開始の視覚的フィードバック
-            self.config(cursor="fleur")
-            self._create_drag_window()
+                self.config(cursor="fleur")
+                self._create_drag_window()
         
         if not self.dragging_iids:
             return
@@ -1345,15 +1414,15 @@ class App(tb.Window):
             self.drag_window = None
 
     def _update_drop_indicator(self, x, y):
-        """ドロップ位置のインジケーターを更新"""
+        """ドロップ位置のインジケーターを更新（強化された視覚的フィードバック）"""
         self._destroy_drop_line()
         self.drop_target_info = None
         
-        # 前回のドロップフォルダハイライトをクリア
+        # 前回のドロップハイライトをクリア
         for iid in self._iid_to_node:
             tags = list(self.tree.item(iid, "tags"))
-            if "drop_folder" in tags:
-                tags.remove("drop_folder")
+            if "drop_folder" in tags or "drop_target" in tags:
+                tags = [t for t in tags if t not in ("drop_folder", "drop_target")]
                 self.tree.item(iid, tags=tuple(tags))
         
         # マウス位置のアイテムを取得
@@ -1376,23 +1445,38 @@ class App(tb.Window):
         if target_node.type == 'folder':
             folder_icon_width = 30  # フォルダアイコンの推定幅
             if x < folder_icon_width:
-                # フォルダの中に入れる
+                # フォルダの中に入れる - マテリアルデザイン風のハイライト
                 self.drop_target_info = {"iid": iid, "pos": "in"}
-                self.tree.item(iid, tags=self.tree.item(iid, "tags") + ('drop_folder',))
+                tags = list(self.tree.item(iid, "tags"))
+                tags.append('drop_folder')
+                self.tree.item(iid, tags=tuple(tags))
+                # ドロップゾーンインジケーター（フォルダ内にドロップ可能なことを示す）
+                self.drop_line = tk.Frame(self.tree, height=line_h, bg="#E3F2FD", relief="solid", borderwidth=2, highlightbackground="#2196F3", highlightthickness=1)
+                self.drop_line.place(x=line_x, y=line_y, width=line_w, height=line_h)
             else:
                 # フォルダの前後に挿入
                 drop_pos = 'after' if y > (line_y + line_h / 2) else 'before'
                 self.drop_target_info = {"iid": iid, "pos": drop_pos}
                 line_y_pos = line_y if drop_pos == 'before' else line_y + line_h
-                self.drop_line = tk.Frame(self.tree, height=2, bg="#3498DB")
-                self.drop_line.place(x=0, y=line_y_pos, width=self.tree.winfo_width())
+                # より目立つドロップライン（マテリアルデザイン風）
+                self.drop_line = tk.Frame(self.tree, height=3, bg="#2196F3", relief="raised", borderwidth=0)
+                self.drop_line.place(x=0, y=line_y_pos - 1, width=self.tree.winfo_width())
+                # ターゲットアイテムもハイライト
+                tags = list(self.tree.item(iid, "tags"))
+                tags.append('drop_target')
+                self.tree.item(iid, tags=tuple(tags))
         else:
             # ブックマークの場合は前後に挿入
             drop_pos = 'after' if y > (line_y + line_h / 2) else 'before'
             self.drop_target_info = {"iid": iid, "pos": drop_pos}
             line_y_pos = line_y if drop_pos == 'before' else line_y + line_h
-            self.drop_line = tk.Frame(self.tree, height=2, bg="#3498DB")
-            self.drop_line.place(x=0, y=line_y_pos, width=self.tree.winfo_width())
+            # より目立つドロップライン（マテリアルデザイン風）
+            self.drop_line = tk.Frame(self.tree, height=3, bg="#2196F3", relief="raised", borderwidth=0)
+            self.drop_line.place(x=0, y=line_y_pos - 1, width=self.tree.winfo_width())
+            # ターゲットアイテムもハイライト
+            tags = list(self.tree.item(iid, "tags"))
+            tags.append('drop_target')
+            self.tree.item(iid, tags=tuple(tags))
 
     def _destroy_drop_line(self):
         if self.drop_line:

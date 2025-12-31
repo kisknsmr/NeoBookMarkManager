@@ -27,6 +27,7 @@ fi
 
 echo ""
 echo "3. 仮想環境を有効化してPythonパッケージのインストール..."
+cd "$SCRIPT_DIR"
 source "$VENV_DIR/bin/activate"
 python3 -m pip install --upgrade pip
 pip install -r requirements.txt
