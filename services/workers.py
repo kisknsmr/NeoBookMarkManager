@@ -1,5 +1,4 @@
 import time
-import logging
 import queue
 from typing import Optional, Dict, Any, Callable
 
@@ -14,6 +13,7 @@ except ImportError:
 
 from core.utils import AppConstants
 from core.model import Node
+from core.logger import logger
 from urllib.parse import urlparse, urljoin
 import base64
 
@@ -31,25 +31,29 @@ def _extract_title_and_description(html_content: str) -> Dict[str, str]:
     if not BeautifulSoup:
         return {"title": "No BeautifulSoup", "description": "Install bs4 for preview"}
     
-    soup = BeautifulSoup(html_content, "html.parser")
-    
-    # タイトル抽出（og:title > title の順で優先）
-    title_tag = soup.find("meta", property="og:title") or soup.find("title")
-    if title_tag and title_tag.name == "meta":
-        title = title_tag.get("content", "")
-    elif title_tag:
-        title = title_tag.text
-    else:
-        title = ""
-    
-    # 説明抽出（og:description > meta[name="description"] の順で優先）
-    desc_tag = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
-    description = desc_tag.get("content", "") if desc_tag else ""
-    
-    return {
-        "title": title.strip(),
-        "description": description.strip()
-    }
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # タイトル抽出（og:title > title の順で優先）
+        title_tag = soup.find("meta", property="og:title") or soup.find("title")
+        if title_tag and title_tag.name == "meta":
+            title = title_tag.get("content", "")
+        elif title_tag:
+            title = title_tag.text
+        else:
+            title = ""
+        
+        # 説明抽出（og:description > meta[name="description"] の順で優先）
+        desc_tag = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
+        description = desc_tag.get("content", "") if desc_tag else ""
+        
+        return {
+            "title": title.strip(),
+            "description": description.strip()
+        }
+    except Exception as e:
+        logger.error(f"Error parsing HTML content: {e}")
+        return {"title": "Parse Error", "description": ""}
 
 def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[str, Any]] = None) -> None:
     """
@@ -62,17 +66,19 @@ def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[s
     """
     max_retries = AppConstants.MAX_RETRIES
     retry_delay = AppConstants.RETRY_DELAY_BASE
-    logger = logging.getLogger(__name__)
+    # Local logger no longer needed, using global logger
 
     for attempt in range(max_retries):
         try:
             if not requests:
+                logger.warning("Requests library not installed.")
                 ui_queue.put(('preview', (url, {"title": "No requests lib", "description": "Install requests"})))
                 return
             
             proxies = proxy_info['proxies'] if proxy_info else None
             auth = proxy_info['auth'] if proxy_info else None
 
+            logger.debug(f"Fetching preview for {url} (Attempt {attempt + 1})")
             resp = requests.get(
                 url,
                 timeout=AppConstants.PREVIEW_FETCH_TIMEOUT,
@@ -85,6 +91,7 @@ def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[s
             # 共通のHTMLパース関数を使用
             result = _extract_title_and_description(resp.text)
             ui_queue.put(('preview', (url, result)))
+            logger.info(f"Successfully fetched preview for {url}")
             return
 
         except requests.exceptions.Timeout as e:
@@ -105,6 +112,7 @@ def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[s
 
     result = {"title": "Could not load preview", "description": ""}
     ui_queue.put(('preview', (url, result)))
+    logger.error(f"Failed to fetch preview for {url} after {max_retries} attempts")
 
 
 def fix_titles(
@@ -112,7 +120,7 @@ def fix_titles(
     ui_queue: 'queue.Queue', 
     proxy_info: Optional[Dict[str, Any]] = None, 
     timeout: int = AppConstants.DEFAULT_FETCH_TIMEOUT, 
-    logger: Optional[logging.Logger] = None, 
+    logger_arg: Optional[Any] = None, 
     check_cancel: Optional[Callable[[], bool]] = None
 ) -> None:
     """
@@ -123,15 +131,18 @@ def fix_titles(
         ui_queue: UI更新用のキュー
         proxy_info: プロキシ設定（オプション）
         timeout: リクエストタイムアウト（秒）
-        logger: ロガー（オプション）
+        logger_arg: (deprecated) ロガー引数は無視してグローバルloggerを使用
         check_cancel: キャンセルチェック関数（オプション）
     """
     processed = 0
     total = len(nodes)
-    logger = logger or logging.getLogger(__name__)
+    
+    logger.info(f"Starting title fix for {total} nodes.")
 
     for n in nodes:
-        if check_cancel and check_cancel(): break
+        if check_cancel and check_cancel(): 
+            logger.info("Title fix cancelled by user.")
+            break
         new_title = None
         try:
             if not requests:
@@ -150,16 +161,19 @@ def fix_titles(
             
             if not new_title: 
                 new_title = "ERROR: No Title Found"
+            
+            logger.debug(f"Fixed title for {n.url} -> {new_title}")
+
         except Exception as e:
-            try:
-                logger.warning("Title fix failed for %s: %s", n.url, str(e))
-            except Exception:
-                pass
+            logger.warning(f"Title fix failed for {n.url}: {e}")
             new_title = f"ERROR: {type(e).__name__}"
+            
         n.title = new_title
         processed += 1
         ui_queue.put(('titlefix_progress', (processed, total)))
+    
     ui_queue.put(('titlefix_done', None))
+    logger.info("Title fix completed.")
 
 
 def fetch_favicon(url: str, proxy_info: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -174,9 +188,9 @@ def fetch_favicon(url: str, proxy_info: Optional[Dict[str, Any]] = None) -> Opti
         ファビコンのbase64データURI、またはNone
     """
     if not requests:
+        logger.warning("Requests library missing, cannot fetch favicon.")
         return None
     
-    logger = logging.getLogger(__name__)
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
     

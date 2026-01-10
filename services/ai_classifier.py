@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from typing import List, Dict, Optional, Callable
 import google.generativeai as genai
 from core.storage import ConfigManager
+from core.logger import logger
 
 
 class BookmarkNode:
@@ -32,21 +33,20 @@ class AIClassificationResult:
 class AIBookmarkClassifier:
     """AIを使用したブックマーク分類器（外部プロンプトファイル参照型）"""
 
-    def __init__(self, config_path: str = "config.ini", logger: Optional[logging.Logger] = None):
+    def __init__(self, config_path: str = "config.ini", logger_arg: Optional[logging.Logger] = None):
         self.config_manager = ConfigManager(config_path)
-        self.logger = logger or logging.getLogger(__name__)
+        # Global logger is used directly
         self.traffic_sent = 0
         self.traffic_received = 0
         self.is_cancelled = False
         self.progress_callback: Optional[Callable] = None
 
     def _log_immediate(self, message: str):
-        """ログ出力（正式版リリースまで）"""
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        if self.logger:
-            self.logger.info(f"[{now}] [AI_ENGINE] {message}")
-        else:
-        print(f"[{now}] [AI_ENGINE] {message}")
+        """ログ出力（正式版リリースまで → Centralized Loggerへ移行）"""
+        # now = datetime.datetime.now().strftime("%H:%M:%S")
+        # logger.info(f"[{now}] [AI_ENGINE] {message}")
+        # Standard logger handles timestamps
+        logger.info(f"[AI_ENGINE] {message}")
 
     def set_progress_callback(self, callback: Callable[[int, int, int, int], None]):
         """進捗コールバックを設定する"""
@@ -55,6 +55,7 @@ class AIBookmarkClassifier:
     def cancel(self):
         """処理をキャンセルする"""
         self.is_cancelled = True
+        logger.info("[AI_ENGINE] Classification cancelled by user.")
 
     def _read_api_key(self) -> Optional[str]:
         """APIキーを取得する（ConfigManager経由）"""
@@ -64,7 +65,7 @@ class AIBookmarkClassifier:
         """AIが判断しやすいようにURLからドメインを抽出"""
         try:
             return urlparse(url).netloc.lower()
-        except:
+        except Exception:
             return ""
 
     def _load_external_prompt(self) -> str:
@@ -74,10 +75,14 @@ class AIBookmarkClassifier:
             self._log_immediate(f"CRITICAL: {prompt_path} が見つかりません。")
             raise FileNotFoundError(f"外部プロンプトファイル '{prompt_path}' が必要です。")
 
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            self._log_immediate(f"Prompt loaded from {prompt_path} ({len(content)} chars).")
-            return content
+        try:
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                self._log_immediate(f"Prompt loaded from {prompt_path} ({len(content)} chars).")
+                return content
+        except Exception as e:
+            logger.error(f"Failed to read prompt file {prompt_path}: {e}")
+            raise
 
     def _create_payload(self, priority_terms: List[str], additional_prompt: Optional[str] = None) -> str:
         """外部プロンプトと追加指示、動的ルールを統合した最終指示文を作成"""
@@ -116,31 +121,38 @@ class AIBookmarkClassifier:
 
         from core.utils import AppConstants
 
-        resp = model.generate_content(
-            [final_prompt, data_json],
-            request_options={"timeout": AppConstants.AI_REQUEST_TIMEOUT},
-            generation_config={"response_mime_type": "application/json"}
-        )
-
-        text = (getattr(resp, "text", "") or "").strip()
-        self.traffic_received += len(text.encode('utf-8'))
-
         try:
-            res_data = json.loads(text)
-        except json.JSONDecodeError:
-            self._log_immediate("AI response parse failed. Attempting rescue...")
+            resp = model.generate_content(
+                [final_prompt, data_json],
+                request_options={"timeout": AppConstants.AI_REQUEST_TIMEOUT},
+                generation_config={"response_mime_type": "application/json"}
+            )
+
+            text = (getattr(resp, "text", "") or "").strip()
+            self.traffic_received += len(text.encode('utf-8'))
+
+            try:
+                res_data = json.loads(text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode failed for AI response: {e}. Text preview: {text[:100]}")
+                self._log_immediate("AI response parse failed. Attempting rescue...")
+                return {}
+
+            batch_plan = {}
+            groups = res_data.get("groups", [])
+            for g in groups:
+                folder = g.get("folder", "Unsorted").strip().replace('/', '_')
+                indices = g.get("indices", [])
+                for idx in indices:
+                    if 0 <= idx < len(batch):
+                        batch_plan.setdefault(folder, []).append(batch[idx])
+            
+            return batch_plan
+
+        except Exception as e:
+            logger.error(f"AI Generation failed: {e}")
+            self._log_immediate(f"AI Generation failed: {e}")
             return {}
-
-        batch_plan = {}
-        groups = res_data.get("groups", [])
-        for g in groups:
-            folder = g.get("folder", "Unsorted").strip().replace('/', '_')
-            indices = g.get("indices", [])
-            for idx in indices:
-                if 0 <= idx < len(batch):
-                    batch_plan.setdefault(folder, []).append(batch[idx])
-
-        return batch_plan
 
     def classify_bookmarks(self,
                            bookmarks: List[BookmarkNode],
@@ -155,42 +167,48 @@ class AIBookmarkClassifier:
         self._log_immediate(f"Starting Smart Classify: {len(bookmarks)} items.")
 
         api_key = self._read_api_key()
-        if not api_key: raise ValueError("API key not found")
+        if not api_key: 
+            logger.error("API Key missing.")
+            raise ValueError("API key not found")
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
 
-        limited_bookmarks = bookmarks[:max_items]
+            limited_bookmarks = bookmarks[:max_items]
 
-        # 外部プロンプトを読み込んで統合指示文を作成
-        final_prompt = self._create_payload(priority_terms or [], additional_prompt)
+            # 外部プロンプトを読み込んで統合指示文を作成
+            final_prompt = self._create_payload(priority_terms or [], additional_prompt)
 
-        plan = {}
-        if limited_bookmarks:
-            plan = self._process_batch(model, final_prompt, limited_bookmarks)
-            if self.progress_callback:
-                self.progress_callback(len(limited_bookmarks), len(limited_bookmarks), self.traffic_sent,
-                                       self.traffic_received)
+            plan = {}
+            if limited_bookmarks and not self.is_cancelled:
+                plan = self._process_batch(model, final_prompt, limited_bookmarks)
+                if self.progress_callback:
+                    self.progress_callback(len(limited_bookmarks), len(limited_bookmarks), self.traffic_sent,
+                                           self.traffic_received)
 
-        # 1件フォルダを「Unsorted」に寄せる既存のクリーンアップ
-        if not self.is_cancelled:
-            large_categories = {n: items for n, items in plan.items() if len(items) >= 2}
-            small_items = [it for n, items in plan.items() if len(items) < 2 for it in items]
-            if small_items and large_categories:
-                largest = max(large_categories, key=lambda k: len(large_categories[k]))
-                large_categories[largest].extend(small_items)
-                plan = large_categories
-            elif not large_categories and small_items:
-                plan = {"Unsorted": small_items}
-            else:
-                plan = large_categories
+            # 1件フォルダを「Unsorted」に寄せる既存のクリーンアップ
+            if not self.is_cancelled:
+                large_categories = {n: items for n, items in plan.items() if len(items) >= 2}
+                small_items = [it for n, items in plan.items() if len(items) < 2 for it in items]
+                if small_items and large_categories:
+                    largest = max(large_categories, key=lambda k: len(large_categories[k]))
+                    large_categories[largest].extend(small_items)
+                    plan = large_categories
+                elif not large_categories and small_items:
+                    plan = {"Unsorted": small_items}
+                else:
+                    plan = large_categories
 
-        elapsed = time.time() - start_time
-        self._log_immediate(
-            f"Success. Time: {elapsed:.1f}s, Sent: {self.traffic_sent}b, Recv: {self.traffic_received}b")
+            elapsed = time.time() - start_time
+            self._log_immediate(
+                f"Success. Time: {elapsed:.1f}s, Sent: {self.traffic_sent}b, Recv: {self.traffic_received}b")
 
-        return AIClassificationResult(
-            plan=plan,
-            traffic_stats={'sent': self.traffic_sent, 'received': self.traffic_received},
-            processing_time=elapsed
-        )
+            return AIClassificationResult(
+                plan=plan,
+                traffic_stats={'sent': self.traffic_sent, 'received': self.traffic_received},
+                processing_time=elapsed
+            )
+        except Exception as e:
+            logger.error(f"Classification failed: {e}")
+            raise

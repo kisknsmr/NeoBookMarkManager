@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import simpledialog
-import ttkbootstrap as tb
+import customtkinter as ctk
+from gui.theme import Colors, Fonts
 
 class CustomPromptDialog(simpledialog.Dialog):
     def __init__(self, parent, title=None, previous_prompts=None):
@@ -9,17 +10,23 @@ class CustomPromptDialog(simpledialog.Dialog):
 
     def body(self, master):
         self.result = None
+        # Using customtkinter widgets inside the dialog
         if self.previous_prompts:
-            tb.Label(master, text="現在の指示:", font=("", 10, "bold"), bootstyle="info").pack(anchor="w", padx=5, pady=(5, 0))
-            history_text = tk.Text(master, height=4, width=60, wrap="word", relief="flat", borderwidth=1)
+            ctk.CTkLabel(master, text="現在の指示:", font=("", 12, "bold"), text_color=Colors.TEXT_SECONDARY).pack(anchor="w", padx=5, pady=(5, 0))
+            
+            # Use CTkTextbox for read-only history if possible, or standard Text with styling
+            # Standard Text is easier to fit in simpledialog geometry management sometimes, but let's try CTk
+            history_text = ctk.CTkTextbox(master, height=80, width=400, border_width=1)
             history_text.pack(padx=5, pady=2, fill="x", expand=True)
             display_str = "\n".join([f"- {p}" for p in self.previous_prompts])
             history_text.insert("1.0", display_str)
-            history_text.config(state="disabled", background="#f0f0f0")
+            history_text.configure(state="disabled", fg_color=Colors.BACKGROUND, text_color=Colors.TEXT_PRIMARY)
         
-        tb.Label(master, text="追加の指示を入力:", font=("", 10, "bold")).pack(anchor="w", padx=5, pady=(10, 0))
-        self.text_widget = tk.Text(master, height=8, width=60, wrap="word") 
+        ctk.CTkLabel(master, text="追加の指示を入力:", font=("", 12, "bold"), text_color=Colors.TEXT_PRIMARY).pack(anchor="w", padx=5, pady=(10, 0))
+        self.text_widget = ctk.CTkTextbox(master, height=100, width=400, border_width=1)
         self.text_widget.pack(padx=5, pady=5, fill="both", expand=True)
+        
+        # simpledialog expects the initial focus widget return
         return self.text_widget
 
     def apply(self):

@@ -7,20 +7,21 @@
 import sys
 import os
 
-# プロジェクトルートをパスに追加
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# プロジェクトルートをパスに追加（tests/から親ディレクトリへ）
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 def test_import(module_name, import_statement):
     """モジュールのインポートをテストする"""
     try:
         exec(import_statement)
-        print(f"✓ {module_name}: OK")
+        print(f"[OK] {module_name}: OK")
         return True
     except ImportError as e:
-        print(f"✗ {module_name}: インポートエラー - {e}")
+        print(f"[NG] {module_name}: インポートエラー - {e}")
         return False
     except Exception as e:
-        print(f"✗ {module_name}: エラー - {e}")
+        print(f"[NG] {module_name}: エラー - {e}")
         return False
 
 def main():
@@ -44,7 +45,7 @@ def main():
     results.append(test_import("beautifulsoup4", "from bs4 import BeautifulSoup"))
     results.append(test_import("google-generativeai", "import google.generativeai as genai"))
     results.append(test_import("PIL (Pillow)", "from PIL import Image"))
-    results.append(test_import("ttkbootstrap", "import ttkbootstrap as tb"))
+    results.append(test_import("customtkinter", "import customtkinter as ctk"))
     print()
     
     # プロジェクトモジュール
@@ -64,12 +65,12 @@ def main():
     print(f"結果: {passed}/{total} テストが成功しました")
     
     if passed == total:
-        print("✅ すべての依存関係が正常にインストールされています！")
+        print("[SUCCESS] すべての依存関係が正常にインストールされています！")
         return 0
     else:
-        print("⚠️  一部の依存関係が不足しています。")
+        print("[WARNING] 一部の依存関係が不足しています。")
         print("   以下のコマンドでインストールしてください：")
-        print("   ./install_dependencies.sh")
+        print("   ./scripts/install_dependencies.sh")
         return 1
 
 if __name__ == "__main__":

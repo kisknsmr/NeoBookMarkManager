@@ -1,19 +1,18 @@
-# モダンGUI・テーマ関連（新しいUI）
-customtkinter>=5.2.0
+# Bookmark Studio - Python Dependencies
+# Python 3.10+ required
 
-# 旧UIとの互換性（既存コードで使用）
-ttkthemes
-ttkbootstrap>=1.19.0
+# GUI Framework
+customtkinter==5.2.2
 
-# 画像処理 (ファビコン・プレビュー表示用)
-Pillow>=9.0.0
+# Image Processing (Favicon and Preview Display)
+Pillow==10.2.0
 
-# ネットワーク・スクレイピング (プレビュー取得用)
-requests>=2.28.0
-beautifulsoup4>=4.11.0
+# Network and Web Scraping (Preview Fetching)
+beautifulsoup4==4.12.3
+requests==2.31.0
 
-# AI関連 (Gemini API)
-google-generativeai>=0.3.0
+# AI Classification (Gemini API)
+google-generativeai==0.3.2
 
-# ユーティリティ
-pyperclip>=1.8.2
+# Testing Framework (Development)
+pytest==8.2.0

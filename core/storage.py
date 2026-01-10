@@ -4,6 +4,7 @@ import json
 import re
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any
+from .logger import logger
 
 """
 ストレージ／設定モジュール。
@@ -22,7 +23,13 @@ class ConfigManager:
     def load_config(self):
         """設定ファイルを読み込む"""
         if os.path.exists(self.config_path):
-            self.config.read(self.config_path, encoding='utf-8')
+            try:
+                self.config.read(self.config_path, encoding='utf-8')
+                logger.info(f"Loaded configuration from {self.config_path}")
+            except Exception as e:
+                logger.error(f"Failed to load configuration from {self.config_path}: {e}")
+        else:
+            logger.warning(f"Configuration file not found at {self.config_path}")
 
     def get_api_key(self) -> Optional[str]:
         """
@@ -63,12 +70,15 @@ class ConfigManager:
             parsed = urlparse(url)
             # httpまたはhttpsスキームを要求
             if parsed.scheme.lower() not in ('http', 'https'):
+                logger.warning(f"Invalid proxy scheme: {parsed.scheme}")
                 return False
             # ホスト名が存在することを確認
             if not parsed.netloc:
+                logger.warning("Invalid proxy URL: missing hostname")
                 return False
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error validating proxy URL '{url}': {e}")
             return False
 
     def get_proxy_settings(self) -> Optional[Dict[str, Any]]:
@@ -149,11 +159,25 @@ def load_bookmarks(path: str) -> tuple[Node, dict, Optional[str]]:
         IOError: ファイル読み込みエラー
         ValueError: パースエラー
     """
-    with open(path, 'r', encoding='utf-8') as f:
-        data = f.read()
-    parser = NetscapeBookmarkParser()
-    parser.feed(data)
-    root = parser.root
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = f.read()
+        logger.info(f"Loaded bookmarks file: {path}")
+    except FileNotFoundError:
+        logger.error(f"Bookmarks file not found: {path}")
+        raise IOError(f"File not found: {path}")
+    except Exception as e:
+        logger.error(f"Error reading bookmarks file {path}: {e}")
+        raise IOError(f"Failed to read file: {e}")
+
+    try:
+        parser = NetscapeBookmarkParser()
+        parser.feed(data)
+        root = parser.root
+    except Exception as e:
+        logger.error(f"Error parsing bookmarks data: {e}")
+        raise ValueError(f"Failed to parse bookmarks: {e}")
+
     sidecar = os.path.splitext(path)[0] + '.bookmark_rules.json'
     rules = None
     rules_path = None
@@ -162,9 +186,14 @@ def load_bookmarks(path: str) -> tuple[Node, dict, Optional[str]]:
             with open(sidecar, 'r', encoding='utf-8') as rf:
                 rules = json.load(rf)
                 rules_path = sidecar
-        except Exception:
+                logger.info(f"Loaded rules file: {sidecar}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in rules file {sidecar}: {e}")
             rules = None
-            rules_path = None
+        except Exception as e:
+            logger.error(f"Error reading rules file {sidecar}: {e}")
+            rules = None
+    
     return root, (rules or {}), rules_path
 
 
@@ -183,14 +212,27 @@ def save_bookmarks(path: str, root_node: Node, rules: Optional[dict] = None) -> 
     Raises:
         IOError: ファイル書き込みエラー
     """
-    html_text = export_netscape_html(root_node)
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(html_text)
+    try:
+        html_text = export_netscape_html(root_node)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(html_text)
+        logger.info(f"Saved bookmarks to {path}")
+    except Exception as e:
+        logger.error(f"Failed to save bookmarks to {path}: {e}")
+        raise IOError(f"Failed to save bookmarks: {e}")
+
     if rules:
         sp = os.path.splitext(path)[0] + '.bookmark_rules.json'
-        with open(sp, 'w', encoding='utf-8') as wf:
-            json.dump(rules, wf, ensure_ascii=False, indent=2)
-        return sp
+        try:
+            with open(sp, 'w', encoding='utf-8') as wf:
+                json.dump(rules, wf, ensure_ascii=False, indent=2)
+            logger.info(f"Saved rules to {sp}")
+            return sp
+        except Exception as e:
+            logger.error(f"Failed to save rules to {sp}: {e}")
+            # rules are secondary, so we might not want to crash everything if this fails, 
+            # but usually it's good to know. For now, log it.
+            return None
     return None
 
 
@@ -208,8 +250,20 @@ def load_rules(path: str) -> dict:
         IOError: ファイル読み込みエラー
         json.JSONDecodeError: JSONパースエラー
     """
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            rules = json.load(f)
+            logger.info(f"Loaded rules from {path}")
+            return rules
+    except FileNotFoundError:
+        logger.error(f"Rules file not found: {path}")
+        raise IOError(f"File not found: {path}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in {path}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading rules from {path}: {e}")
+        raise IOError(f"Failed to load rules: {e}")
 
 
 def save_rules(path: str, rules: dict) -> str:
@@ -226,7 +280,12 @@ def save_rules(path: str, rules: dict) -> str:
     Raises:
         IOError: ファイル書き込みエラー
     """
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(rules, f, ensure_ascii=False, indent=2)
-    return path
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(rules, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved rules to {path}")
+        return path
+    except Exception as e:
+        logger.error(f"Failed to save rules to {path}: {e}")
+        raise IOError(f"Failed to save rules: {e}")
 
