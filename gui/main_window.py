@@ -35,7 +35,7 @@ from core.utils import is_valid_url, LRUCache
 from core.storage import ConfigManager, load_bookmarks, save_bookmarks
 from core.model import Node
 from core.logger import logger  # Import global logger
-from gui.dialogs import CustomPromptDialog
+from gui.dialogs import CustomPromptDialog, FolderSelectDialog
 from gui.components import BookmarkCard, FolderTree, SearchBar, DetailPanel, BookmarkRow
 from services.workers import fetch_preview, fix_titles
 from gui.drag_manager import DragManager
@@ -52,20 +52,82 @@ class App(ctk.CTk):
     """メインアプリケーションクラス（CustomTkinterベース）"""
     
     def __init__(self):
-        super().__init__()
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        debug_log("main_window.py:55", "App.__init__ entry", {}, "H3")
+        
+        try:
+            debug_log("main_window.py:58", "Calling super().__init__()", {}, "H3")
+            super().__init__()
+            debug_log("main_window.py:60", "super().__init__() completed", {}, "H3")
+        except Exception as e:
+            debug_log("main_window.py:62", "Error in super().__init__()", {"error": str(e)}, "H3")
+            raise
+
+        # ---- Font family stabilization (Hypothesis H6) ----
+        # Some environments crash in C-layer when CTkFont is created with a non-existent family.
+        # We pick the first available font from a safe candidate list.
+        try:
+            debug_log("main_window.py:66", "Selecting safe font family", {"preferred": getattr(Fonts, "FAMILY", None)}, "H6")
+            import tkinter.font as tkfont
+            available = set(tkfont.families(self))
+            candidates = [
+                getattr(Fonts, "FAMILY", None),
+                getattr(Fonts, "FAMILY_FALLBACK", None),
+                "Noto Sans CJK JP",
+                "Noto Sans JP",
+                "Noto Sans",
+                "DejaVu Sans",
+                "Arial",
+            ]
+            chosen = None
+            for cand in candidates:
+                if cand and cand in available:
+                    chosen = cand
+                    break
+            if not chosen:
+                chosen = tkfont.nametofont("TkDefaultFont").cget("family")
+            Fonts.FAMILY = chosen
+            debug_log("main_window.py:86", "Font family chosen", {"chosen": chosen, "available_count": len(available)}, "H6")
+        except Exception as e:
+            debug_log("main_window.py:88", "Failed to select safe font family", {"error": str(e)}, "H6")
+        
         self.title("Bookmark Studio — Chrome Bookmarks Organizer")
         self.geometry("1400x800")
         self.minsize(1000, 600)
         
+        debug_log("main_window.py:69", "Window properties set", {}, "H3")
+        
         # ログ設定 (Use centralized logger)
         self.logger = logger
         self._setup_logging()
+        debug_log("main_window.py:73", "Logging setup completed", {}, "H3")
         
         # 設定管理
-        self.config_manager = ConfigManager()
+        try:
+            debug_log("main_window.py:76", "Creating ConfigManager", {}, "H3")
+            self.config_manager = ConfigManager()
+            debug_log("main_window.py:78", "ConfigManager created", {}, "H3")
+        except Exception as e:
+            debug_log("main_window.py:80", "Error creating ConfigManager", {"error": str(e)}, "H3")
+            raise
         
         # ドラッグマネージャー
-        self.drag_manager = DragManager(self, on_drop=self._on_drop_item)
+        try:
+            debug_log("main_window.py:84", "Creating DragManager", {}, "H3")
+            self.drag_manager = DragManager(self, on_drop=self._on_drop_item)
+            debug_log("main_window.py:86", "DragManager created", {}, "H3")
+        except Exception as e:
+            debug_log("main_window.py:88", "Error creating DragManager", {"error": str(e)}, "H3")
+            raise
 
         # データモデル
         self.root_node = Node("folder", "Bookmarks")
@@ -107,12 +169,29 @@ class App(ctk.CTk):
         self._load_var = None
         self._load_label = None
         
+        debug_log("main_window.py:130", "Before _build_ui()", {}, "H4")
+        
         # UI構築
-        self._build_ui()
-        self._build_search_index()
+        try:
+            self._build_ui()
+            debug_log("main_window.py:134", "_build_ui() completed", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:136", "Error in _build_ui()", {"error": str(e)}, "H4")
+            raise
+        
+        try:
+            debug_log("main_window.py:140", "Before _build_search_index()", {}, "H3")
+            self._build_search_index()
+            debug_log("main_window.py:142", "_build_search_index() completed", {}, "H3")
+        except Exception as e:
+            debug_log("main_window.py:144", "Error in _build_search_index()", {"error": str(e)}, "H3")
+            raise
+        
         self.after(100, self._process_ui_queue)
+        debug_log("main_window.py:148", "UI queue processor scheduled", {}, "H3")
         
         self.logger.info("Application started.")
+        debug_log("main_window.py:151", "App.__init__ completed successfully", {}, "H3")
     
     def _setup_logging(self):
         """ログ設定 (Add file handler to global logger)"""
@@ -176,13 +255,14 @@ class App(ctk.CTk):
         try:
             self.tk.call('tk', 'windowingsystem') == 'aqua'
             self.createcommand('tk::mac::ReopenApplication', lambda: None)
-        except:
-            pass
+        except Exception as e:
+            # macOS固有の処理なので、非macOS環境では例外が発生する可能性がある（正常）
+            self.logger.debug(f"macOS-specific menu setup skipped: {e}")
         self.config(menu=menubar)
         
         # メインレイアウト: 2カラム（メインエリア、右サイドパネル）
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0) # Right panel fixed/wrap
+        self.grid_columnconfigure(1, weight=0, minsize=360) # Right panel fixed/wrap (340 + padding)
         self.grid_rowconfigure(0, weight=1)
         
         # メインエリア (Tree + Search/Cards)
@@ -308,21 +388,80 @@ class App(ctk.CTk):
         )
         self.view_toggle_btn.grid(row=0, column=1, padx=0)
 
-        # ブックマーク表示エリア
-        self.cards_frame = ctk.CTkScrollableFrame(cards_container, label_text="Bookmarks", fg_color=Colors.BACKGROUND)
-        self.cards_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        self.cards_frame.grid_columnconfigure(0, weight=1)
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
         
-        # 右側詳細パネル
-        right_frame = ctk.CTkFrame(self, width=340, fg_color=Colors.SURFACE)
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
-        right_frame.grid_propagate(False)
-        right_frame.grid_rowconfigure(0, weight=1)
-        right_frame.grid_rowconfigure(1, weight=0)
+        debug_log("main_window.py:364", "Before creating cards_frame", {}, "H4")
+        
+        # ブックマーク表示エリア
+        try:
+            # NOTE: CTkScrollableFrame は環境によって Segmentation fault を起こすことがあるため
+            # まず安定化優先で通常の CTkFrame に置換して切り分ける（スクロールは後で復元）
+            self.cards_frame = ctk.CTkFrame(cards_container, fg_color=Colors.BACKGROUND)
+            debug_log("main_window.py:369", "cards_frame (CTkFrame) created (no scroll)", {}, "H4")
+            
+            self.cards_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+            debug_log("main_window.py:372", "cards_frame.grid() called", {}, "H4")
+            
+            self.cards_frame.grid_columnconfigure(0, weight=1)
+            debug_log("main_window.py:375", "cards_frame.grid_columnconfigure() called", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:377", "Error creating cards_frame", {"error": str(e)}, "H4")
+            raise
+        
+        debug_log("main_window.py:380", "Before creating right_frame", {}, "H5")
+        
+        # 右側詳細パネル（サイドバー）
+        try:
+            right_frame = ctk.CTkFrame(self, fg_color=Colors.SURFACE, width=340)
+            debug_log("main_window.py:330", "right_frame created", {}, "H5")
+            
+            right_frame.grid(row=0, column=1, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
+            debug_log("main_window.py:333", "right_frame.grid() called", {}, "H5")
+        except Exception as e:
+            debug_log("main_window.py:335", "Error creating right_frame", {"error": str(e)}, "H5")
+            raise
+        
+        # 右側パネル内ではpackを使用（CTkScrollableFrameとの互換性のため）
+        
+        debug_log("main_window.py:404", "Before creating scrollable_frame", {}, "H5")
         
         # スクロール可能なボタンエリア（上部）
-        scrollable_frame = ctk.CTkScrollableFrame(right_frame, fg_color="transparent")
-        scrollable_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        # CTkScrollableFrameがSegmentation faultを引き起こすため、通常のCTkFrameに変更
+        # スクロールは手動で実装するか、後で追加
+        try:
+            debug_log("main_window.py:409", "Using CTkFrame instead of CTkScrollableFrame to avoid segfault", {}, "H5")
+            scrollable_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+            debug_log("main_window.py:411", "scrollable_frame (CTkFrame) created", {}, "H5")
+            
+            debug_log("main_window.py:413", "Before scrollable_frame.pack()", {}, "H5")
+            scrollable_frame.pack(fill="both", expand=True, padx=0, pady=0)
+            debug_log("main_window.py:415", "scrollable_frame.pack() completed", {}, "H5")
+        except Exception as e:
+            debug_log("main_window.py:417", "Error creating scrollable_frame", {"error": str(e)}, "H5")
+            raise
+        except:
+            debug_log("main_window.py:420", "Unexpected error creating scrollable_frame", {}, "H5")
+            raise
+        
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        debug_log("main_window.py:423", "Before adding File section", {}, "H4")
         
         # === File セクション ===
         self._add_section_header(scrollable_frame, "📁 ファイル")
@@ -332,17 +471,35 @@ class App(ctk.CTk):
         self._add_separator(scrollable_frame)
         self._add_button(scrollable_frame, "🚪 終了", self.destroy, "secondary")
         
+        debug_log("main_window.py:434", "File section added", {}, "H4")
+        
         # === Edit セクション ===
-        self._add_section_header(scrollable_frame, "✏️ 編集")
-        self._add_button(scrollable_frame, "📁 新規フォルダ (Ctrl+Shift+N)", self.cmd_new_folder, "success")
-        self._add_button(scrollable_frame, "🔖 新規ブックマーク (Ctrl+N)", self.cmd_new_bookmark, "success")
-        self._add_separator(scrollable_frame)
-        self._add_button(scrollable_frame, "✏️ 名前を変更 (F2)", self.cmd_rename, "primary")
-        self._add_button(scrollable_frame, "🔗 URLを編集", self.cmd_edit_url, "primary")
-        self._add_separator(scrollable_frame)
-        self._add_button(scrollable_frame, "📦 フォルダに移動", self.cmd_move_to_folder, "secondary")
-        self._add_button(scrollable_frame, "⬆️ 上に移動 (Ctrl+Up)", self.cmd_move_up, "secondary")
-        self._add_button(scrollable_frame, "🗑️ 削除 (Delete)", self.cmd_delete, "danger")
+        debug_log("main_window.py:447", "Before adding Edit section", {}, "H4")
+        try:
+            debug_log("main_window.py:449", "Calling _add_section_header for Edit", {}, "H4")
+            self._add_section_header(scrollable_frame, "✏️ 編集")
+            debug_log("main_window.py:451", "_add_section_header for Edit completed", {}, "H4")
+            
+            debug_log("main_window.py:453", "Before adding buttons to Edit section", {}, "H4")
+            self._add_button(scrollable_frame, "📁 新規フォルダ (Ctrl+Shift+N)", self.cmd_new_folder, "success")
+            debug_log("main_window.py:455", "First button added", {}, "H4")
+            
+            self._add_button(scrollable_frame, "🔖 新規ブックマーク (Ctrl+N)", self.cmd_new_bookmark, "success")
+            debug_log("main_window.py:458", "Second button added", {}, "H4")
+            
+            self._add_separator(scrollable_frame)
+            debug_log("main_window.py:461", "Separator added", {}, "H4")
+            
+            self._add_button(scrollable_frame, "✏️ 名前を変更 (F2)", self.cmd_rename, "primary")
+            self._add_button(scrollable_frame, "🔗 URLを編集", self.cmd_edit_url, "primary")
+            self._add_separator(scrollable_frame)
+            self._add_button(scrollable_frame, "📦 フォルダに移動", self.cmd_move_to_folder, "secondary")
+            self._add_button(scrollable_frame, "⬆️ 上に移動 (Ctrl+Up)", self.cmd_move_up, "secondary")
+            self._add_button(scrollable_frame, "🗑️ 削除 (Delete)", self.cmd_delete, "danger")
+            debug_log("main_window.py:470", "Edit section added", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:472", "Error adding Edit section", {"error": str(e)}, "H4")
+            raise
         
         # === Tools - 並び替え・整理 セクション ===
         self._add_section_header(scrollable_frame, "🔄 並び替え・整理")
@@ -377,13 +534,17 @@ class App(ctk.CTk):
         self._add_button(scrollable_frame, "🔌 プロキシ接続をテスト", self.cmd_check_proxy, "secondary")
         
         # === Tools - その他 セクション ===
+        debug_log("main_window.py:492", "Before adding Other section", {}, "H4")
         self._add_section_header(scrollable_frame, "📊 その他")
         self._add_button(scrollable_frame, "📈 進捗チャートを表示", self.cmd_show_progress_chart, "secondary")
+        debug_log("main_window.py:495", "All sections added to scrollable_frame", {}, "H4")
         
         # 詳細パネル（下部、固定）
+        debug_log("main_window.py:498", "Before creating detail_container", {}, "H4")
         detail_container = ctk.CTkFrame(right_frame, fg_color=Colors.SURFACE, height=200)
-        detail_container.grid(row=1, column=0, sticky="ew", padx=0, pady=0)
-        detail_container.grid_propagate(False)
+        detail_container.pack(fill="x", padx=0, pady=0, side="bottom")
+        debug_log("main_window.py:501", "detail_container created and packed", {}, "H4")
+        # packではgrid_propagateは使用できないため、heightでサイズを固定
         
         detail_header = ctk.CTkLabel(
             detail_container,
@@ -393,11 +554,14 @@ class App(ctk.CTk):
             anchor="w"
         )
         detail_header.pack(fill="x", padx=10, pady=(8, 4))
+        debug_log("main_window.py:512", "detail_header created", {}, "H4")
         
         self.detail_panel = DetailPanel(detail_container)
         self.detail_panel.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        debug_log("main_window.py:516", "detail_panel created", {}, "H4")
         
         # キーバインド
+        debug_log("main_window.py:519", "Before setting key bindings", {}, "H4")
         self.bind_all("<Control-o>", lambda e: self.cmd_open())
         self.bind_all("<Control-s>", lambda e: self.cmd_save())
         self.bind_all("<Control-S>", lambda e: self.cmd_save_as())
@@ -407,34 +571,99 @@ class App(ctk.CTk):
         self.bind_all("<F2>", lambda e: self.cmd_rename())
         self.bind_all("<Control-Up>", lambda e: self.cmd_move_up())
         
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        debug_log("main_window.py:530", "Key bindings completed, before _refresh_content()", {}, "H4")
+        
         # 初期表示
         self._refresh_content()
+        debug_log("main_window.py:533", "_refresh_content() completed", {}, "H4")
+        debug_log("main_window.py:534", "_build_ui() completed successfully", {}, "H4")
     
     def _add_section_header(self, parent, text: str):
         """セクションヘッダーを追加"""
-        header = ctk.CTkLabel(
-            parent,
-            text=text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
-        header.pack(fill="x", padx=10, pady=(12, 4))
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        try:
+            debug_log("main_window.py:562", "_add_section_header entry", {"text": text[:30]}, "H4")
+            header = ctk.CTkLabel(
+                parent,
+                text=text,
+                font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD),
+                text_color=Colors.TEXT_PRIMARY,
+                anchor="w"
+            )
+            debug_log("main_window.py:572", "CTkLabel created", {}, "H4")
+            header.pack(fill="x", padx=10, pady=(12, 4))
+            debug_log("main_window.py:574", "header.pack() completed", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:576", "Error in _add_section_header", {"error": str(e)}, "H4")
+            raise
     
     def _add_button(self, parent, text: str, command, variant: str = "primary"):
         """ボタンを追加（統一されたスタイル）"""
-        btn = StyledButton(
-            parent,
-            text=text,
-            command=command,
-            variant=variant
-        )
-        btn.pack(fill="x", padx=10, pady=2)
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        try:
+            debug_log("main_window.py:589", "_add_button entry", {"text": text[:30], "variant": variant}, "H4")
+            btn = StyledButton(
+                parent,
+                text=text,
+                command=command,
+                variant=variant
+            )
+            debug_log("main_window.py:597", "StyledButton created", {}, "H4")
+            btn.pack(fill="x", padx=10, pady=2)
+            debug_log("main_window.py:599", "btn.pack() completed", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:601", "Error in _add_button", {"error": str(e)}, "H4")
+            raise
     
     def _add_separator(self, parent):
         """セパレータを追加"""
-        sep = ctk.CTkFrame(parent, height=1, fg_color=Colors.BORDER)
-        sep.pack(fill="x", padx=10, pady=6)
+        # #region agent log
+        import json
+        from datetime import datetime
+        def debug_log(loc, msg, data=None, hid=None):
+            try:
+                with open("/home/kei/PythonProject/NeoBookMarkManager/.cursor/debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":hid,"location":loc,"message":msg,"data":data or {},"timestamp":int(datetime.now().timestamp()*1000)}) + "\n")
+            except: pass
+        # #endregion
+        
+        try:
+            debug_log("main_window.py:614", "_add_separator entry", {}, "H4")
+            sep = ctk.CTkFrame(parent, height=1, fg_color=Colors.BORDER)
+            debug_log("main_window.py:616", "CTkFrame separator created", {}, "H4")
+            sep.pack(fill="x", padx=10, pady=6)
+            debug_log("main_window.py:618", "sep.pack() completed", {}, "H4")
+        except Exception as e:
+            debug_log("main_window.py:620", "Error in _add_separator", {"error": str(e)}, "H4")
+            raise
 
     def _toggle_view_mode(self):
         """ビューモードの切り替え"""
@@ -498,6 +727,25 @@ class App(ctk.CTk):
 
     def _refresh_content(self):
         """コンテンツ表示を更新（カードまたはリスト）"""
+        # スクロール位置と選択状態を保存
+        scroll_position = None
+        selected_node_ids = set()
+        
+        try:
+            # スクロール位置を取得
+            if hasattr(self.cards_frame, '_parent_canvas'):
+                canvas = self.cards_frame._parent_canvas
+                if canvas:
+                    scroll_position = canvas.canvasy(0)
+        except Exception as e:
+            self.logger.debug(f"Failed to get scroll position: {e}")
+        
+        # 選択されているノードのIDを保存（ノードオブジェクトのIDを使用）
+        for card in self.selected_cards:
+            if card in self.card_to_node:
+                node = self.card_to_node[card]
+                selected_node_ids.add(id(node))
+        
         # 既存のアイテムを削除
         for item in list(self.card_to_node.keys()):
             item.destroy()
@@ -513,6 +761,31 @@ class App(ctk.CTk):
             self._render_cards()
         else:
             self._render_list()
+        
+        # スクロール位置と選択状態を復元
+        try:
+            # スクロール位置を復元
+            if scroll_position is not None:
+                if hasattr(self.cards_frame, '_parent_canvas'):
+                    canvas = self.cards_frame._parent_canvas
+                    if canvas:
+                        # yview_scrollは'pixels'をサポートしていないため、yview_movetoを使用
+                        # scroll_positionはピクセル単位なので、全体の高さに対する比率に変換
+                        canvas.update_idletasks()  # レイアウトを更新
+                        total_height = canvas.winfo_height()
+                        if total_height > 0:
+                            ratio = scroll_position / total_height
+                            canvas.yview_moveto(max(0, min(1, ratio)))
+        except Exception as e:
+            self.logger.debug(f"Failed to restore scroll position: {e}")
+        
+        # 選択状態を復元
+        if selected_node_ids:
+            for card, node in self.card_to_node.items():
+                if id(node) in selected_node_ids:
+                    self.selected_cards.add(card)
+                    if hasattr(card, 'set_selected'):
+                        card.set_selected(True)
 
     def _render_cards(self):
         """カードビューで表示 - Premium Design"""
@@ -600,8 +873,9 @@ class App(ctk.CTk):
                 for child in w.winfo_children():
                     children.append(child)
                     children.extend(get_all_children(child))
-            except:
-                pass
+            except Exception as e:
+                # ウィジェットが破棄されている場合など
+                self.logger.debug(f"Failed to get children of widget: {e}")
             return children
         
         # 親ウィジェットと全子ウィジェットのリスト
@@ -634,8 +908,9 @@ class App(ctk.CTk):
                                 self.y_root = orig.y_root
                         proxy_event = EventProxy(event, parent_x, parent_y)
                         self.drag_manager.start_drag(parent_widget, node, proxy_event)
-                    except:
+                    except Exception as e:
                         # 変換に失敗した場合は元のイベントを使用
+                        self.logger.debug(f"Failed to convert widget coordinates, using original event: {e}")
                         self.drag_manager.start_drag(parent_widget, node, event)
                 else:
                     # 親ウィジェットから開始した場合はそのまま
@@ -678,7 +953,7 @@ class App(ctk.CTk):
             if hasattr(self.folder_tree, '_reorder_tree_items'):
                 self.folder_tree._reorder_tree_items(self.current_folder)
     
-    def _on_card_click(self, node: Node):
+    def _on_card_click(self, node: Node, event=None):
         """カードがクリックされたとき"""
         # ブックマークがツリービューからクリックされた場合、親フォルダを表示
         if node.type == "bookmark" and node.parent:
@@ -699,13 +974,31 @@ class App(ctk.CTk):
             self._update_detail_panel(node)
             return
         
+        # イベントからキー状態を取得（Ctrl/Cmdキーの判定）
+        # event.state のビット: 0x0004 = Control (Windows/Linux), 0x0001 = Shift, 0x0008 = Alt
+        # macOSでは Command キーは通常 0x0004 として扱われる（tkinterの実装による）
+        is_ctrl_or_cmd = False
+        if event and hasattr(event, 'state'):
+            # Control キー（Windows/Linux）または Command キー（macOS）
+            is_ctrl_or_cmd = bool(event.state & 0x0004)
+        
         # 選択状態を切り替え（Ctrl/Cmdキーで複数選択）
         if card in self.selected_cards:
-            self.selected_cards.remove(card)
-            card.set_selected(False)
+            # 既に選択されている場合、Ctrl/Cmdキーが押されていれば選択解除
+            if is_ctrl_or_cmd:
+                self.selected_cards.remove(card)
+                card.set_selected(False)
+            else:
+                # Ctrl/Cmdキーが押されていない場合は、既存の選択をクリアして再選択
+                for c in self.selected_cards:
+                    c.set_selected(False)
+                self.selected_cards.clear()
+                self.selected_cards.add(card)
+                card.set_selected(True)
         else:
-            # Ctrl/Cmdキーが押されていない場合は、既存の選択をクリア
-            if not (self._get_key_state() & 0x0004):  # Controlキー
+            # 選択されていない場合
+            if not is_ctrl_or_cmd:
+                # Ctrl/Cmdキーが押されていない場合は、既存の選択をクリア
                 for c in self.selected_cards:
                     c.set_selected(False)
                 self.selected_cards.clear()
@@ -725,10 +1018,6 @@ class App(ctk.CTk):
             except Exception as e:
                 self.logger.error(f"Failed to open URL: {e}")
     
-    def _get_key_state(self):
-        """現在のキー状態を取得（簡易版）"""
-        # 実際の実装では、イベントから取得する必要がある
-        return 0
     
     def _update_detail_panel(self, node: Optional[Node]):
         """詳細パネルを更新"""
@@ -940,7 +1229,7 @@ class App(ctk.CTk):
         index_node(self.root_node)
     
     def _apply_search(self, query: str):
-        """検索を適用"""
+        """検索を適用（完全一致方式に変更して性能向上）"""
         if not query:
             self._refresh_content()
             return
@@ -948,14 +1237,17 @@ class App(ctk.CTk):
         query_lower = query.lower()
         search_words = [word for word in re.split(r'\W+', query_lower) if word]
         
-        matching_nodes = set()
-        for i, word in enumerate(search_words):
-            found_nodes = set()
-            for term, nodes in self.search_index.items():
-                if term.startswith(word):
-                    found_nodes.update(nodes)
-            if i == 0:
-                matching_nodes = found_nodes
+        if not search_words:
+            self._refresh_content()
+            return
+        
+        # 完全一致方式：検索語がインデックスのキーに完全一致する場合のみマッチ
+        # これにより全走査を避け、O(1)のルックアップが可能
+        matching_nodes = None
+        for word in search_words:
+            found_nodes = self.search_index.get(word, set())
+            if matching_nodes is None:
+                matching_nodes = found_nodes.copy()
             else:
                 matching_nodes.intersection_update(found_nodes)
         
@@ -1138,7 +1430,8 @@ class App(ctk.CTk):
                     with open(sidecar, 'r', encoding='utf-8') as rf:
                         rules = json.load(rf)
                         rules_path = sidecar
-                except Exception:
+                except Exception as e:
+                    self.logger.warning(f"Failed to load rules file '{sidecar}': {e}")
                     rules = None
             
             # 検索インデックス構築（プログレスバー表示中に完了させる）
@@ -1308,34 +1601,47 @@ class App(ctk.CTk):
             messagebox.showinfo("Move to Folder", "移動するアイテムを選択してください。")
             return
         
-        # フォルダ選択ダイアログ（簡易版）
-        folder_nodes = []
-        def find_folders(node, path):
-            if node in selected_nodes:
-                return
-            if node.type == 'folder':
-                folder_nodes.append((path, node))
-                for child in node.children:
-                    find_folders(child, path + [node.title])
+        # フォルダ選択ダイアログを表示
+        dialog = FolderSelectDialog(self, self.root_node, exclude_nodes=selected_nodes)
+        self.wait_window(dialog)
         
-        find_folders(self.root_node, [])
-        
-        if not folder_nodes:
-            messagebox.showinfo("Move to Folder", "移動先のフォルダがありません。")
+        target_folder = dialog.result
+        if not target_folder:
+            # ユーザーがキャンセルした場合
             return
         
-        # 簡易的なフォルダ選択（実際にはより良いUIが必要）
-        folder_names = [" / ".join(path[1:] + [node.title]) or "Bookmarks Bar" for path, node in folder_nodes]
-        # ここでは最初のフォルダを選択（実際の実装ではダイアログが必要）
-        if folder_nodes:
-            target_folder = folder_nodes[0][1]
-            for node in selected_nodes:
-                if node.parent:
-                    node.parent.children.remove(node)
-                target_folder.append(node)
+        # 選択したアイテムを移動
+        moved_count = 0
+        for node in selected_nodes:
+            # 自分自身や親フォルダへの移動はスキップ
+            if node == target_folder or (node.parent and node.parent == target_folder):
+                continue
+            
+            # 移動先が移動対象の子孫フォルダでないことを確認
+            is_descendant = False
+            current = target_folder.parent
+            while current:
+                if current == node:
+                    is_descendant = True
+                    break
+                current = current.parent
+            
+            if is_descendant:
+                continue
+            
+            # 移動実行
+            if node.parent:
+                node.parent.children.remove(node)
+            target_folder.append(node)
+            moved_count += 1
+        
+        if moved_count > 0:
+            self._build_search_index()
             self._refresh_content()
             self.folder_tree.refresh(self.root_node)
-            messagebox.showinfo("Move to Folder", f"{len(selected_nodes)}個のアイテムを移動しました。")
+            messagebox.showinfo("Move to Folder", f"{moved_count}個のアイテムを移動しました。")
+        else:
+            messagebox.showinfo("Move to Folder", "移動できるアイテムがありませんでした。")
     
     def cmd_move_up(self):
         """選択したアイテムを一つ上の階層に移動"""
@@ -1446,7 +1752,8 @@ class App(ctk.CTk):
         """URLからドメインを取得"""
         try:
             return urlparse(url).netloc.lower()
-        except:
+        except Exception as e:
+            self.logger.debug(f"Failed to parse URL domain from '{url}': {e}")
             return ""
     
     def _default_rules(self):
@@ -1579,7 +1886,8 @@ class App(ctk.CTk):
         
         try:
             pretty = json.dumps(self.rules, ensure_ascii=False, indent=2)
-        except Exception:
+        except Exception as e:
+            self.logger.error(f"Failed to serialize rules to JSON: {e}", exc_info=True)
             pretty = "{}"
         text_widget.insert("1.0", pretty)
         

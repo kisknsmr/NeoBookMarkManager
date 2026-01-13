@@ -134,7 +134,7 @@ class BookmarkCard(StyledCard):
     def _on_click_handler(self, event):
         """Click event propagation"""
         if self.on_click:
-            self.on_click(self.node)
+            self.on_click(self.node, event)
     
     def _on_double_click_handler(self, event):
         if self.on_double_click:
@@ -245,7 +245,7 @@ class BookmarkRow(ctk.CTkFrame):
     
     def _on_click_handler(self, event):
         if self.on_click:
-            self.on_click(self.node)
+            self.on_click(self.node, event)
     
     def _on_double_click_handler(self, event):
         if self.on_double_click:
@@ -409,7 +409,7 @@ class FolderTree(ctk.CTkFrame):
                 self.on_folder_select(node)
         else:
             if self.on_bookmark_click:
-                self.on_bookmark_click(node)
+                self.on_bookmark_click(node, event)
     
     def _on_double_click(self, event):
         """ダブルクリック時のイベント"""
