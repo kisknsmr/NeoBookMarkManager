@@ -97,7 +97,7 @@ class StyledButton(ctk.CTkButton):
             "text": text,
             "command": command,
             "font": Typography.create_button_font(),  # Noto Sans JP 18px Medium
-            "height": 40,
+            "height": 36,
             "corner_radius": Elevation.RADIUS_M,
         }
         

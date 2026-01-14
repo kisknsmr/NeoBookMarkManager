@@ -172,15 +172,15 @@ class Typography:
     # === Type Scale - 日本語UI最適化（Noto Sans JP用に+2px）===
     # 注: 日本語可読性を重視、Noto Sans JPに最適化
     
-    # 見出し（24-28px / SemiBold）+2px
-    HEADLINE_LARGE = 28        # 大見出し
-    HEADLINE_MEDIUM = 26       # 中見出し
-    HEADLINE_SMALL = 24        # 小見出し
+    # 見出し（より強調）：サイズを微増して視覚的な階層を明確化
+    HEADLINE_LARGE = 30        # 大見出し
+    HEADLINE_MEDIUM = 28       # 中見出し
+    HEADLINE_SMALL = 26        # 小見出し
     
-    # セクション見出し（19-21px / Medium）+2px
-    TITLE_LARGE = 21           # セクション大
-    TITLE_MEDIUM = 20          # セクション標準
-    TITLE_SMALL = 19           # セクション小
+    # セクション見出し（強め）
+    TITLE_LARGE = 22           # セクション大
+    TITLE_MEDIUM = 21          # セクション標準
+    TITLE_SMALL = 20           # セクション小
     
     # 本文（16px / Regular） - 可読性を重視して16px基準に調整
     BODY_LARGE = 16            # 本文大
@@ -216,7 +216,7 @@ class Typography:
         """見出しフォント: 26px / SemiBold（Noto Sans JP優先）"""
         return FontLoader.create_font(
             family="Noto Sans JP",
-            size=Typography.HEADLINE_MEDIUM,  # 26px
+            size=Typography.HEADLINE_LARGE,  # 30px
             weight=Typography.WEIGHT_BOLD
         )
     
@@ -225,8 +225,8 @@ class Typography:
         """セクション見出しフォント: 20px / Medium（Noto Sans JP優先）"""
         return FontLoader.create_font(
             family="Noto Sans JP",
-            size=Typography.TITLE_MEDIUM,     # 20px
-            weight=Typography.WEIGHT_MEDIUM
+            size=Typography.TITLE_LARGE,     # 22px
+            weight=Typography.WEIGHT_BOLD
         )
     
     @staticmethod
@@ -260,15 +260,15 @@ class Typography:
     # 注: 新規コードでは create_*_font() メソッドを使用すること
     FONT_HEADLINE = {
         "family": FAMILY_UI,      # Noto Sans JP
-        "size": HEADLINE_MEDIUM,  # 26px
+        "size": HEADLINE_LARGE,  # 30px
         "weight": WEIGHT_BOLD,    # SemiBold相当
     }
     
     # セクション見出し: 19-21px / Medium
     FONT_SECTION = {
         "family": FAMILY_UI,      # Noto Sans JP
-        "size": TITLE_MEDIUM,     # 20px
-        "weight": WEIGHT_MEDIUM,  # Medium相当
+        "size": TITLE_LARGE,     # 22px
+        "weight": WEIGHT_BOLD,  # Boldにして強調
     }
     
     # 本文: 17-18px / Regular
@@ -303,10 +303,10 @@ class Fonts:
     FAMILY_FALLBACK = "Noto Sans JP"  # 日本語フォールバック
     
     # サイズは日本語UI最適化（Noto Sans JP用: +2px）
-    SIZE_XL = Typography.HEADLINE_MEDIUM  # 26px
-    SIZE_L = Typography.TITLE_LARGE       # 21px
-    SIZE_M = Typography.BODY_LARGE        # 15px
-    SIZE_S = Typography.BODY_MEDIUM       # 15px
+    SIZE_XL = Typography.HEADLINE_LARGE  # 30px
+    SIZE_L = Typography.TITLE_LARGE       # 22px
+    SIZE_M = Typography.BODY_LARGE        # 16px
+    SIZE_S = Typography.BODY_MEDIUM       # 16px
     SIZE_XS = Typography.LABEL_LARGE      # 16px
     SIZE_XXS = Typography.LABEL_MEDIUM    # 15px（最小）
     
@@ -389,7 +389,7 @@ class ComponentStyles:
         "hover_color": ColorTokens.PRIMARY_HOVER,
         "text_color": ColorTokens.ON_PRIMARY,
         "corner_radius": Elevation.RADIUS_M,
-        "height": 40,
+        "height": 36,
         "font_size": Typography.LABEL_LARGE,
         "font_weight": Typography.WEIGHT_MEDIUM,
     }
@@ -402,7 +402,7 @@ class ComponentStyles:
         "border_width": 1,
         "border_color": ColorTokens.PRIMARY,
         "corner_radius": Elevation.RADIUS_M,
-        "height": 40,
+        "height": 36,
     }
     
     # Text Button
@@ -411,7 +411,7 @@ class ComponentStyles:
         "hover_color": ColorTokens.HOVER_OVERLAY,
         "text_color": ColorTokens.PRIMARY,
         "corner_radius": Elevation.RADIUS_M,
-        "height": 40,
+        "height": 36,
     }
     
     # Input Field
@@ -420,7 +420,7 @@ class ComponentStyles:
         "border_color": ColorTokens.BORDER_DEFAULT,
         "text_color": ColorTokens.TEXT_PRIMARY,
         "corner_radius": Elevation.RADIUS_S,
-        "height": 40,
+        "height": 36,
     }
     
     # Card
