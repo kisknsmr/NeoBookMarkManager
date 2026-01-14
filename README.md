@@ -49,6 +49,44 @@ Bookmark Studioは、Chrome等のブラウザからエクスポートしたブ�
 
 ## デザイン方針
 
+### Material Design 3 (Material You) Dark Theme
+
+Bookmark Studioは、Google Material Design 3（Material You）の原則に基づいた商用品質のUIを提供します。
+
+#### 🎨 デザイン特徴
+
+- **Surface階層**: 奥行きを表現する3層のSurface設計（#121212 → #1E1E1E → #232323）
+- **カラーシステム**: Primary (#BB86FC) / Secondary (#03DAC6) の統一されたカラーパレット
+- **WCAG AA準拠**: 4.5:1以上のコントラスト比を保証、アクセシビリティ対応
+- **8dp Grid**: Material Design 3の基準に準拠したスペーシングシステム
+
+#### ✍️ タイポグラフィ
+
+**カスタムフォント自動適用**:
+- **Inter** (Variable Font) - メインUI（推奨）
+- **Roboto** (Variable Font) - Material Design標準
+- **Noto Sans JP** (Variable Font) - 日本語対応
+
+`fonts/`フォルダに配置されたVariable Fontファイルを自動検出・適用します。
+
+**フォントサイズ規定**:
+- 見出し: 20-24px / SemiBold
+- セクション見出し: 16-18px / Medium
+- 本文: 14-15px / Regular
+- 補助テキスト: 12-13px / Regular
+- **最小サイズ: 12px**（可読性保証）
+
+**行間設計**:
+- 長時間利用を前提とした快適な行間（1.3～1.8）
+- 適切な余白により、視認性と操作性を向上
+
+#### 🎯 設計思想
+
+1. **長時間利用への最適化**: 目に優しいダークテーマと適切な行間・余白
+2. **プロフェッショナル品質**: 商用アプリケーションとして通用する完成度
+3. **アクセシビリティ**: WCAG AA準拠、誰もが使いやすいUI
+4. **拡張性**: 将来的なライトテーマ切替を想定した設計
+
 ### Modern Light Theme: Material Design 3 + Apple UI
 
 本アプリケーションは、**Material Design 3（MD3）**と**Apple UI**のデザイン原則を融合した、モダンで洗練されたライトテーマを採用しています。
@@ -337,6 +375,117 @@ python3 main.py
 本ツールは正式リリース前の開発版です。重要なブックマークの整理前には、**必ず元ファイルのバックアップを取ってください**。
 
 実行ログはコンソールと`bookmark_editor.log`に出力されます。問題が発生した場合は、ログファイルを確認してください。
+
+---
+
+## アーキテクチャ（v2.0+）
+
+### 非同期化・パフォーマンス最適化
+
+v2.0 では、以下の改善を実施しました：
+
+#### 1. ワーカーマネージャー（`gui/worker_manager.py`）
+
+- **ThreadPoolExecutor 導入**: I/O 処理（HTTP リクエスト、ファイル読み込み等）をバックグラウンドスレッドで実行
+- **コールバック型の非同期処理**: `worker.submit(func, callback=ui_callback)` でタスク投入し、完了時に UI スレッドで `callback` を実行
+- **UI スレッドブロック防止**: ネットワーク待機時に UI が応答不能になることを防止
+
+#### 2. 画像最適化（`core/image_utils.py`）
+
+- **自動縮小**: bytes から PIL Image に変換する際、指定サイズ（デフォルト 256x256）以下にリサイズ
+- **LRU キャッシュ**: 同じバイト列の画像処理結果をメモリキャッシュし、重複処理を削減
+- **PhotoImage 参照保持**: `App._image_refs` または `ImageCache` で参照を保持し、ガベージコレクションを防止
+  - **重要**: 生成した `ImageTk.PhotoImage` は何らかのオブジェクトが参照を保持していないと、即座に消滅して画像が表示されません
+
+#### 3. 設定管理の拡張（`core/storage.py`）
+
+```python
+# ConfigManager に汎用 get/set メソッドを追加
+config_manager.get(section, option, fallback=None)
+config_manager.set(section, option, value)
+```
+
+- **プロンプトファイル場所の統一**: `[Prompt]` セクションで `prompt_file` を指定可能
+- **フォールバック対応**: 設定値が見つからない場合のデフォルト値対応
+
+#### 4. I/O 堅牢化（`services/workers.py`）
+
+- **timeout 設定**: すべての `requests.get()` に timeout を明示的に設定
+- **例外細分化**: `Timeout`, `ConnectionError`, `HTTPError` を分けて処理
+- **リトライ対応**: 指数バックオフでリトライ
+- **404 非リトライ**: HTTP 404 の場合はリトライせず即座に終了
+- **HTML キャッシュ**: LRU キャッシュでプレビュー抽出結果を保存
+
+#### 5. UI 状態管理（`gui/ui_state.py`）
+
+- **Observer パターン**: 状態変更時にコールバック実行
+- **軽量ストア**: ノード選択、フォルダ展開、ソート順などを集中管理
+
+#### 6. 仮想化リスト（`gui/virtual_list.py`）- プロトタイプ
+
+- Canvas ベースの遅延レンダリング
+- スクロール時に見える範囲のアイテムのみ描画（将来の本格実装に向けたプロトタイプ）
+
+### アーキテクチャ図
+
+```
+main.py
+  ↓
+gui/main_window.py (App シム)
+  ├─ gui/worker_manager.py (ThreadPoolExecutor ラッパー)
+  ├─ gui/ui_state.py (状態管理 - self.ui_state)
+  ├─ gui/command_handlers.py (メニューコマンド)
+  ├─ gui/menu_bar.py (メニュー組み立て)
+  ├─ core/storage.py (ConfigManager 拡張)
+  ├─ core/image_utils.py (画像キャッシュ)
+  └─ services/workers.py (非同期 I/O)
+```
+
+### 使用例
+
+#### ワーカーでバックグラウンド実行
+
+```python
+# In gui/command_handlers.py
+app.worker.submit(
+    services.workers.fetch_preview,
+    url,
+    callback=lambda res: app.apply_preview_to_node(node_id, res)
+)
+
+# UI スレッドで定期的にポーリング
+app.after(100, app.worker.poll_results)
+```
+
+#### 画像キャッシュ
+
+```python
+# In gui/components.py
+photo = core.image_utils.bytes_to_tkphoto(img_bytes, max_width=256)
+app.cache_image(node_id, photo)  # GC 対策
+component.config(image=photo)
+```
+
+#### UI 状態管理
+
+```python
+# In gui/command_handlers.py
+app.ui_state.set_sort_order("alphabetical")
+app.ui_state.select_node(node_id)
+```
+
+#### ConfigManager 経由のプロンプト読み込み
+
+```python
+# In services/ai_classifier.py
+prompt_path = self.config_manager.get('Prompt', 'prompt_file', fallback='prompt.txt')
+```
+
+### 段階的移行戦略
+
+- **既存コード互換性を維持**: `gui/main_window.py` の App クラスは従来の呼び出しを受け付ける
+- **新規コンポーネントは新 API を使用**: 新しい `gui/command_handlers.py`, `gui/menu_bar.py` は `gui/worker_manager.py`, `gui/ui_state.py` を活用
+- **将来的な完全置換**: コンポーネント単位で段階的に新アーキテクチャに移行可能
 
 ---
 

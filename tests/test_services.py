@@ -68,4 +68,5 @@ class TestWorkers:
         msg_type, data = q.get()
         assert msg_type == 'preview'
         url, info = data
-        assert "Could not load preview" in info["title"]
+        # Modified workers.py returns "Not Found (404)" for 404 errors
+        assert "Not Found (404)" in info["title"]

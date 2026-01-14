@@ -88,7 +88,7 @@ class FolderSelectDialog(ctk.CTkToplevel):
         label.pack(pady=(10, 5), padx=10, anchor="w")
         
         # スクロール可能なフレーム（CustomTkinterのみを使用）
-        scrollable_frame = ctk.CTkScrollableFrame(self, fg_color=Colors.SURFACE)
+        scrollable_frame = ctk.CTkScrollableFrame(self, fg_color=Colors.SURFACE_1)
         scrollable_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
         # 選択されたインデックスを保持
@@ -102,7 +102,7 @@ class FolderSelectDialog(ctk.CTkToplevel):
                 text=path_str,
                 command=lambda idx=i, n=node: self._on_folder_selected(idx, n),
                 anchor="w",
-                fg_color=Colors.SURFACE if i != self.selected_index else Colors.PRIMARY,
+                fg_color=Colors.SURFACE_1 if i != self.selected_index else Colors.PRIMARY,
                 text_color=Colors.TEXT_PRIMARY if i != self.selected_index else "white",
                 hover_color=Colors.HOVER_BG if i != self.selected_index else Colors.PRIMARY_HOVER,
                 height=32
@@ -122,7 +122,7 @@ class FolderSelectDialog(ctk.CTkToplevel):
         # 以前の選択を解除
         if self.selected_index is not None and self.selected_index < len(self.folder_buttons):
             self.folder_buttons[self.selected_index].configure(
-                fg_color=Colors.SURFACE,
+                fg_color=Colors.SURFACE_1,
                 text_color=Colors.TEXT_PRIMARY
             )
         
@@ -155,7 +155,7 @@ class FolderSelectDialog(ctk.CTkToplevel):
             text="キャンセル",
             command=self._on_cancel,
             width=100,
-            fg_color=Colors.SURFACE,
+            fg_color=Colors.SURFACE_1,
             text_color=Colors.TEXT_PRIMARY,
             hover_color=Colors.HOVER_BG
         )

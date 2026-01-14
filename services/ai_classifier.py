@@ -69,11 +69,35 @@ class AIBookmarkClassifier:
             return ""
 
     def _load_external_prompt(self) -> str:
-        """外部の prompt.txt から指示文を読み込む（中身はコードに入れない）"""
-        prompt_path = "prompt.txt"
-        if not os.path.exists(prompt_path):
-            self._log_immediate(f"CRITICAL: {prompt_path} が見つかりません。")
-            raise FileNotFoundError(f"外部プロンプトファイル '{prompt_path}' が必要です。")
+        """
+        外部の prompt.txt から指示文を読み込む（ConfigManager 経由）。
+        
+        優先順位:
+          1. ConfigManager の [Prompt] セクションの prompt_file 設定
+          2. config/prompt.txt（新しいデフォルト位置）
+          3. ルートディレクトリの prompt.txt（後方互換性のため）
+        
+        Returns:
+            プロンプト文字列
+            
+        Raises:
+            FileNotFoundError: プロンプトファイルが見つからない
+        """
+        # ConfigManager から設定を取得
+        prompt_path = self.config_manager.get('Prompt', 'prompt_file', fallback=None)
+        
+        # フォールバック：新デフォルト config/prompt.txt → 旧デフォルト prompt.txt
+        if not prompt_path or not os.path.exists(prompt_path):
+            if os.path.exists("config/prompt.txt"):
+                prompt_path = "config/prompt.txt"
+            elif os.path.exists("prompt.txt"):
+                prompt_path = "prompt.txt"
+            else:
+                self._log_immediate("CRITICAL: prompt.txt が見つかりません。")
+                raise FileNotFoundError(
+                    "外部プロンプトファイルが必要です。"
+                    "config/prompt.txt または prompt.txt を配置してください。"
+                )
 
         try:
             with open(prompt_path, "r", encoding="utf-8") as f:

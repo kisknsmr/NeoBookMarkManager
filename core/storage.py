@@ -142,6 +142,50 @@ class ConfigManager:
         terms_str = self.config.get('Classifier', 'priority_terms')
         return [term.strip() for term in terms_str.split(',') if term.strip()]
 
+    def get(self, section: str, option: str, fallback: Optional[Any] = None) -> Optional[Any]:
+        """
+        汎用的に config.ini から値を取得する。
+        
+        Args:
+            section: セクション名
+            option: オプション名
+            fallback: デフォルト値（セクション/オプションが存在しない場合に返す）
+            
+        Returns:
+            取得した値、またはfallback
+        """
+        try:
+            if self.config.has_section(section) and self.config.has_option(section, option):
+                return self.config.get(section, option)
+            return fallback
+        except Exception as e:
+            logger.warning(f"Error getting config [{section}].{option}: {e}")
+            return fallback
+
+    def set(self, section: str, option: str, value: Any) -> bool:
+        """
+        汎用的に config.ini に値を設定・保存する。
+        
+        Args:
+            section: セクション名
+            option: オプション名
+            value: 設定値
+            
+        Returns:
+            成功時True、失敗時False
+        """
+        try:
+            if not self.config.has_section(section):
+                self.config.add_section(section)
+            self.config.set(section, option, str(value))
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+            logger.info(f"Set [{section}].{option} = {value}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting config [{section}].{option}: {e}")
+            return False
+
 
 from .model import NetscapeBookmarkParser, export_netscape_html, Node
 

@@ -66,11 +66,12 @@ class BookmarkCard(StyledCard):
     
     def _build_card(self):
         """カードのUIを構築 - Compact Style"""
-        self.configure(fg_color=Colors.SURFACE)
+        # カードはやや高めのサーフェスで強調
+        self.configure(fg_color=Colors.SURFACE_3)
         
         # ヘッダー（ファビコン + タイトル）
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=8, pady=(8, 4))
+        header.pack(fill="x", padx=Dims.SPACING_L, pady=(Dims.SPACING_S, 4))
         
         # ファビコン
         self.favicon_image = get_favicon_image(self.node.icon, 16)
@@ -113,9 +114,10 @@ class BookmarkCard(StyledCard):
             text_color=Colors.TEXT_SECONDARY,
             anchor="w"
         )
-        self.url_label.pack(pady=(0, 8), padx=8, fill="x")
+        self.url_label.pack(pady=(0, 8), padx=Dims.SPACING_L, fill="x")
         
-        self.default_fg_color = Colors.SURFACE
+        # デフォルト背景色を保存
+        self.default_fg_color = Colors.SURFACE_3
     
     def _bind_events(self):
         """イベントバインディング"""
@@ -168,7 +170,7 @@ class BookmarkRow(ctk.CTkFrame):
         self.on_double_click = on_double_click
         self.is_selected = False
         self.favicon_image = None
-        self.default_fg_color = Colors.SURFACE
+        self.default_fg_color = Colors.SURFACE_2
         
         self._build_row()
         self._bind_events()
@@ -178,7 +180,7 @@ class BookmarkRow(ctk.CTkFrame):
         self.configure(
             corner_radius=Dims.RADIUS_S,
             border_width=0,
-            fg_color=Colors.SURFACE,
+            fg_color=Colors.SURFACE_2,
             height=32
         )
         self.pack_propagate(False)
@@ -187,10 +189,10 @@ class BookmarkRow(ctk.CTkFrame):
         self.favicon_image = get_favicon_image(self.node.icon, 14)
         if self.favicon_image:
             icon_label = ctk.CTkLabel(self, image=self.favicon_image, text="")
-            icon_label.pack(side="left", padx=(8, 6))
+            icon_label.pack(side="left", padx=(Dims.SPACING_L, 6))
         else:
             icon_label = ctk.CTkLabel(self, text="🔗", font=ctk.CTkFont(size=11))
-            icon_label.pack(side="left", padx=(8, 6))
+            icon_label.pack(side="left", padx=(Dims.SPACING_L, 6))
         
         # タイトル
         title_text = self.node.title or "(Untitled)"
@@ -226,9 +228,16 @@ class BookmarkRow(ctk.CTkFrame):
             anchor="e",
             width=150
         )
-        self.url_label.pack(side="right", padx=(4, 8))
+        self.url_label.pack(side="right", padx=(4, Dims.SPACING_L))
         
-        self.default_fg_color = Colors.SURFACE
+        self.default_fg_color = Colors.SURFACE_2
+
+        # 目に見えるが控えめな区切り線を追加
+        try:
+            divider = ctk.CTkFrame(self, height=1, fg_color=Colors.DIVIDER)
+            divider.pack(fill="x", side="bottom", padx=(Dims.SPACING_L, 0))
+        except Exception:
+            pass
 
     def _bind_events(self):
         """イベントバインディング"""
@@ -262,9 +271,10 @@ class BookmarkRow(ctk.CTkFrame):
     def set_selected(self, selected: bool):
         self.is_selected = selected
         if selected:
-            self.configure(fg_color=Colors.SELECTED_BG)
+            # 紫のアウトライン + 高いサーフェス背景
+            self.configure(border_width=2, border_color=Colors.PRIMARY, fg_color=Colors.SURFACE_3)
         else:
-            self.configure(fg_color=self.default_fg_color)
+            self.configure(border_width=0, border_color=Colors.BORDER, fg_color=self.default_fg_color)
 
 
 class FolderTree(ctk.CTkFrame):
@@ -301,6 +311,11 @@ class FolderTree(ctk.CTkFrame):
                        rowheight=22)
         style.configure("Treeview.Heading", 
                        font=(Fonts.FAMILY, 10, "bold"))
+        # スクロールバーの細身スタイル（幅を指定）
+        try:
+            style.configure("Thin.Vertical.TScrollbar", troughcolor=Colors.SURFACE, background=Colors.SURFACE_3)
+        except Exception:
+            pass
         
         # Treeview作成（タイトルとURL列）
         self.tree = ttk.Treeview(
@@ -316,9 +331,9 @@ class FolderTree(ctk.CTkFrame):
         self.tree.column("#0", width=350, minwidth=200)
         self.tree.column("url", width=250, minwidth=100)
         
-        # スクロールバー
-        scrollbar_y = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        scrollbar_x = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
+        # スクロールバー（幅を細めに設定） - ttkで幅指定が利用できない環境があるためtk.Scrollbarを使用
+        scrollbar_y = tk.Scrollbar(self, orient="vertical", command=self.tree.yview, width=8)
+        scrollbar_x = tk.Scrollbar(self, orient="horizontal", command=self.tree.xview, width=8)
         self.tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
         
         # レイアウト

@@ -6,73 +6,32 @@
 
 import sys
 import os
+import pytest
 
 # プロジェクトルートをパスに追加（tests/から親ディレクトリへ）
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+# テストケース定義
+TEST_CASES = [
+    ("core.logger", "from core.logger import logger"),
+    ("core.storage", "from core.storage import ConfigManager, load_bookmarks, save_bookmarks"),
+    ("core.model", "from core.model import Node, NetscapeBookmarkParser"),
+    ("core.utils", "from core.utils import is_valid_url, LRUCache"),
+    ("services.workers", "from services.workers import fetch_preview, fix_titles"),
+    ("gui.dialogs", "from gui.dialogs import CustomPromptDialog"),
+    ("gui.components", "from gui.components import BookmarkCard"),
+    ("gui.theme", "from gui.theme import Colors, Fonts"),
+]
+
+@pytest.mark.parametrize("module_name,import_statement", TEST_CASES)
 def test_import(module_name, import_statement):
     """モジュールのインポートをテストする"""
     try:
         exec(import_statement)
-        print(f"[OK] {module_name}: OK")
         return True
     except ImportError as e:
-        print(f"[NG] {module_name}: インポートエラー - {e}")
-        return False
+        pytest.fail(f"[NG] {module_name}: インポートエラー - {e}")
     except Exception as e:
-        print(f"[NG] {module_name}: エラー - {e}")
-        return False
-
-def main():
-    print("=" * 60)
-    print("依存関係のインポートテスト")
-    print("=" * 60)
-    print()
-    
-    results = []
-    
-    # 標準ライブラリ
-    print("【標準ライブラリ】")
-    results.append(test_import("tkinter", "import tkinter as tk"))
-    results.append(test_import("queue", "import queue"))
-    results.append(test_import("threading", "import threading"))
-    print()
-    
-    # 外部ライブラリ
-    print("【外部ライブラリ】")
-    results.append(test_import("requests", "import requests"))
-    results.append(test_import("beautifulsoup4", "from bs4 import BeautifulSoup"))
-    results.append(test_import("google-generativeai", "import google.generativeai as genai"))
-    results.append(test_import("PIL (Pillow)", "from PIL import Image"))
-    results.append(test_import("customtkinter", "import customtkinter as ctk"))
-    print()
-    
-    # プロジェクトモジュール
-    print("【プロジェクトモジュール】")
-    results.append(test_import("core.storage", "from core.storage import ConfigManager"))
-    results.append(test_import("core.utils", "from core.utils import AppConstants"))
-    results.append(test_import("core.model", "from core.model import Node"))
-    results.append(test_import("services.ai_classifier", "from services.ai_classifier import AIBookmarkClassifier"))
-    results.append(test_import("services.workers", "from services.workers import fetch_preview"))
-    results.append(test_import("gui.main_window", "from gui.main_window import App"))
-    print()
-    
-    # 結果サマリー
-    print("=" * 60)
-    passed = sum(results)
-    total = len(results)
-    print(f"結果: {passed}/{total} テストが成功しました")
-    
-    if passed == total:
-        print("[SUCCESS] すべての依存関係が正常にインストールされています！")
-        return 0
-    else:
-        print("[WARNING] 一部の依存関係が不足しています。")
-        print("   以下のコマンドでインストールしてください：")
-        print("   ./scripts/install_dependencies.sh")
-        return 1
-
-if __name__ == "__main__":
-    sys.exit(main())
+        pytest.fail(f"[NG] {module_name}: エラー - {e}")
 
