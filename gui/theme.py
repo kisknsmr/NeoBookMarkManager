@@ -431,41 +431,391 @@ class ComponentStyles:
         "border_color": ColorTokens.BORDER_DEFAULT,
     }
 
+# ============================================================
+# PySide6 ヘルパー関数
+# ============================================================
+
+def get_stylesheet() -> str:
+    """
+    PySide6 (Qt6) 用のアプリ全体スタイルシート (QSS) を生成します。
+    
+    Material Design 3 ダークテーマの色定義を使用し、
+    QSS形式でCSS互換のスタイル定義を返します。
+    
+    Returns:
+        str: QSS形式のスタイルシート文字列
+    
+    Usage:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication([])
+        app.setStyleSheet(get_stylesheet())
+    """
+    stylesheet = f"""
+    /* ============ Global Styles ============ */
+    QWidget {{
+        background-color: {ColorTokens.SURFACE_0};
+        color: {ColorTokens.TEXT_PRIMARY};
+    }}
+    
+    /* ============ Main Window ============ */
+    QMainWindow {{
+        background-color: {ColorTokens.SURFACE_0};
+    }}
+    
+    /* ============ Buttons ============ */
+    QPushButton {{
+        background-color: {ColorTokens.PRIMARY};
+        color: {ColorTokens.ON_PRIMARY};
+        border: none;
+        border-radius: {Elevation.RADIUS_M}px;
+        padding: 8px 16px;
+        font-size: {Typography.LABEL_LARGE}px;
+        font-weight: bold;
+        min-height: 36px;
+    }}
+    
+    QPushButton:hover {{
+        background-color: {ColorTokens.PRIMARY_HOVER};
+    }}
+    
+    QPushButton:pressed {{
+        background-color: {ColorTokens.PRIMARY_PRESSED};
+    }}
+    
+    QPushButton:disabled {{
+        background-color: {ColorTokens.PRIMARY_DISABLED};
+        color: {ColorTokens.TEXT_DISABLED};
+    }}
+    
+    /* Secondary Button */
+    QPushButton#secondaryButton {{
+        background-color: transparent;
+        color: {ColorTokens.PRIMARY};
+        border: 1px solid {ColorTokens.PRIMARY};
+        border-radius: {Elevation.RADIUS_M}px;
+        padding: 8px 16px;
+        min-height: 36px;
+    }}
+    
+    QPushButton#secondaryButton:hover {{
+        background-color: {ColorTokens.SURFACE_3};
+    }}
+    
+    /* ============ Input Fields ============ */
+    QLineEdit, QTextEdit, QPlainTextEdit {{
+        background-color: {ColorTokens.SURFACE_2};
+        color: {ColorTokens.TEXT_PRIMARY};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_S}px;
+        padding: 8px 12px;
+        min-height: 36px;
+    }}
+    
+    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+        border: 2px solid {ColorTokens.BORDER_FOCUSED};
+        padding: 7px 11px;
+    }}
+    
+    /* ============ Frames / Panels ============ */
+    QFrame {{
+        background-color: {ColorTokens.SURFACE_1};
+        border-radius: {Elevation.RADIUS_S}px;
+    }}
+    
+    QFrame#card {{
+        background-color: {ColorTokens.SURFACE_2};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_M}px;
+        padding: 16px;
+    }}
+    
+    /* ============ Labels ============ */
+    QLabel {{
+        color: {ColorTokens.TEXT_PRIMARY};
+        background-color: transparent;
+    }}
+    
+    QLabel#secondary {{
+        color: {ColorTokens.TEXT_SECONDARY};
+    }}
+    
+    QLabel#disabled {{
+        color: {ColorTokens.TEXT_DISABLED};
+    }}
+    
+    /* ============ Scroll Area ============ */
+    QScrollArea {{
+        background-color: {ColorTokens.SURFACE_0};
+        border: none;
+    }}
+    
+    /* ============ Scroll Bar ============ */
+    QScrollBar:vertical {{
+        background-color: {ColorTokens.SURFACE_1};
+        width: 12px;
+        border-radius: 6px;
+    }}
+    
+    QScrollBar::handle:vertical {{
+        background-color: {ColorTokens.SURFACE_3};
+        border-radius: 6px;
+        min-height: 20px;
+    }}
+    
+    QScrollBar::handle:vertical:hover {{
+        background-color: {ColorTokens.SURFACE_4};
+    }}
+    
+    QScrollBar:horizontal {{
+        background-color: {ColorTokens.SURFACE_1};
+        height: 12px;
+        border-radius: 6px;
+    }}
+    
+    QScrollBar::handle:horizontal {{
+        background-color: {ColorTokens.SURFACE_3};
+        border-radius: 6px;
+        min-width: 20px;
+    }}
+    
+    QScrollBar::handle:horizontal:hover {{
+        background-color: {ColorTokens.SURFACE_4};
+    }}
+    
+    QScrollBar::sub-line, QScrollBar::add-line {{
+        border: none;
+        background: none;
+    }}
+    
+    /* ============ Tabs ============ */
+    QTabWidget::pane {{
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+    }}
+    
+    QTabBar::tab {{
+        background-color: {ColorTokens.SURFACE_1};
+        color: {ColorTokens.TEXT_SECONDARY};
+        padding: 8px 16px;
+        border-radius: {Elevation.RADIUS_S}px {Elevation.RADIUS_S}px 0 0;
+        margin-right: 4px;
+    }}
+    
+    QTabBar::tab:selected {{
+        background-color: {ColorTokens.SURFACE_3};
+        color: {ColorTokens.TEXT_PRIMARY};
+        border-bottom: 2px solid {ColorTokens.PRIMARY};
+    }}
+    
+    QTabBar::tab:hover {{
+        background-color: {ColorTokens.SURFACE_2};
+    }}
+    
+    /* ============ Menu / Combo Box ============ */
+    QComboBox {{
+        background-color: {ColorTokens.SURFACE_2};
+        color: {ColorTokens.TEXT_PRIMARY};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_S}px;
+        padding: 6px 12px;
+        min-height: 30px;
+    }}
+    
+    QComboBox:focus {{
+        border: 2px solid {ColorTokens.BORDER_FOCUSED};
+        padding: 5px 11px;
+    }}
+    
+    QComboBox::drop-down {{
+        border: none;
+        padding-right: 8px;
+    }}
+    
+    QComboBox::down-arrow {{
+        image: url(none);
+        width: 0;
+    }}
+    
+    /* ============ Menu ============ */
+    QMenu {{
+        background-color: {ColorTokens.SURFACE_2};
+        color: {ColorTokens.TEXT_PRIMARY};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_S}px;
+    }}
+    
+    QMenu::item:selected {{
+        background-color: {ColorTokens.SURFACE_3};
+    }}
+    
+    /* ============ Dialog ============ */
+    QDialog {{
+        background-color: {ColorTokens.SURFACE_3};
+    }}
+    
+    /* ============ Tree & Table Views ============ */
+    QTreeView, QTableView, QListView {{
+        background-color: {ColorTokens.SURFACE_1};
+        color: {ColorTokens.TEXT_PRIMARY};
+        alternate-background-color: {ColorTokens.SURFACE_2};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_S}px;
+    }}
+    
+    QTreeView::item:selected, QTableView::item:selected, QListView::item:selected {{
+        background-color: {ColorTokens.SELECTED_BG};
+        color: {ColorTokens.TEXT_PRIMARY};
+    }}
+    
+    QTreeView::item:hover, QTableView::item:hover, QListView::item:hover {{
+        background-color: {ColorTokens.HOVER_OVERLAY};
+    }}
+    
+    /* ============ Header ============ */
+    QHeaderView::section {{
+        background-color: {ColorTokens.SURFACE_2};
+        color: {ColorTokens.TEXT_PRIMARY};
+        padding: 4px;
+        border: none;
+        border-right: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-bottom: 1px solid {ColorTokens.BORDER_DEFAULT};
+    }}
+    
+    /* ============ Spin Box & Slider ============ */
+    QSpinBox, QDoubleSpinBox {{
+        background-color: {ColorTokens.SURFACE_2};
+        color: {ColorTokens.TEXT_PRIMARY};
+        border: 1px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: {Elevation.RADIUS_S}px;
+        padding: 4px;
+        min-height: 30px;
+    }}
+    
+    QSlider::groove:horizontal {{
+        background-color: {ColorTokens.SURFACE_2};
+        border: none;
+        height: 4px;
+        border-radius: 2px;
+    }}
+    
+    QSlider::handle:horizontal {{
+        background-color: {ColorTokens.PRIMARY};
+        border: none;
+        width: 16px;
+        margin: -6px 0;
+        border-radius: 8px;
+    }}
+    
+    QSlider::handle:horizontal:hover {{
+        background-color: {ColorTokens.PRIMARY_HOVER};
+    }}
+    
+    /* ============ Check Box & Radio Button ============ */
+    QCheckBox, QRadioButton {{
+        color: {ColorTokens.TEXT_PRIMARY};
+        background-color: transparent;
+        spacing: 8px;
+    }}
+    
+    QCheckBox::indicator, QRadioButton::indicator {{
+        width: 16px;
+        height: 16px;
+        border: 2px solid {ColorTokens.BORDER_DEFAULT};
+        border-radius: 3px;
+        background-color: {ColorTokens.SURFACE_2};
+    }}
+    
+    QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+        background-color: {ColorTokens.PRIMARY};
+        border-color: {ColorTokens.PRIMARY};
+    }}
+    
+    QRadioButton::indicator {{
+        border-radius: 8px;
+    }}
+    """
+    
+    return stylesheet.strip()
+
+
+def get_qss_color(color_hex: str) -> str:
+    """
+    HEX色コードをQSS形式で返します（#付き）。
+    
+    Args:
+        color_hex: HEX色コード（#付き または #なし）
+        例: "#BB86FC" or "BB86FC"
+    
+    Returns:
+        str: QSS形式の色コード（#付き）
+    """
+    if not color_hex.startswith("#"):
+        return f"#{color_hex}"
+    return color_hex
+
+
+def create_qfont(family: str = None, size: int = 12, bold: bool = False) -> "QFont":
+    """
+    PySide6の QFont オブジェクトを簡単に作成するヘルパー関数です。
+    
+    Args:
+        family: フォントファミリー名（デフォルト: Typography.FAMILY_UI）
+        size: フォントサイズ（デフォルト: 12）
+        bold: 太字にするか（デフォルト: False）
+    
+    Returns:
+        QFont: 設定済みのQFontオブジェクト
+    
+    Usage:
+        from PySide6.QtGui import QFont
+        from gui.theme import create_qfont
+        
+        font = create_qfont(family="Noto Sans JP", size=16, bold=True)
+        label.setFont(font)
+    """
+    from PySide6.QtGui import QFont
+    
+    if family is None:
+        family = Typography.FAMILY_UI
+    
+    font = QFont(family, size)
+    font.setBold(bold)
+    return font
+
+
 # === 使用例（コメント） ===
 """
-# Primary Button の作成例
-button = ctk.CTkButton(
-    parent,
-    text="保存",
-    fg_color=ColorTokens.PRIMARY,
-    hover_color=ColorTokens.PRIMARY_HOVER,
-    text_color=ColorTokens.ON_PRIMARY,
-    corner_radius=Elevation.RADIUS_M,
-    height=40,
-    font=ctk.CTkFont(
-        family=Typography.FAMILY_PRIMARY,
-        size=Typography.LABEL_LARGE,
-        weight=Typography.WEIGHT_MEDIUM
-    )
-)
+# PySide6 での使用例
 
-# Input Field の作成例
-entry = ctk.CTkEntry(
-    parent,
-    fg_color=ColorTokens.SURFACE_2,
-    border_color=ColorTokens.BORDER_DEFAULT,
-    text_color=ColorTokens.TEXT_PRIMARY,
-    corner_radius=Elevation.RADIUS_S,
-    height=40
-)
+from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QFont
+from gui.theme import get_stylesheet, create_qfont, ColorTokens
 
-# Card の作成例
-card = ctk.CTkFrame(
-    parent,
-    fg_color=ColorTokens.SURFACE_2,
-    corner_radius=Elevation.RADIUS_M,
-    border_width=1,
-    border_color=ColorTokens.BORDER_DEFAULT
-)
+# アプリケーション初期化
+app = QApplication([])
+app.setStyleSheet(get_stylesheet())
+
+# ウィンドウ作成
+window = QMainWindow()
+window.setWindowTitle("Bookmark Manager")
+
+# 中央ウィジェット
+central_widget = QWidget()
+layout = QVBoxLayout(central_widget)
+
+# ラベル
+label = QLabel("Welcome to NeoBookMarkManager")
+label.setFont(create_qfont(family="Noto Sans JP", size=18, bold=True))
+layout.addWidget(label)
+
+# ボタン
+button = QPushButton("保存")
+button.setFont(create_qfont(size=14, bold=True))
+layout.addWidget(button)
+
+# ウィンドウに設定
+window.setCentralWidget(central_widget)
+window.show()
+
+app.exec()
 """
 

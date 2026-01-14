@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bookmark Studio — Mock</title>
+  <style>
+    :root{
+      /* --- Material-ish dark tokens (approx) --- */
+      --bg: #121212;              /* surface e0 */
+      --surface-1: #161616;       /* e1 */
+      --surface-2: #1e1e1e;       /* e2 */
+      --surface-3: #242424;       /* e3 */
+      --surface-4: #2a2a2a;       /* e4 */
+      --border: rgba(255,255,255,.08);
+      --border-strong: rgba(255,255,255,.12);
+
+      --text: rgba(255,255,255,.92);
+      --text-2: rgba(255,255,255,.72);
+      --text-3: rgba(255,255,255,.50);
+
+      --primary: #bb86fc;
+      --on-primary: #1b1026;
+      --danger: #ef6a7a;
+      --on-danger: #2a0b10;
+      --success: #5bd28f;
+      --shadow: 0 10px 24px rgba(0,0,0,.40);
+
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 10px;
+
+      --space-1: 8px;
+      --space-2: 12px;
+      --space-3: 16px;
+      --space-4: 24px;
+      --space-5: 32px;
+
+      --font: system-ui, "Noto Sans JP", "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+    }
+
+    *{ box-sizing: border-box; }
+    html, body{ height:100%; }
+    body{
+      margin:0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      letter-spacing: .2px;
+    }
+
+    /* --- App frame --- */
+    .app{
+      height: 100vh;
+      display:flex;
+      flex-direction: column;
+    }
+
+    /* Top bar */
+    .topbar{
+      height: 44px;
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      padding: 0 var(--space-3);
+      background: var(--surface-1);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      font-weight: 650;
+      font-size: 14px;
+    }
+    .chip{
+      font-size: 12px;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text-2);
+      background: rgba(255,255,255,.02);
+    }
+    .top-actions{
+      display:flex;
+      align-items:center;
+      gap: var(--space-2);
+    }
+
+    /* Layout */
+    .content{
+      flex: 1;
+      display:grid;
+      grid-template-columns: 1fr 380px;
+      gap: var(--space-3);
+      padding: var(--space-3);
+      min-height:0;
+    }
+
+    /* Left panel */
+    .left{
+      display:flex;
+      flex-direction: column;
+      min-height:0;
+      gap: var(--space-3);
+    }
+
+    .workspace{
+      flex: 1;
+      min-height:0;
+      display:flex;
+      flex-direction: column;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow:hidden;
+    }
+
+    .workspace-header{
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      padding: var(--space-2) var(--space-3);
+      background: linear-gradient(to bottom, rgba(255,255,255,.03), rgba(255,255,255,.00));
+      border-bottom: 1px solid var(--border);
+    }
+
+    .workspace-title{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      font-weight: 650;
+      font-size: 14px;
+    }
+
+    .view-toggle{
+      display:flex;
+      align-items:center;
+      gap: var(--space-1);
+    }
+
+    .table{
+      flex:1;
+      min-height:0;
+      overflow:auto;
+      background: var(--surface-1);
+    }
+
+    table{
+      width:100%;
+      border-collapse: collapse;
+    }
+
+    thead th{
+      position: sticky;
+      top:0;
+      background: var(--surface-1);
+      border-bottom: 1px solid var(--border);
+      padding: 10px var(--space-3);
+      text-align:left;
+      font-size: 12px;
+      color: var(--text-2);
+      font-weight: 650;
+    }
+
+    tbody td{
+      padding: 12px var(--space-3);
+      border-bottom: 1px solid rgba(255,255,255,.05);
+      font-size: 13px;
+      color: var(--text);
+      vertical-align: middle;
+    }
+
+    tbody tr:hover{
+      background: rgba(187,134,252,.08);
+    }
+
+    tbody tr.selected{
+      background: rgba(187,134,252,.14);
+      outline: 2px solid rgba(187,134,252,.35);
+      outline-offset: -2px;
+    }
+
+    .folder{
+      color: var(--text);
+      font-weight: 650;
+    }
+    .muted{
+      color: var(--text-2);
+      font-weight: 500;
+    }
+
+    /* Bottom search */
+    .searchbar{
+      display:flex;
+      align-items:center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+    }
+
+    .input{
+      flex:1;
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text);
+    }
+
+    .input input{
+      border:none;
+      outline:none;
+      background: transparent;
+      color: var(--text);
+      width:100%;
+      font-size: 13px;
+    }
+
+    /* Right sidebar */
+    .right{
+      min-height:0;
+      display:flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    .sidebar{
+      flex: 1;
+      min-height:0;
+      background: var(--surface-1);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow:auto;
+      padding: var(--space-3);
+    }
+
+    .section{
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-3);
+      margin-bottom: var(--space-3);
+    }
+
+    .section-header{
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      margin-bottom: var(--space-2);
+    }
+
+    .section-title{
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-2);
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      display:flex;
+      gap: 8px;
+      align-items:center;
+    }
+
+    .section-note{
+      font-size: 12px;
+      color: var(--text-3);
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2);
+      margin-top: var(--space-2);
+    }
+
+    /* Buttons */
+    .btn{
+      height: 44px;
+      padding: 0 14px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.03);
+      color: var(--text);
+      font-weight: 650;
+      font-size: 13px;
+      display:flex;
+      align-items:center;
+      justify-content: center;
+      gap: 8px;
+      cursor:pointer;
+      user-select:none;
+    }
+    .btn:hover{ border-color: var(--border-strong); background: rgba(255,255,255,.05); }
+    .btn:active{ transform: translateY(1px); }
+
+    .btn.primary{
+      background: rgba(187,134,252,.95);
+      border-color: rgba(187,134,252,.65);
+      color: var(--on-primary);
+    }
+    .btn.primary:hover{ background: rgba(187,134,252,1); }
+
+    .btn.tonal{
+      background: rgba(187,134,252,.12);
+      border-color: rgba(187,134,252,.28);
+      color: var(--text);
+    }
+
+    .btn.outline{
+      background: transparent;
+      border-color: rgba(187,134,252,.35);
+      color: rgba(187,134,252,1);
+    }
+
+    .btn.danger{
+      background: rgba(239,106,122,.90);
+      border-color: rgba(239,106,122,.60);
+      color: var(--on-danger);
+    }
+
+    .btn.ghost{
+      background: transparent;
+      border-color: var(--border);
+      color: var(--text-2);
+      font-weight: 600;
+    }
+
+    .btn.full{ grid-column: 1 / -1; }
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.03);
+      color: var(--text-2);
+      font-size: 12px;
+    }
+
+    /* Details */
+    .details{
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-3);
+    }
+
+    .field{
+      margin-top: var(--space-2);
+    }
+    .label{
+      font-size: 12px;
+      color: var(--text-2);
+      font-weight: 650;
+      margin-bottom: 8px;
+    }
+    .textbox{
+      width:100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    .textbox:focus{
+      border-color: rgba(187,134,252,.55);
+      box-shadow: 0 0 0 3px rgba(187,134,252,.18);
+    }
+
+    /* Small helpers */
+    .icon{ width: 16px; height:16px; display:inline-block; }
+    .icon svg{ width: 16px; height:16px; }
+
+    @media (max-width: 1100px){
+      .content{ grid-template-columns: 1fr; }
+      .right{ display:none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="brand">
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M7 7h10v10H7V7Z" stroke="currentColor" stroke-width="2" opacity=".9"/>
+            <path d="M4 10V6a2 2 0 0 1 2-2h4" stroke="currentColor" stroke-width="2" opacity=".55"/>
+            <path d="M20 14v4a2 2 0 0 1-2 2h-4" stroke="currentColor" stroke-width="2" opacity=".55"/>
+          </svg>
+        </span>
+        Bookmark Studio
+        <span class="chip">Material Dark Mock</span>
+      </div>
+      <div class="top-actions">
+        <span class="pill">2画面モード</span>
+        <span class="pill">表示: List</span>
+        <button class="btn outline" style="height:36px;border-radius:999px; padding:0 12px;">すべて展開</button>
+        <button class="btn ghost" style="height:36px;border-radius:999px; padding:0 12px;">すべて縮小</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- Left: main workspace -->
+      <div class="left">
+        <div class="workspace">
+          <div class="workspace-header">
+            <div class="workspace-title">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M4 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="2" opacity=".85"/>
+                </svg>
+              </span>
+              Bookmarks
+              <span class="chip">1,248</span>
+            </div>
+            <div class="view-toggle">
+              <button class="btn ghost" style="height:34px;border-radius:10px;">Tree</button>
+              <button class="btn tonal" style="height:34px;border-radius:10px;">List</button>
+            </div>
+          </div>
+
+          <div class="table" role="region" aria-label="Bookmarks table">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:50%">タイトル</th>
+                  <th>URL</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="selected">
+                  <td><span class="folder">📁 Work</span> <span class="muted">/ Reports</span></td>
+                  <td class="muted">—</td>
+                </tr>
+                <tr>
+                  <td>📄 Q1 KPI Dashboard</td>
+                  <td class="muted">https://example.com/kpi</td>
+                </tr>
+                <tr>
+                  <td>📄 Design Guidelines</td>
+                  <td class="muted">https://example.com/design</td>
+                </tr>
+                <tr>
+                  <td><span class="folder">📁 Personal</span> <span class="muted">/ Learning</span></td>
+                  <td class="muted">—</td>
+                </tr>
+                <tr>
+                  <td>📄 Python GUI Tips</td>
+                  <td class="muted">https://example.com/python-gui</td>
+                </tr>
+                <tr>
+                  <td>📄 Noto Sans JP Spec</td>
+                  <td class="muted">https://example.com/noto</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="searchbar">
+          <div class="input" aria-label="Search">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="2" opacity=".75"/>
+                <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" opacity=".75"/>
+              </svg>
+            </span>
+            <input placeholder="ブックマークを検索…" />
+          </div>
+          <button class="btn outline" style="height:44px;">List View</button>
+        </div>
+      </div>
+
+      <!-- Right: actions sidebar -->
+      <div class="right">
+        <div class="sidebar" aria-label="Actions">
+
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">📁 ファイル</div>
+              <div class="section-note">頻度: 高</div>
+            </div>
+            <div class="grid">
+              <button class="btn ghost">別名保存</button>
+              <button class="btn primary">保存</button>
+              <button class="btn tonal full">開く</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">✏️ 編集</div>
+              <div class="section-note">頻度: 中</div>
+            </div>
+            <div class="grid">
+              <button class="btn tonal">新規フォルダ</button>
+              <button class="btn tonal">新規ブックマーク</button>
+              <button class="btn ghost">名前変更</button>
+              <button class="btn ghost">URL編集</button>
+              <button class="btn ghost">移動</button>
+              <button class="btn danger">削除</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">🧹 整理</div>
+              <div class="section-note">頻度: 低</div>
+            </div>
+            <div class="grid">
+              <button class="btn outline">タイトル順</button>
+              <button class="btn outline">ドメイン順</button>
+              <button class="btn ghost">上へ移動</button>
+              <button class="btn ghost">重複削除</button>
+              <button class="btn ghost full">フォルダ統合</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">✨ AI分類</div>
+              <div class="section-note">頻度: 高</div>
+            </div>
+            <div class="grid">
+              <button class="btn primary">スマート分類</button>
+              <button class="btn outline">ルール分類</button>
+              <button class="btn ghost">ルール編集</button>
+              <button class="btn ghost">上限設定</button>
+              <button class="btn ghost full">タイトル取得</button>
+            </div>
+          </div>
+
+          <div class="details">
+            <div class="section-title" style="margin-bottom:10px;">ℹ️ 詳細</div>
+            <div class="field">
+              <div class="label">URL</div>
+              <input class="textbox" value="https://example.com/kpi" />
+            </div>
+            <div class="field">
+              <div class="label">Preview</div>
+              <div style="height:90px;border-radius:12px;border:1px dashed var(--border); background: rgba(255,255,255,.02); display:flex;align-items:center;justify-content:center;color:var(--text-3); font-size:12px;">
+                プレビュー領域（任意）
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tiny mock interaction: click a row to select
+    const rows = document.querySelectorAll('tbody tr');
+    rows.forEach(r => r.addEventListener('click', () => {
+      rows.forEach(x => x.classList.remove('selected'));
+      r.classList.add('selected');
+    }));
+  </script>
+</body>
+</html>

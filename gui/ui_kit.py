@@ -1,5 +1,5 @@
 """
-Material Design 3 準拠 UI コンポーネント
+PySide6 Material Design 3 準拠 UI コンポーネント
 
 【設計原則】
 - ColorTokens, Typography, Elevation を使用
@@ -7,13 +7,21 @@ Material Design 3 準拠 UI コンポーネント
 - バリアント（primary, secondary, text）を明確に区別
 - インタラクション状態（hover, pressed, disabled）を実装
 - アクセシビリティを考慮
+
+【PySide6移行】
+- QPushButton: StyledButton として実装
+- QFrame: StyledCard として実装
+- QSS スタイルシートで統一的に管理
 """
 
-import customtkinter as ctk
 from typing import Optional, Callable
-from gui.theme import ColorTokens, Typography, Elevation, Spacing, Colors
+from PySide6.QtWidgets import QPushButton, QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QCursor
+from gui.theme import ColorTokens, Typography, Elevation, Spacing, Colors, create_qfont
 
-class StyledButton(ctk.CTkButton):
+
+class StyledButton(QPushButton):
     """
     Material Design 3 準拠ボタン
     カスタムフォント自動適用
@@ -26,102 +34,203 @@ class StyledButton(ctk.CTkButton):
     - success: 成功アクション（保存等）
     """
     
-    def __init__(self, parent, text: str, command: Optional[Callable] = None, 
+    def __init__(self, parent: Optional[QWidget] = None, text: str = "", 
+                 command: Optional[Callable] = None, 
                  variant: str = "primary", **kwargs):
         
-        # バリアント別スタイル定義
-        # 【設計方針】アクセントカラーは primary と danger のみ
-        # その他はニュートラルカラーで統一し、視覚的な混乱を削減
+        super().__init__(text, parent)
         
+        # カスタムフォント適用
+        self.setFont(create_qfont(family="Noto Sans JP", size=14, bold=True))
+        
+        # バリアント別スタイル定義
         if variant == "primary":
             # メインアクション（開く、保存、分類実行など）
-            style = {
-                "fg_color": Colors.PRIMARY,
-                "hover_color": Colors.PRIMARY_HOVER,
-                "text_color": Colors.ON_PRIMARY,
-                "border_width": 0,
-            }
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ColorTokens.PRIMARY};
+                    color: {ColorTokens.ON_PRIMARY};
+                    border: none;
+                    border-radius: {Elevation.RADIUS_M}px;
+                    padding: 8px 16px;
+                    min-height: 36px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: {ColorTokens.PRIMARY_HOVER};
+                }}
+                QPushButton:pressed {{
+                    background-color: {ColorTokens.PRIMARY_PRESSED};
+                }}
+                QPushButton:disabled {{
+                    background-color: {ColorTokens.PRIMARY_DISABLED};
+                    color: {ColorTokens.TEXT_DISABLED};
+                }}
+            """)
+        
         elif variant == "secondary":
             # 補助アクション（ニュートラル、アウトライン）
-            style = {
-                "fg_color": "transparent",
-                "hover_color": Colors.SURFACE_3,
-                "text_color": Colors.TEXT_PRIMARY,
-                "border_width": 1,
-                "border_color": Colors.BORDER,
-            }
-        elif variant == "ghost":
-            # 控えめなアクション（背景なし）
-            style = {
-                "fg_color": "transparent",
-                "hover_color": Colors.SURFACE_3,
-                "text_color": Colors.TEXT_SECONDARY,
-                "border_width": 0,
-            }
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {ColorTokens.TEXT_PRIMARY};
+                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                    border-radius: {Elevation.RADIUS_M}px;
+                    padding: 7px 15px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background-color: {ColorTokens.SURFACE_3};
+                    border: 1px solid {ColorTokens.BORDER_FOCUSED};
+                }}
+                QPushButton:pressed {{
+                    background-color: {ColorTokens.SURFACE_2};
+                }}
+            """)
+        
         elif variant == "text":
             # テキストのみ
-            style = {
-                "fg_color": "transparent",
-                "hover_color": Colors.HOVER_OVERLAY,
-                "text_color": Colors.TEXT_PRIMARY,
-                "border_width": 0,
-            }
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {ColorTokens.TEXT_PRIMARY};
+                    border: none;
+                    border-radius: {Elevation.RADIUS_M}px;
+                    padding: 8px 16px;
+                }}
+                QPushButton:hover {{
+                    background-color: {ColorTokens.HOVER_OVERLAY};
+                }}
+                QPushButton:pressed {{
+                    background-color: {ColorTokens.PRESSED_OVERLAY};
+                }}
+            """)
+        
         elif variant == "danger":
             # 破壊的アクション（削除のみ）
-            style = {
-                "fg_color": Colors.DANGER,
-                "hover_color": "#E07585",
-                "text_color": Colors.ON_PRIMARY,
-                "border_width": 0,
-            }
-        elif variant == "success":
-            # 成功アクション（ニュートラルに変更）
-            style = {
-                "fg_color": Colors.SURFACE_3,
-                "hover_color": Colors.SURFACE_4,
-                "text_color": Colors.TEXT_PRIMARY,
-                "border_width": 0,
-            }
-        else:
-            # デフォルトはsecondary（ニュートラル）
-            style = {
-                "fg_color": "transparent",
-                "hover_color": Colors.SURFACE_3,
-                "text_color": Colors.TEXT_PRIMARY,
-                "border_width": 1,
-                "border_color": Colors.BORDER,
-            }
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {ColorTokens.ERROR};
+                    color: {ColorTokens.ON_PRIMARY};
+                    border: none;
+                    border-radius: {Elevation.RADIUS_M}px;
+                    padding: 8px 16px;
+                    min-height: 36px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: #E07585;
+                }}
+                QPushButton:pressed {{
+                    background-color: #CF6679;
+                }}
+            """)
         
-        # デフォルト設定（カスタムフォント使用）
-        default_config = {
-            "text": text,
-            "command": command,
-            "font": Typography.create_button_font(),  # Noto Sans JP 18px Medium
-            "height": 36,
-            "corner_radius": Elevation.RADIUS_M,
-        }
+        else:  # デフォルトはsecondary
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {ColorTokens.TEXT_PRIMARY};
+                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                    border-radius: {Elevation.RADIUS_M}px;
+                    padding: 7px 15px;
+                    min-height: 36px;
+                }}
+                QPushButton:hover {{
+                    background-color: {ColorTokens.SURFACE_3};
+                }}
+            """)
         
-        # スタイルをマージ
-        default_config.update(style)
+        # クリックハンドラ設定
+        if command:
+            self.clicked.connect(command)
         
-        # ユーザー指定のkwargsで上書き
-        default_config.update(kwargs)
-        
-        super().__init__(parent, **default_config)
+        # カーソル設定
+        self.setCursor(QCursor(Qt.PointingHandCursor))
 
-class StyledCard(ctk.CTkFrame):
+
+class StyledCard(QFrame):
     """
     Material Design 3 準拠カード
     
     Surface階層を表現するコンテナ
     """
-    def __init__(self, parent, **kwargs):
-        final_kwargs = {
-            "corner_radius": Elevation.RADIUS_M,
-            "fg_color": Colors.SURFACE_2,
-            "border_width": 1,
-            "border_color": Colors.BORDER,
-        }
-        final_kwargs.update(kwargs)
-        super().__init__(parent, **final_kwargs)
+    def __init__(self, parent: Optional[QWidget] = None, **kwargs):
+        super().__init__(parent)
+        
+        # スタイルシート設定
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {ColorTokens.SURFACE_2};
+                border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                border-radius: {Elevation.RADIUS_M}px;
+                padding: {Spacing.M}px;
+            }}
+        """)
+        
+        # フレームスタイル
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Plain)
+
+
+class SectionHeader(QLabel):
+    """
+    セクション見出しコンポーネント
+    """
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        
+        # フォント設定
+        self.setFont(create_qfont(family="Noto Sans JP", size=18, bold=True))
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {ColorTokens.TEXT_PRIMARY};
+                background-color: transparent;
+                padding: 8px 0px;
+            }}
+        """)
+
+
+class SubHeader(QLabel):
+    """
+    小見出しコンポーネント
+    """
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        
+        # フォント設定
+        self.setFont(create_qfont(family="Noto Sans JP", size=14, bold=True))
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {ColorTokens.TEXT_SECONDARY};
+                background-color: transparent;
+                padding: 4px 0px;
+            }}
+        """)
+
+
+class BodyText(QLabel):
+    """
+    本文テキストコンポーネント
+    """
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        
+        # フォント設定
+        self.setFont(create_qfont(family="Noto Sans JP", size=13, bold=False))
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {ColorTokens.TEXT_PRIMARY};
+                background-color: transparent;
+            }}
+        """)
+        
+        # テキストの折り返し有効化
+        self.setWordWrap(True)
 

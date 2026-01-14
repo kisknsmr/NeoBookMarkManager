@@ -1,8 +1,8 @@
 # Bookmark Studio - Python Dependencies
 # Python 3.10+ required
 
-# GUI Framework
-customtkinter==5.2.2
+# GUI Framework (PySide6 - Qt6)
+PySide6==6.7.0
 
 # Image Processing (Favicon and Preview Display)
 Pillow==10.2.0
@@ -16,3 +16,7 @@ google-generativeai==0.3.2
 
 # Testing Framework (Development)
 pytest==8.2.0
+
+# Web UI (optional)
+fastapi==0.98.0
+uvicorn[standard]==0.23.0

@@ -1,11 +1,491 @@
 """
-モダンなWebアプリ風UIコンポーネント
-CustomTkinterベースのカード型レイアウトコンポーネント
-Premium Apple-inspired Design
+PySide6 モダンな UI コンポーネント
+Material Design 3 準拠のカード型レイアウトコンポーネント
+
+【設計】
+- BookmarkCard: 個別ブックマークを表示するカード
+- BookmarkRow: ブックマークの行表示（リスト用）
+- FolderTree: フォルダツリービュー
+- SearchBar: 検索バー
+- DetailPanel: ブックマーク詳細パネル
 """
 
-import customtkinter as ctk
 from typing import Optional, Callable, Dict, Any, List
+from PySide6.QtWidgets import (
+    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
+    QPushButton, QScrollArea, QListWidget, QListWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QTextEdit
+)
+from PySide6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PySide6.QtGui import QIcon, QFont, QPixmap, QCursor
+
+from core.model import Node
+from gui.theme import ColorTokens, Typography, Elevation, Spacing, Colors, create_qfont
+from gui.ui_kit import StyledButton, StyledCard, BodyText
+
+# グローバルファビコンキャッシュ（パフォーマンス向上のため）
+_favicon_cache: Dict[str, Optional[QPixmap]] = {}
+
+
+def get_favicon_image(icon_data: str, size: int = 16) -> Optional[QPixmap]:
+    """ファビコンデータから QPixmap を取得（キャッシュ付き）"""
+    if not icon_data:
+        return None
+    
+    try:
+        from PIL import Image
+        from io import BytesIO
+        import base64
+        
+        cache_key = f"{hash(icon_data)}_{size}"
+        if cache_key in _favicon_cache:
+            return _favicon_cache[cache_key]
+        
+        if icon_data.startswith('data:image'):
+            header, encoded = icon_data.split(',', 1)
+            img_data = base64.b64decode(encoded)
+            img = Image.open(BytesIO(img_data))
+            img = img.resize((size, size), Image.Resampling.LANCZOS)
+            
+            # PIL Image から QPixmap に変換
+            # PIL Image の RGB モードを QImage 経由で QPixmap に変換
+            import io
+            with io.BytesIO() as buf:
+                img.save(buf, format='PNG')
+                buf.seek(0)
+                pixmap = QPixmap()
+                pixmap.loadFromData(buf.read())
+            
+            _favicon_cache[cache_key] = pixmap
+            return pixmap
+    except Exception:
+        pass
+    
+    _favicon_cache[cache_key] = None
+    return None
+
+
+class BookmarkCard(StyledCard):
+    """
+    個別ブックマークを表示するカードコンポーネント
+    
+    シグナル:
+    - clicked: カードがクリックされた
+    - double_clicked: カードがダブルクリックされた
+    """
+    
+    clicked = pyqtSignal()
+    double_clicked = pyqtSignal()
+    
+    def __init__(self, node: Node, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.node = node
+        self.is_selected = False
+        
+        # レイアウト設定
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        
+        # ヘッダー（ファビコン + タイトル）
+        header_layout = QHBoxLayout()
+        
+        # ファビコン
+        favicon = get_favicon_image(node.icon, 20) if node.icon else None
+        if favicon:
+            icon_label = QLabel()
+            icon_label.setPixmap(favicon)
+            icon_label.setFixedSize(20, 20)
+            header_layout.addWidget(icon_label)
+        else:
+            icon_label = QLabel("🔗")
+            icon_label.setFont(create_qfont(size=14))
+            header_layout.addWidget(icon_label)
+        
+        # タイトル
+        title_label = QLabel(node.title or "Untitled")
+        title_label.setFont(create_qfont(family="Noto Sans JP", size=14, bold=True))
+        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        header_layout.addWidget(title_label, 1)
+        
+        layout.addLayout(header_layout)
+        
+        # URL
+        if node.url:
+            url_label = QLabel(node.url)
+            url_label.setFont(create_qfont(family="Noto Sans JP", size=11))
+            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_label.setWordWrap(True)
+            url_label.setMaximumHeight(30)
+            layout.addWidget(url_label)
+        
+        # 説明
+        if hasattr(node, 'description') and node.description:
+            desc_label = QLabel(node.description)
+            desc_label.setFont(create_qfont(family="Noto Sans JP", size=12))
+            desc_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            desc_label.setWordWrap(True)
+            desc_label.setMaximumHeight(40)
+            layout.addWidget(desc_label)
+        
+        layout.addStretch()
+        self.setMinimumHeight(100)
+    
+    def mousePressEvent(self, event):
+        """マウスクリックイベント"""
+        self.clicked.emit()
+        self.set_selected(True)
+    
+    def mouseDoubleClickEvent(self, event):
+        """ダブルクリックイベント"""
+        self.double_clicked.emit()
+    
+    def set_selected(self, selected: bool) -> None:
+        """選択状態を設定"""
+        self.is_selected = selected
+        if selected:
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {ColorTokens.SELECTED_BG};
+                    border: 2px solid {ColorTokens.PRIMARY};
+                    border-radius: {Elevation.RADIUS_M}px;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {ColorTokens.SURFACE_2};
+                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                    border-radius: {Elevation.RADIUS_M}px;
+                }}
+            """)
+
+
+class BookmarkRow(QFrame):
+    """
+    ブックマークの行表示（リスト用）
+    
+    シグナル:
+    - clicked: 行がクリックされた
+    - delete_requested: 削除が要求された
+    """
+    
+    clicked = pyqtSignal()
+    delete_requested = pyqtSignal()
+    
+    def __init__(self, node: Node, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.node = node
+        self.is_selected = False
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {ColorTokens.SURFACE_1};
+                border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                border-radius: {Elevation.RADIUS_S}px;
+                padding: 8px;
+            }}
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+        
+        # ファビコン
+        favicon = get_favicon_image(node.icon, 16) if node.icon else None
+        if favicon:
+            icon_label = QLabel()
+            icon_label.setPixmap(favicon)
+            icon_label.setFixedSize(16, 16)
+            layout.addWidget(icon_label)
+        else:
+            icon_label = QLabel("🔗")
+            layout.addWidget(icon_label)
+        
+        # タイトルとURL
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(2)
+        
+        title_label = QLabel(node.title or "Untitled")
+        title_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
+        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        content_layout.addWidget(title_label)
+        
+        if node.url:
+            url_label = QLabel(node.url)
+            url_label.setFont(create_qfont(family="Noto Sans JP", size=11))
+            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_label.setMaximumWidth(400)
+            content_layout.addWidget(url_label)
+        
+        layout.addLayout(content_layout, 1)
+        
+        # 削除ボタン
+        delete_btn = StyledButton(text="削除", command=self.delete_requested.emit, variant="text")
+        delete_btn.setMaximumWidth(60)
+        layout.addWidget(delete_btn)
+        
+        self.setMinimumHeight(60)
+    
+    def mousePressEvent(self, event):
+        """マウスクリックイベント"""
+        self.clicked.emit()
+        self.set_selected(True)
+    
+    def set_selected(self, selected: bool) -> None:
+        """選択状態を設定"""
+        self.is_selected = selected
+        if selected:
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {ColorTokens.SELECTED_BG};
+                    border: 2px solid {ColorTokens.PRIMARY};
+                    border-radius: {Elevation.RADIUS_S}px;
+                    padding: 8px;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {ColorTokens.SURFACE_1};
+                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                    border-radius: {Elevation.RADIUS_S}px;
+                    padding: 8px;
+                }}
+            """)
+
+
+class FolderTree(QTreeWidget):
+    """
+    フォルダツリービュー
+    
+    シグナル:
+    - item_selected: フォルダアイテムが選択された
+    - item_double_clicked: フォルダアイテムがダブルクリックされた
+    """
+    
+    item_selected = pyqtSignal(Node)
+    item_double_clicked = pyqtSignal(Node)
+    
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QTreeWidget {{
+                background-color: {ColorTokens.SURFACE_0};
+                color: {ColorTokens.TEXT_PRIMARY};
+                border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                border-radius: {Elevation.RADIUS_S}px;
+            }}
+            QTreeWidget::item:selected {{
+                background-color: {ColorTokens.SELECTED_BG};
+                color: {ColorTokens.TEXT_PRIMARY};
+            }}
+            QTreeWidget::item:hover {{
+                background-color: {ColorTokens.HOVER_OVERLAY};
+            }}
+        """)
+        
+        # ツリー設定
+        self.setHeaderHidden(True)
+        self.setAnimated(True)
+        self.setUniformRowHeights(True)
+        self.setColumnCount(1)
+        
+        # シグナル接続
+        self.itemSelectionChanged.connect(self._on_item_selected)
+        self.itemDoubleClicked.connect(self._on_item_double_clicked)
+    
+    def add_folder(self, parent_item: Optional[QTreeWidgetItem], node: Node) -> QTreeWidgetItem:
+        """フォルダアイテムを追加"""
+        item = QTreeWidgetItem(parent_item)
+        item.setText(0, node.title or "Folder")
+        item.setData(0, Qt.UserRole, node)
+        item.setIcon(0, QIcon("📁"))
+        return item
+    
+    def _on_item_selected(self):
+        """アイテム選択イベント"""
+        selected_items = self.selectedItems()
+        if selected_items:
+            node = selected_items[0].data(0, Qt.UserRole)
+            if node:
+                self.item_selected.emit(node)
+    
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        """アイテムダブルクリックイベント"""
+        node = item.data(0, Qt.UserRole)
+        if node:
+            self.item_double_clicked.emit(node)
+
+
+class SearchBar(QFrame):
+    """
+    検索バーコンポーネント
+    
+    シグナル:
+    - search_text_changed: 検索テキストが変更された
+    - search_triggered: 検索が実行された（Enterキー押下）
+    """
+    
+    search_text_changed = pyqtSignal(str)
+    search_triggered = pyqtSignal(str)
+    
+    def __init__(self, placeholder: str = "検索...", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: transparent;
+                border: none;
+            }}
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        # 検索アイコン
+        icon_label = QLabel("🔍")
+        icon_label.setFont(create_qfont(size=14))
+        layout.addWidget(icon_label)
+        
+        # 入力フィールド
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText(placeholder)
+        self.search_input.setFont(create_qfont(family="Noto Sans JP", size=13))
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {ColorTokens.SURFACE_2};
+                color: {ColorTokens.TEXT_PRIMARY};
+                border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                border-radius: {Elevation.RADIUS_S}px;
+                padding: 6px 10px;
+                min-height: 32px;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {ColorTokens.BORDER_FOCUSED};
+            }}
+        """)
+        layout.addWidget(self.search_input, 1)
+        
+        # クリアボタン
+        clear_btn = StyledButton(text="クリア", command=self._clear_search, variant="text")
+        clear_btn.setMaximumWidth(70)
+        layout.addWidget(clear_btn)
+        
+        # シグナル接続
+        self.search_input.textChanged.connect(self.search_text_changed.emit)
+        self.search_input.returnPressed.connect(self._on_search_triggered)
+    
+    def _on_search_triggered(self):
+        """検索トリガー"""
+        self.search_triggered.emit(self.search_input.text())
+    
+    def _clear_search(self):
+        """検索をクリア"""
+        self.search_input.clear()
+    
+    def get_search_text(self) -> str:
+        """検索テキストを取得"""
+        return self.search_input.text()
+    
+    def set_search_text(self, text: str) -> None:
+        """検索テキストを設定"""
+        self.search_input.setText(text)
+
+
+class DetailPanel(QScrollArea):
+    """
+    ブックマーク詳細パネル
+    
+    ブックマークの詳細情報を表示・編集するパネル
+    """
+    
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        
+        self.current_node: Optional[Node] = None
+        
+        # スタイル設定
+        self.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {ColorTokens.SURFACE_0};
+                border: 1px solid {ColorTokens.BORDER_DEFAULT};
+                border-radius: {Elevation.RADIUS_S}px;
+            }}
+        """)
+        
+        self.setWidgetResizable(True)
+        
+        # コンテンツウィジェット
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(16, 16, 16, 16)
+        self.content_layout.setSpacing(12)
+        
+        self.setWidget(self.content_widget)
+    
+    def set_node(self, node: Node) -> None:
+        """ノードを設定して詳細を表示"""
+        self.current_node = node
+        
+        # 既存ウィジェットをクリア
+        while self.content_layout.count():
+            self.content_layout.takeAt(0).widget().deleteLater()
+        
+        # タイトル
+        title_label = QLabel("タイトル:")
+        title_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
+        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        self.content_layout.addWidget(title_label)
+        
+        title_value = QLabel(node.title or "Untitled")
+        title_value.setFont(create_qfont(family="Noto Sans JP", size=13))
+        title_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+        title_value.setWordWrap(True)
+        self.content_layout.addWidget(title_value)
+        
+        # URL
+        if node.url:
+            url_label = QLabel("URL:")
+            url_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
+            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+            self.content_layout.addWidget(url_label)
+            
+            url_value = QLabel(node.url)
+            url_value.setFont(create_qfont(family="Noto Sans JP", size=11))
+            url_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_value.setWordWrap(True)
+            url_value.setCursor(QCursor(Qt.PointingHandCursor))
+            self.content_layout.addWidget(url_value)
+        
+        # 説明
+        if hasattr(node, 'description') and node.description:
+            desc_label = QLabel("説明:")
+            desc_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
+            desc_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+            self.content_layout.addWidget(desc_label)
+            
+            desc_value = QLabel(node.description)
+            desc_value.setFont(create_qfont(family="Noto Sans JP", size=12))
+            desc_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            desc_value.setWordWrap(True)
+            self.content_layout.addWidget(desc_value)
+        
+        self.content_layout.addStretch()
+    
+    def clear(self) -> None:
+        """詳細パネルをクリア"""
+        self.current_node = None
+        while self.content_layout.count():
+            self.content_layout.takeAt(0).widget().deleteLater()
+        self.content_layout.addStretch()
+
 from core.model import Node
 import base64
 from io import BytesIO

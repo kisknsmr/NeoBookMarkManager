@@ -215,8 +215,16 @@ class App(ctk.CTk):
         self.logger.setLevel(logging.WARNING)
 
     def _build_ui(self):
-        """UIを構築"""
-        # メニューバー
+        """
+        UI を HTML モックアップ構造に合わせて再構築します。
+        - 左: `self.left_panel` (FolderTree + Search + Cards)
+        - 右: `self.right_sidebar` (スクロール可能なコマンドカード群)
+        ロジック（command 等）は変更しません。
+        """
+
+        # -----------------------
+        # ルート: メニューバー（既存ロジックを保持）
+        # -----------------------
         menubar = tk.Menu(self)
         filem = tk.Menu(menubar, tearoff=0)
         filem.add_command(label="Open HTML…", command=self.cmd_open, accelerator="Ctrl+O")
@@ -225,7 +233,7 @@ class App(ctk.CTk):
         filem.add_separator()
         filem.add_command(label="Exit", command=self.destroy)
         menubar.add_cascade(label="File", menu=filem)
-        
+
         editm = tk.Menu(menubar, tearoff=0)
         editm.add_command(label="New Folder", command=self.cmd_new_folder, accelerator="Ctrl+Shift+N")
         editm.add_command(label="New Bookmark", command=self.cmd_new_bookmark, accelerator="Ctrl+N")
@@ -236,7 +244,7 @@ class App(ctk.CTk):
         editm.add_command(label="Move Up", command=self.cmd_move_up, accelerator="Ctrl+Up")
         editm.add_command(label="Delete", command=self.cmd_delete, accelerator="Delete")
         menubar.add_cascade(label="Edit", menu=editm)
-        
+
         toolsm = tk.Menu(menubar, tearoff=0)
         toolsm.add_checkbutton(label="プロキシを使用する", variable=self.use_proxy_var, onvalue=True, offvalue=False)
         toolsm.add_command(label="プロキシ接続をテスト", command=self.cmd_check_proxy)
@@ -256,95 +264,67 @@ class App(ctk.CTk):
         toolsm.add_command(label="Edit Classify Rules…", command=self.cmd_edit_rules)
         toolsm.add_command(label="Show Progress Chart", command=self.cmd_show_progress_chart)
         menubar.add_cascade(label="Tools", menu=toolsm)
-        
-        # CustomTkinterではメニューバーを直接設定できないため、tkinterのメニューを使用
+
         try:
             self.tk.call('tk', 'windowingsystem') == 'aqua'
             self.createcommand('tk::mac::ReopenApplication', lambda: None)
-        except Exception as e:
-            # macOS固有の処理なので、非macOS環境では例外が発生する可能性がある（正常）
-            self.logger.debug(f"macOS-specific menu setup skipped: {e}")
+        except Exception:
+            pass
         self.config(menu=menubar)
-        
-        # メインレイアウト: レスポンシブ2カラム
-        self.grid_columnconfigure(0, weight=3)  # メインエリア（3倍の重み）
-        self.grid_columnconfigure(1, weight=1, minsize=280)  # 右パネル（可変幅、最小280px）
+
+        # -----------------------
+        # ルートグリッド: 左(主) / 右(サイドバー)
+        # -----------------------
+        self.grid_columnconfigure(0, weight=3)
+        self.grid_columnconfigure(1, weight=1, minsize=280)
         self.grid_rowconfigure(0, weight=1)
-        
-        # メインエリア (Tree + Search/Cards)
-        main_area = ctk.CTkFrame(self, fg_color=Colors.BACKGROUND)
-        main_area.grid(row=0, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
-        main_area.grid_columnconfigure(0, weight=1)
-        # ツリービュー 65%、パネルビュー 30%の比率（残り5%は余白）
-        main_area.grid_rowconfigure(0, weight=65)  # Tree area: 65%
-        main_area.grid_rowconfigure(1, weight=30)  # Cards area: 30%
-        
-        # 上部エリア (Folder Tree)
-        tree_container = ctk.CTkFrame(main_area, fg_color=Colors.SURFACE_1, corner_radius=Dims.RADIUS_M)
+
+        # 左カラム (FolderTree + Cards)
+        self.left_panel = ctk.CTkFrame(self, fg_color=Colors.BACKGROUND)
+        self.left_panel.grid(row=0, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
+
+        # 右サイドバー (スクロール可能なコマンド領域)
+        self.right_sidebar = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.right_sidebar.grid(row=0, column=1, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
+
+        # -----------------------
+        # 左カラム内部レイアウト（上: Tree, 下: Cards）
+        # -----------------------
+        self.left_panel.grid_columnconfigure(0, weight=1)
+        self.left_panel.grid_rowconfigure(0, weight=65)
+        self.left_panel.grid_rowconfigure(1, weight=35)
+
+        # Tree コンテナ
+        tree_container = ctk.CTkFrame(self.left_panel, fg_color=Colors.SURFACE_1, corner_radius=Dims.RADIUS_M)
         tree_container.grid(row=0, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=(0, Dims.SPACING_S))
         tree_container.grid_columnconfigure(0, weight=1)
         tree_container.grid_rowconfigure(1, weight=1)
-        
-        # ツリーヘッダー（タイトルとボタン）
+
+        # Tree header
         tree_header = ctk.CTkFrame(tree_container, fg_color="transparent")
-        tree_header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        tree_header.grid(row=0, column=0, sticky="ew", padx=Dims.SPACING_M, pady=(Dims.SPACING_M // 2, Dims.SPACING_S // 2))
         tree_header.grid_columnconfigure(0, weight=1)
-        
-        tree_label = ctk.CTkLabel(tree_header, text="📁 Bookmarks", font=ctk.CTkFont(family=Fonts.FAMILY, size=14, weight="bold"))
+        tree_label = ctk.CTkLabel(tree_header, text="📁 Bookmarks",
+                                  font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD),
+                                  text_color=Colors.TEXT_PRIMARY, anchor="w")
         tree_label.grid(row=0, column=0, sticky="w")
-        
-        # 2画面モードトグルボタン
-        self.dual_view_mode = False
-        self.dual_view_btn = ctk.CTkButton(
-            tree_header, text="2画面モード", width=80, height=22,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10), fg_color=Colors.SURFACE_1,
-            text_color=Colors.TEXT_PRIMARY, hover_color=Colors.HOVER_BG,
-            command=self._toggle_dual_view_mode
-        )
-        self.dual_view_btn.grid(row=0, column=1, sticky="e", padx=(0, 5))
-        
-        # 展開/縮小ボタン
-        btn_frame = ctk.CTkFrame(tree_header, fg_color="transparent")
-        btn_frame.grid(row=0, column=2, sticky="e")
-        
-        # 選択フォルダの展開/縮小
-        expand_one_btn = ctk.CTkButton(
-            btn_frame, text="展開", width=50, height=22,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10), fg_color=Colors.SURFACE_1,
-            text_color=Colors.TEXT_PRIMARY, hover_color=Colors.HOVER_BG,
-            command=lambda: self.folder_tree.expand_selected()
-        )
-        expand_one_btn.pack(side="left", padx=1)
-        
-        collapse_one_btn = ctk.CTkButton(
-            btn_frame, text="縮小", width=50, height=22,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10), fg_color=Colors.SURFACE_1,
-            text_color=Colors.TEXT_PRIMARY, hover_color=Colors.HOVER_BG,
-            command=lambda: self.folder_tree.collapse_selected()
-        )
-        collapse_one_btn.pack(side="left", padx=1)
-        
-        # セパレータ
-        sep = ctk.CTkFrame(btn_frame, width=1, height=18, fg_color=Colors.BORDER)
-        sep.pack(side="left", padx=4)
-        
-        # すべて展開/縮小
-        expand_all_btn = ctk.CTkButton(
-            btn_frame, text="すべて展開", width=70, height=22,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10), fg_color=Colors.PRIMARY,
-            command=lambda: self.folder_tree.expand_all()
-        )
-        expand_all_btn.pack(side="left", padx=1)
-        
-        collapse_all_btn = ctk.CTkButton(
-            btn_frame, text="すべて縮小", width=70, height=22,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10), fg_color=Colors.SURFACE_1,
-            text_color=Colors.TEXT_PRIMARY, hover_color=Colors.HOVER_BG,
-            command=lambda: self.folder_tree.collapse_all()
-        )
-        collapse_all_btn.pack(side="left", padx=1)
-        
-        # 左側ツリービュー（通常モードではこれのみ表示）
+
+        ops_frame = ctk.CTkFrame(tree_header, fg_color="transparent")
+        ops_frame.grid(row=0, column=1, sticky="e")
+        expand_btn = ctk.CTkButton(ops_frame, text="展開", width=50, height=22,
+                                   font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS),
+                                   fg_color=Colors.SURFACE_1, text_color=Colors.TEXT_PRIMARY,
+                                   hover_color=Colors.HOVER_BG,
+                                   command=lambda: getattr(self, "folder_tree").expand_selected() if hasattr(self, "folder_tree") else None)
+        expand_btn.pack(side="left", padx=2)
+        collapse_btn = ctk.CTkButton(ops_frame, text="縮小", width=50, height=22,
+                                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS),
+                                     fg_color=Colors.SURFACE_1, text_color=Colors.TEXT_PRIMARY,
+                                     hover_color=Colors.HOVER_BG,
+                                     command=lambda: getattr(self, "folder_tree").collapse_selected() if hasattr(self, "folder_tree") else None)
+        collapse_btn.pack(side="left", padx=2)
+
+        # FolderTree 実体
         self.folder_tree = FolderTree(
             tree_container,
             self.root_node,
@@ -352,253 +332,142 @@ class App(ctk.CTk):
             on_bookmark_click=self._on_card_click,
             on_bookmark_double_click=self._on_card_double_click
         )
-        self.folder_tree.grid(row=1, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
-        
-        # 右側ツリービュー（2画面モード時のみ表示）
-        self.folder_tree_right = FolderTree(
-            tree_container,
-            self.root_node,
-            on_folder_select=self._on_folder_selected_right,
-            on_bookmark_click=self._on_card_click,
-            on_bookmark_double_click=self._on_card_double_click
-        )
-        # 初期状態では非表示
-        self.folder_tree_right.grid_remove()
-        
-        # 2つのツリービューを相互参照（2画面モード間のドラッグ&ドロップ用）
-        self.folder_tree.other_tree = self.folder_tree_right
-        self.folder_tree_right.other_tree = self.folder_tree
-        
-        # 下部エリア (Header + Cards)
-        cards_container = ctk.CTkFrame(main_area, fg_color="transparent")
-        cards_container.grid(row=1, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=0)
+        self.folder_tree.grid(row=1, column=0, sticky="nsew", padx=Dims.SPACING_M, pady=Dims.SPACING_M)
+
+        # Cards エリア（下部）
+        cards_container = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        cards_container.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
         cards_container.grid_columnconfigure(0, weight=1)
         cards_container.grid_rowconfigure(1, weight=1)
-        
-        # ヘッダー（検索バーとアクションボタン）
+
         header_frame = ctk.CTkFrame(cards_container, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 5))
+        header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, Dims.SPACING_S))
         header_frame.grid_columnconfigure(0, weight=1)
-        
+
         self.search_bar = SearchBar(header_frame, on_search=self._on_search)
-        self.search_bar.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        
-        # ビュー切り替えボタン
+        self.search_bar.grid(row=0, column=0, sticky="ew", padx=(0, Dims.SPACING_S))
+
         self.view_toggle_btn = ctk.CTkButton(
-            header_frame, 
-            text="List View", 
-            width=100, 
+            header_frame,
+            text="List View",
+            width=100,
             height=36,
             font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S),
             command=self._toggle_view_mode
         )
-        self.view_toggle_btn.grid(row=0, column=1, padx=0)
-        
-        # ブックマーク表示エリア（軽量化）
+        self.view_toggle_btn.grid(row=0, column=1, padx=(0, Dims.SPACING_S))
+
         self.cards_frame = ctk.CTkFrame(cards_container, fg_color=Colors.BACKGROUND)
         self.cards_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
         self.cards_frame.grid_columnconfigure(0, weight=1)
-        
-        # 右側詳細パネル（レスポンシブ対応）
-        right_frame = ctk.CTkFrame(self, fg_color=Colors.BACKGROUND)
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
-        right_frame.grid_rowconfigure(0, weight=1)
-        
-        # スクロール可能なコマンドパネル
-        commands_scroll = ctk.CTkScrollableFrame(right_frame, fg_color="transparent")
-        commands_scroll.pack(fill="both", expand=True, padx=0, pady=0)
-        
-        # === ファイル操作カード（モックに合わせたカスタム配置） ===
-        file_card = ctk.CTkFrame(commands_scroll, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        file_card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
 
-        # ヘッダー
-        file_header = ctk.CTkFrame(file_card, fg_color="transparent")
-        file_header.pack(fill="x", padx=12, pady=(10, 6))
-        ctk.CTkLabel(
-            file_header,
-            text="ファイル",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        ).pack(side="left")
+        # -----------------------
+        # 右サイドバー: カード群を追加
+        # -----------------------
+        def _make_card(parent, title):
+            card = ctk.CTkFrame(parent, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
+            card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
+            header = ctk.CTkLabel(card, text=title,
+                                  font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD),
+                                  text_color=Colors.TEXT_SECONDARY, anchor="w")
+            header.pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_M, Dims.SPACING_S // 2))
+            return card
 
-        # 上段アクション（左: 別名保存 secondary、右: 保存 primary）
+        # ファイルカード
+        file_card = _make_card(self.right_sidebar, "ファイル")
+        StyledButton(file_card, text="保存", command=self.cmd_save, variant="primary", height=44,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_L, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
         file_actions = ctk.CTkFrame(file_card, fg_color="transparent")
-        file_actions.pack(fill="x", padx=12, pady=(0, 8))
+        file_actions.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
+        left_grp = ctk.CTkFrame(file_actions, fg_color="transparent"); left_grp.pack(side="left")
+        right_grp = ctk.CTkFrame(file_actions, fg_color="transparent"); right_grp.pack(side="right")
+        StyledButton(left_grp, text="別名保存", command=self.cmd_save_as, variant="secondary", height=34, width=120,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).pack(side="left")
+        StyledButton(right_grp, text="開く", command=self.cmd_open, variant="ghost", height=34, width=120,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD)).pack(side="right")
 
-        left_grp = ctk.CTkFrame(file_actions, fg_color="transparent")
-        left_grp.pack(side="left", anchor="w")
-        StyledButton(
-            left_grp,
-            text="別名保存",
-            command=self.cmd_save_as,
-            variant="secondary",
-            height=34,
-            width=120,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)
-        ).pack(side="left")
-
-        right_grp = ctk.CTkFrame(file_actions, fg_color="transparent")
-        right_grp.pack(side="right", anchor="e")
-        StyledButton(
-            right_grp,
-            text="保存",
-            command=self.cmd_save,
-            variant="primary",
-            height=40,
-            width=120,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)
-        ).pack(side="right")
-
-        # 下段: 大きな開くボタン（Full width, ghost/outline like）
-        StyledButton(
-            file_card,
-            text="開く",
-            command=self.cmd_open,
-            variant="ghost",
-            height=44,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)
-        ).pack(fill="x", padx=12, pady=(0, 12))
-        
-        # === 編集操作カード（モックスタイル） ===
-        edit_card = ctk.CTkFrame(commands_scroll, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        edit_card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-        ctk.CTkLabel(edit_card, text="編集", font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD), text_color=Colors.TEXT_SECONDARY, anchor="w").pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_S, 6))
-        edit_btns = ctk.CTkFrame(edit_card, fg_color="transparent")
-        edit_btns.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        edit_btns.grid_columnconfigure(0, weight=1, uniform="col")
-        edit_btns.grid_columnconfigure(1, weight=1, uniform="col")
+        # 編集カード
+        edit_card = _make_card(self.right_sidebar, "編集")
+        StyledButton(edit_card, text="新規フォルダ", command=self.cmd_new_folder, variant="primary", height=44,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
+        edit_grid = ctk.CTkFrame(edit_card, fg_color="transparent"); edit_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
+        edit_grid.grid_columnconfigure(0, weight=1); edit_grid.grid_columnconfigure(1, weight=1)
         edit_buttons = [
-            ("新規フォルダ", self.cmd_new_folder, "primary"),
             ("新規ブックマーク", self.cmd_new_bookmark, "secondary"),
             ("名前変更", self.cmd_rename, "ghost"),
             ("URL編集", self.cmd_edit_url, "ghost"),
             ("移動", self.cmd_move_to_folder, "ghost"),
             ("削除", self.cmd_delete, "danger"),
         ]
-        # Place buttons in 2-column grid
-        for idx, (text, cmd, var) in enumerate(edit_buttons):
-            r = idx // 2
-            c = idx % 2
-            StyledButton(edit_btns, text=text, command=cmd, variant=var, height=34, font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
-        
-        # === 整理操作カード（モックスタイル） ===
-        organize_card = ctk.CTkFrame(commands_scroll, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        organize_card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-        ctk.CTkLabel(organize_card, text="整理", font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD), text_color=Colors.TEXT_SECONDARY, anchor="w").pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_S, 6))
-        org_btns = ctk.CTkFrame(organize_card, fg_color="transparent")
-        org_btns.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        org_btns.grid_columnconfigure(0, weight=1, uniform="col")
-        org_btns.grid_columnconfigure(1, weight=1, uniform="col")
+        for idx, (txt, cmd, var) in enumerate(edit_buttons):
+            r = idx // 2; c = idx % 2
+            StyledButton(edit_grid, text=txt, command=cmd, variant=var, height=34,
+                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+
+        # 整理カード
+        organize_card = _make_card(self.right_sidebar, "整理")
+        StyledButton(organize_card, text="重複削除", command=self.cmd_dedupe, variant="primary", height=44,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
+        org_grid = ctk.CTkFrame(organize_card, fg_color="transparent"); org_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
+        org_grid.grid_columnconfigure(0, weight=1); org_grid.grid_columnconfigure(1, weight=1)
         organize_buttons = [
             ("タイトル順", lambda: self.cmd_sort("title"), "ghost"),
             ("ドメイン順", lambda: self.cmd_sort("domain"), "ghost"),
             ("上へ移動", self.cmd_move_up, "ghost"),
-            ("重複削除", self.cmd_dedupe, "ghost"),
             ("フォルダ統合", self.cmd_merge_folders, "ghost"),
         ]
-        for idx, (text, cmd, var) in enumerate(organize_buttons):
-            r = idx // 2
-            c = idx % 2
-            StyledButton(org_btns, text=text, command=cmd, variant=var, height=34, font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
-        
-        # === AI分類カード（モックスタイル） ===
-        ai_card = ctk.CTkFrame(commands_scroll, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        ai_card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-        ctk.CTkLabel(ai_card, text="AI分類", font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD), text_color=Colors.TEXT_SECONDARY, anchor="w").pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_S, 6))
-        ai_btns = ctk.CTkFrame(ai_card, fg_color="transparent")
-        ai_btns.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        ai_btns.grid_columnconfigure(0, weight=1, uniform="col")
-        ai_btns.grid_columnconfigure(1, weight=1, uniform="col")
+        for idx, (txt, cmd, var) in enumerate(organize_buttons):
+            r = idx // 2; c = idx % 2
+            StyledButton(org_grid, text=txt, command=cmd, variant=var, height=34,
+                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+
+        # AI分類カード
+        ai_card = _make_card(self.right_sidebar, "AI分類")
+        StyledButton(ai_card, text="スマート分類", command=self.cmd_smart_classify, variant="primary", height=44,
+                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
+        ai_grid = ctk.CTkFrame(ai_card, fg_color="transparent"); ai_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
+        ai_grid.grid_columnconfigure(0, weight=1); ai_grid.grid_columnconfigure(1, weight=1)
         ai_buttons = [
-            ("スマート分類", self.cmd_smart_classify, "primary"),
             ("ルール分類", self.cmd_show_classify_preview, "secondary"),
             ("ルール編集", self.cmd_edit_rules, "ghost"),
             ("上限設定", self.cmd_set_smart_classify_limit, "ghost"),
             ("タイトル取得", self.cmd_fix_titles_from_url, "secondary"),
         ]
-        # Ensure single primary
-        prim_seen = False
-        for idx, (text, cmd, var) in enumerate(ai_buttons):
-            if var == "primary":
-                if not prim_seen:
-                    prim_seen = True
-                else:
-                    var = "secondary"
-            r = idx // 2
-            c = idx % 2
-            StyledButton(ai_btns, text=text, command=cmd, variant=var, height=34, font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
-        
-        # === その他カード ===
-        other_card = ctk.CTkFrame(commands_scroll, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        other_card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-        
-        # カードヘッダー
-        header_label = ctk.CTkLabel(
-            other_card,
-            text="その他",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        )
-        header_label.pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_S, 6))
-        
-        # ボタンコンテナ（2列グリッド）
-        btn_container = ctk.CTkFrame(other_card, fg_color="transparent")
-        btn_container.pack(fill="x", padx=8, pady=(0, 10))
-        
-        # 2列グリッド設定
-        btn_container.grid_columnconfigure(0, weight=1, uniform="col")
-        btn_container.grid_columnconfigure(1, weight=1, uniform="col")
-        
-        # プロキシチェックボックス（2列にまたがる）
-        proxy_check = ctk.CTkCheckBox(
-            btn_container,
-            text="プロキシ使用",
-            variable=self.use_proxy_var,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS)
-        )
+        for idx, (txt, cmd, var) in enumerate(ai_buttons):
+            r = idx // 2; c = idx % 2
+            StyledButton(ai_grid, text=txt, command=cmd, variant=var, height=34,
+                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+
+        # その他カード
+        other_card = _make_card(self.right_sidebar, "その他")
+        btn_container = ctk.CTkFrame(other_card, fg_color="transparent"); btn_container.pack(fill="x", padx=8, pady=(0, 10))
+        btn_container.grid_columnconfigure(0, weight=1); btn_container.grid_columnconfigure(1, weight=1)
+        proxy_check = ctk.CTkCheckBox(btn_container, text="プロキシ使用", variable=self.use_proxy_var,
+                                      font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS))
         proxy_check.grid(row=0, column=0, columnspan=2, sticky="w", padx=4, pady=4)
-        
-        # その他ボタン（2列レイアウト）
         other_buttons = [
             ("テスト", self.cmd_check_proxy, "ghost"),
             ("タイムアウト", self.cmd_set_title_fetch_timeout, "ghost"),
             ("進捗表示", self.cmd_show_progress_chart, "ghost"),
             ("終了", self.destroy, "ghost"),
         ]
-        
-        for idx, (text, command, variant) in enumerate(other_buttons):
-            row = (idx // 2) + 1
-            col = idx % 2
-            btn = StyledButton(
-                btn_container,
-                text=text,
-                command=command,
-                variant=variant,
-                height=32,
-                font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_NORMAL)
-            )
-            btn.grid(row=row, column=col, sticky="ew", padx=4, pady=3)
-        
-        # 詳細パネル（下部、固定、高さ縮小）
-        detail_container = ctk.CTkFrame(right_frame, fg_color=Colors.SURFACE_1, height=140)
-        detail_container.pack(fill="x", padx=0, pady=(5, 0), side="bottom")
-        
-        detail_header = ctk.CTkLabel(
-            detail_container,
-            text="ℹ️ 詳細情報",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
+        for idx, (txt, cmd, var) in enumerate(other_buttons):
+            r = (idx // 2) + 1; c = idx % 2
+            btn = StyledButton(btn_container, text=txt, command=cmd, variant=var, height=32,
+                               font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_NORMAL))
+            btn.grid(row=r, column=c, sticky="ew", padx=4, pady=3)
+
+        # 詳細パネル（右下固定） — UI要件により右下に固定表示
+        detail_container = ctk.CTkFrame(self, fg_color=Colors.SURFACE_1, height=140)
+        detail_container.grid(row=1, column=1, sticky="ew", padx=Dims.SPACING_S, pady=(Dims.SPACING_S // 2, 0))
+        detail_header = ctk.CTkLabel(detail_container, text="ℹ️ 詳細情報",
+                                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS, weight=Fonts.WEIGHT_BOLD),
+                                     text_color=Colors.TEXT_PRIMARY, anchor="w")
         detail_header.pack(fill="x", padx=8, pady=(6, 2))
-        
         self.detail_panel = DetailPanel(detail_container)
         self.detail_panel.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-        
-        # キーバインド
+
+        # キーバインド継承
         self.bind_all("<Control-o>", lambda e: self.cmd_open())
         self.bind_all("<Control-s>", lambda e: self.cmd_save())
         self.bind_all("<Control-S>", lambda e: self.cmd_save_as())
@@ -607,8 +476,8 @@ class App(ctk.CTk):
         self.bind_all("<Delete>", lambda e: self.cmd_delete())
         self.bind_all("<F2>", lambda e: self.cmd_rename())
         self.bind_all("<Control-Up>", lambda e: self.cmd_move_up())
-        
-        # 初期表示
+
+        # 初期表示呼び出し
         self._refresh_content()
     
     def _add_command_card(self, parent, title: str, buttons: list):

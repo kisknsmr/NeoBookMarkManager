@@ -1,29 +1,29 @@
 """
-グローバルフォント適用ヘルパー
-CustomTkinterウィジェットにデフォルトフォントを自動適用
+PySide6 グローバルフォント適用ヘルパー
+QApplication 起動後、全ウィジェットにデフォルトフォントを自動適用
 
 【使い方】
-main.pyまたはmain_window.pyの最初で:
+main.py で QApplication 初期化後に呼び出す:
+    from PySide6.QtWidgets import QApplication
     from gui.font_helper import apply_global_fonts
+    
+    app = QApplication(sys.argv)
     apply_global_fonts()
 """
-import customtkinter as ctk
-from gui.theme import Typography
 
-# オリジナルクラスを保存
-_original_CTkLabel = ctk.CTkLabel
-_original_CTkButton = ctk.CTkButton
-_original_CTkEntry = ctk.CTkEntry
-_original_CTkTextbox = ctk.CTkTextbox
-_original_CTkCheckBox = ctk.CTkCheckBox
-_original_CTkRadioButton = ctk.CTkRadioButton
+from typing import Optional
+from gui.theme import Typography
 
 _fonts_applied = False
 
-def apply_global_fonts():
+
+def apply_global_fonts() -> None:
     """
-    CustomTkinterの全ウィジェットにデフォルトフォントを適用
-    アプリ起動時に一度だけ呼ぶこと
+    PySide6 アプリケーション全体にグローバルフォントを適用
+    
+    QApplication 初期化直後に一度だけ呼び出すこと。
+    QSS（Qt Style Sheets）を通じてすべてのウィジェットに
+    デフォルトフォントを適用します。
     """
     global _fonts_applied
     
@@ -31,96 +31,89 @@ def apply_global_fonts():
         print("[INFO] グローバルフォントは既に適用済みです")
         return
     
-    print("[INFO] グローバルフォント適用中...")
+    print("[INFO] PySide6 グローバルフォント適用中...")
     
-    # CTkLabel: 本文フォント
-    class CTkLabelWithFont(_original_CTkLabel):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_body_font()
-            super().__init__(*args, **kwargs)
-    
-    # CTkButton: ボタンフォント
-    class CTkButtonWithFont(_original_CTkButton):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_button_font()
-            super().__init__(*args, **kwargs)
-    
-    # CTkEntry: 本文フォント
-    class CTkEntryWithFont(_original_CTkEntry):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_body_font()
-            super().__init__(*args, **kwargs)
-    
-    # CTkTextbox: 本文フォント
-    class CTkTextboxWithFont(_original_CTkTextbox):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_body_font()
-            super().__init__(*args, **kwargs)
-    
-    # CTkCheckBox: 本文フォント
-    class CTkCheckBoxWithFont(_original_CTkCheckBox):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_body_font()
-            super().__init__(*args, **kwargs)
-    
-    # CTkRadioButton: 本文フォント
-    class CTkRadioButtonWithFont(_original_CTkRadioButton):
-        def __init__(self, *args, **kwargs):
-            if 'font' not in kwargs:
-                kwargs['font'] = Typography.create_body_font()
-            super().__init__(*args, **kwargs)
-    
-    # モンキーパッチ適用
-    ctk.CTkLabel = CTkLabelWithFont
-    ctk.CTkButton = CTkButtonWithFont
-    ctk.CTkEntry = CTkEntryWithFont
-    ctk.CTkTextbox = CTkTextboxWithFont
-    ctk.CTkCheckBox = CTkCheckBoxWithFont
-    ctk.CTkRadioButton = CTkRadioButtonWithFont
-    
-    _fonts_applied = True
-    print("[OK] グローバルフォント適用完了")
-    print(f"     - デフォルトフォント: {Typography.FAMILY_UI}")
-    print(f"     - 本文サイズ: {Typography.BODY_MEDIUM}px")
-    print(f"     - ボタンサイズ: {Typography.BODY_LARGE}px")
+    try:
+        from PySide6.QtWidgets import QApplication
+        from gui.theme import get_stylesheet
+        
+        app = QApplication.instance()
+        if app is None:
+            print("[ERROR] QApplication がまだ初期化されていません")
+            return
+        
+        # PySide6 のスタイルシート適用（theme.py で定義済み）
+        stylesheet = get_stylesheet()
+        app.setStyleSheet(stylesheet)
+        
+        _fonts_applied = True
+        print("[OK] PySide6 グローバルフォント適用完了")
+        print(f"     - デフォルトフォント: {Typography.FAMILY_UI}")
+        print(f"     - 本文サイズ: {Typography.BODY_MEDIUM}px")
+        print(f"     - ボタンサイズ: {Typography.LABEL_LARGE}px")
+        
+    except ImportError as e:
+        print(f"[ERROR] PySide6 インポートエラー: {e}")
 
-def restore_original_classes():
-    """オリジナルクラスに戻す（テスト用）"""
-    global _fonts_applied
+
+def get_default_font(font_type: str = "body"):
+    """
+    指定したタイプのデフォルト QFont を取得
     
-    ctk.CTkLabel = _original_CTkLabel
-    ctk.CTkButton = _original_CTkButton
-    ctk.CTkEntry = _original_CTkEntry
-    ctk.CTkTextbox = _original_CTkTextbox
-    ctk.CTkCheckBox = _original_CTkCheckBox
-    ctk.CTkRadioButton = _original_CTkRadioButton
+    Args:
+        font_type: "body", "button", "headline", "caption" など
     
-    _fonts_applied = False
-    print("[INFO] オリジナルクラスに戻しました")
+    Returns:
+        QFont: 設定済みのフォントオブジェクト
+    """
+    from gui.theme import create_qfont
+    
+    font_map = {
+        "body": ("Noto Sans JP", Typography.BODY_MEDIUM, False),
+        "button": ("Noto Sans JP", Typography.LABEL_LARGE, True),
+        "headline": ("Noto Sans JP", Typography.HEADLINE_LARGE, True),
+        "section": ("Noto Sans JP", Typography.TITLE_LARGE, True),
+        "caption": ("Noto Sans JP", Typography.LABEL_MEDIUM, False),
+    }
+    
+    if font_type not in font_map:
+        font_type = "body"
+    
+    family, size, bold = font_map[font_type]
+    return create_qfont(family=family, size=size, bold=bold)
+
 
 # 使用例
 if __name__ == "__main__":
-    # テストウィンドウ
+    import sys
+    from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QLabel, QPushButton
+    
+    app = QApplication(sys.argv)
     apply_global_fonts()
     
-    app = ctk.CTk()
-    app.title("グローバルフォントテスト")
-    app.geometry("500x400")
+    # テストウィンドウ
+    window = QMainWindow()
+    window.setWindowTitle("PySide6 グローバルフォントテスト")
+    window.resize(500, 400)
     
-    # フォント指定なしでウィジェット作成
-    ctk.CTkLabel(app, text="見出し（自動フォント適用）").pack(pady=10)
-    ctk.CTkLabel(app, text="日本語テキスト：あいうえお").pack(pady=5)
-    ctk.CTkButton(app, text="ボタン（自動フォント適用）").pack(pady=10)
-    ctk.CTkEntry(app, placeholder_text="入力欄（自動フォント適用）").pack(pady=5)
-    ctk.CTkCheckBox(app, text="チェックボックス（自動フォント適用）").pack(pady=5)
+    central_widget = QWidget()
+    layout = QVBoxLayout(central_widget)
     
-    # 明示的にフォント指定した場合は上書きされる
-    custom_font = Typography.create_headline_font()
-    ctk.CTkLabel(app, text="カスタム見出し（24px）", font=custom_font).pack(pady=10)
+    # ラベル
+    label1 = QLabel("見出し（自動フォント適用）")
+    label1.setFont(get_default_font("headline"))
+    layout.addWidget(label1)
     
-    app.mainloop()
+    label2 = QLabel("日本語テキスト：あいうえお")
+    label2.setFont(get_default_font("body"))
+    layout.addWidget(label2)
+    
+    # ボタン
+    button = QPushButton("ボタン（自動フォント適用）")
+    button.setFont(get_default_font("button"))
+    layout.addWidget(button)
+    
+    window.setCentralWidget(central_widget)
+    window.show()
+    
+    sys.exit(app.exec())
