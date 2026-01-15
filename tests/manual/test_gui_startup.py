@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 # Set up path
-project_dir = Path(__file__).parent
+project_dir = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_dir))
 
 from PySide6.QtWidgets import QApplication

@@ -1,14 +1,14 @@
 # 🔖 Bookmark Studio — Professional Organizer
 
-**AIの力で、煩雑になったブックマークを「賢く」整理・統合するデスクトップツール**
+**ブックマークを整理・統合するデスクトップツール**
 
 > **🎉 Status**: Version 2.0.0 (PySide6 Edition) — READY FOR USE
 > 
 > ✅ Full PySide6 GUI migration complete | ✅ All features functional | ✅ Session memory ready
 >
-> See [MIGRATION_COMPLETE.md](MIGRATION_COMPLETE.md) for detailed technical report.
+> See [docs/MIGRATION_COMPLETE.md](docs/MIGRATION_COMPLETE.md) for detailed technical report.
 
-Bookmark Studioは、Chrome等のブラウザからエクスポートしたブックマークHTMLファイルを読み込み、階層構造の編集、重複削除、そしてGemini AIを活用した自動分類を行うことができるプロフェッショナルな管理ツールです。
+Bookmark Studioは、Chrome等のブラウザからエクスポートしたブックマークHTMLファイルを読み込み、階層構造の編集、重複削除、そしてドメインベースの分類を行うことができる管理ツールです。AI分類はレガシーとして隔離されており、UIからは未接続です。
 
 ## 📋 目次
 
@@ -26,7 +26,7 @@ Bookmark Studioは、Chrome等のブラウザからエクスポートしたブ�
 
 ### 目的
 
-大量のブックマークを効率的に整理・分類し、重複を削除し、階層構造を最適化することを目的としたデスクトップアプリケーションです。AI（Gemini 1.5 Flash）を活用した自動分類機能により、手動での整理作業を大幅に削減します。
+大量のブックマークを効率的に整理・分類し、重複を削除し、階層構造を最適化することを目的としたデスクトップアプリケーションです。現行UIではドメインベースの分類を提供します。
 
 ### 主要機能
 
@@ -34,7 +34,7 @@ Bookmark Studioは、Chrome等のブラウザからエクスポートしたブ�
 
 - **AI自動フォルダ分け**: Gemini APIを活用し、ブックマークのタイトルとURLから最適なカテゴリを推測して自動分類します
 - **追加指示（プロンプト）対応**: 「技術系は細かく分けて」「英語のサイトはまとめないで」といった追加の指示をAIに与えて再分類させることが可能です
-- **優先用語設定**: `config.ini` に特定のキーワードを設定することで、優先的に分類したいカテゴリを指定できます
+- **優先用語設定**: `config/config.ini` に特定のキーワードを設定することで、優先的に分類したいカテゴリを指定できます
 - **ルールベース分類**: カスタムルールファイル（`.bookmark_rules.json`）を使用した自動分類もサポート
 
 #### 2. 高度な編集・整理機能
@@ -121,16 +121,16 @@ Bookmark Studioは、Google Material Design 3（Material You）の原則に基�
 #### UIコンポーネント
 
 - **ボタン**: プライマリ、セカンダリ、成功、危険の4つのバリアント
-- **ツリービュー**: 仮想化された高性能なツリー表示（`ttk.Treeview`ベース）
-- **カード/リストビュー**: 切り替え可能な2つの表示モード
-- **ドラッグ＆ドロップ**: 視覚的フィードバック付きの直感的な操作
+- **ツリービュー**: PySide6 のツリー表示（`QTreeWidget`）
+- **カード/リスト/ツリービュー**: 切り替え可能な3つの表示モード
+- **ドラッグ＆ドロップ**: ツリービュー上で移動・並び替え
 
 ## セットアップ
 
 ### 必須環境
 
 - **Python 3.10以上**
-- **Google AI APIキー**: スマート分類機能を使用するために必要です（`config.ini`または環境変数`GENAI_API_KEY`で設定）
+- **Google AI APIキー**: AI分類を利用する場合のみ必要です（`config/config.ini`または環境変数`GENAI_API_KEY`で設定）
 
 ### 依存関係のインストール
 
@@ -174,9 +174,9 @@ pip install -r requirements.txt
 pip install --user -r requirements.txt
 ```
 
-### 設定ファイル（`config.ini`）
+### 設定ファイル（`config/config.ini`）
 
-アプリケーションのルートディレクトリに`config.ini`を作成し、以下の形式で設定を行います：
+アプリケーションの`config/`ディレクトリに`config.ini`を作成し、以下の形式で設定を行います：
 
 ```ini
 [API]
@@ -196,9 +196,9 @@ priority_terms = tech, AI, development, design
 - プロキシURLは`http://`または`https://`で始まる必要があります
 - プロキシ設定はオプションです（企業環境等で必要な場合のみ）
 
-### プロンプトファイル（`prompt.txt`）
+### プロンプトファイル（`config/prompt.txt`）
 
-AI分類機能で使用するプロンプトファイルです。アプリケーションのルートディレクトリに配置してください。このファイルはAI分類の動作を制御する重要なファイルです。
+AI分類機能で使用するプロンプトファイルです。`config/prompt.txt` に配置してください（後方互換としてルートの `prompt.txt` もフォールバック参照されます）。
 
 ## ロギング仕様
 
@@ -217,7 +217,7 @@ AI分類機能で使用するプロンプトファイルです。アプリケー
    - フォーマット: `[%(asctime)s] [%(levelname)s] %(message)s`
    - 日時フォーマット: `%Y-%m-%d %H:%M:%S`
 
-2. **ファイル出力**: `bookmark_editor.log`
+2. **ファイル出力**: `logs/bookmark_editor.log`
    - ログレベル: `INFO`以上
    - ローテーション: 最大5MB、バックアップ3ファイル
    - エンコーディング: UTF-8
@@ -249,12 +249,12 @@ AI分類機能で使用するプロンプトファイルです。アプリケー
 
 ### エラー表示方法
 
-#### メッセージボックス（`tkinter.messagebox`）
+#### メッセージボックス（`PySide6.QtWidgets.QMessageBox`）
 
-- **`showinfo`**: 情報表示（成功メッセージ等）
-- **`showwarning`**: 警告表示（軽微な問題、注意喚起）
-- **`showerror`**: エラー表示（重大な問題、操作失敗）
-- **`askyesno`**: 確認ダイアログ（削除確認等）
+- **`information`**: 情報表示（成功メッセージ等）
+- **`warning`**: 警告表示（軽微な問題、注意喚起）
+- **`critical`**: エラー表示（重大な問題、操作失敗）
+- **`question`**: 確認ダイアログ（削除確認等）
 
 #### エラーハンドリングパターン
 
@@ -264,10 +264,10 @@ try:
     result = some_operation()
 except SpecificException as e:
     logger.error(f"Operation failed: {e}")
-    messagebox.showerror("Error", f"操作に失敗しました: {e}")
+    QMessageBox.critical(self, "Error", f"操作に失敗しました: {e}")
 except Exception as e:
     logger.exception("Unexpected error occurred")
-    messagebox.showerror("Error", "予期しないエラーが発生しました。")
+    QMessageBox.critical(self, "Error", "予期しないエラーが発生しました。")
 ```
 
 ### 主要なエラーハンドリング箇所
@@ -314,16 +314,15 @@ python3 main.py
    - Chrome/Edge/FirefoxからエクスポートしたHTMLファイルを選択
 
 2. **ブックマークの整理**
-   - **ドラッグ＆ドロップ**: ブックマークやフォルダをドラッグして移動・並び替え
-   - **2画面モード**: 右上の **[2画面モード]** ボタンで2つのツリービューを表示
+   - **表示モード切替**: Tree / List / Card を切り替え
+   - **ドラッグ＆ドロップ**: ツリービュー上でブックマーク/フォルダを移動・並び替え
+   - **2画面モード**: ツリービューを左右に並べて整理
    - **検索**: 上部の検索バーでブックマークを検索
 
-3. **AI分類の実行**
+3. **スマート分類（ドメインベース）の実行**
    - 整理したいフォルダやブックマークを選択
-   - 右側パネルの **[✨ スマート分類 (AI)]** ボタンをクリック
-   - 追加指示を入力（オプション）
+   - 右側パネルの **[✨ スマート分類]** ボタンをクリック
    - プレビュー画面で分類結果を確認
-   - **[Apply]** を押して適用
 
 4. **その他の操作**
    - **重複削除**: 右側パネルの **[🔍 重複を削除]** ボタン
@@ -340,20 +339,20 @@ python3 main.py
 ### 入力/出力フォーマット
 
 - **Netscape Bookmark HTML形式**: Chrome、Edge、Firefox等の標準エクスポート形式に対応
-- **分類ロジック**: Gemini 1.5 Flash (Google Generative AI)
+- **分類ロジック**: ドメインベース分類（UI）/ AI分類（レガシー）
 - **ルールファイル**: JSON形式（`.bookmark_rules.json`、HTMLファイルと同名で自動生成）
 
 ### 互換性
 
 - **Python**: 3.10以上
 - **OS**: Windows 10/11、Linux、macOS
-- **GUI**: CustomTkinter 5.2.2以上
+- **GUI**: PySide6 (Qt6)
 
 ## 技術仕様
 
 ### アーキテクチャ
 
-- **フレームワーク**: CustomTkinter（モダンなGUIフレームワーク）
+- **フレームワーク**: PySide6（Qt6ベース）
 - **データモデル**: 階層的な`Node`構造（フォルダ/ブックマーク）
 - **非同期処理**: `threading`と`queue`を使用したバックグラウンド処理
 - **キャッシュ**: LRUキャッシュによるパフォーマンス最適化
@@ -361,18 +360,18 @@ python3 main.py
 ### 主要モジュール
 
 - **`core/`**: データモデル、ストレージ、ログ、ユーティリティ
-- **`gui/`**: メインウィンドウ、UIコンポーネント、テーマ、ドラッグ&ドロップ
-- **`services/`**: AI分類、バックグラウンド処理（プレビュー取得、タイトル修正、ファビコン取得）
+- **`gui/`**: メインウィンドウ、UIコンポーネント、テーマ
+- **`services/`**: 分類（ドメインベース/レガシーAI）、バックグラウンド処理（プレビュー取得、タイトル修正、ファビコン取得）
 
 ### 依存ライブラリ
 
 詳細は`requirements.txt`を参照してください。主要なライブラリ：
 
-- `customtkinter==5.2.2`: GUIフレームワーク
+- `PySide6==6.7.0`: GUIフレームワーク
 - `Pillow==10.2.0`: 画像処理
 - `requests==2.31.0`: HTTP通信
 - `beautifulsoup4==4.12.3`: HTML解析
-- `google-generativeai==0.3.2`: AI分類
+- `google-generativeai==0.3.2`: AI分類（レガシー）
 
 ---
 
@@ -380,7 +379,7 @@ python3 main.py
 
 本ツールは正式リリース前の開発版です。重要なブックマークの整理前には、**必ず元ファイルのバックアップを取ってください**。
 
-実行ログはコンソールと`bookmark_editor.log`に出力されます。問題が発生した場合は、ログファイルを確認してください。
+実行ログはコンソールと`logs/bookmark_editor.log`に出力されます。問題が発生した場合は、ログファイルを確認してください。
 
 ---
 
@@ -484,7 +483,7 @@ app.ui_state.select_node(node_id)
 
 ```python
 # In services/ai_classifier.py
-prompt_path = self.config_manager.get('Prompt', 'prompt_file', fallback='prompt.txt')
+prompt_path = self.config_manager.get('Prompt', 'prompt_file', fallback='config/prompt.txt')
 ```
 
 ### 段階的移行戦略

@@ -1,7 +1,7 @@
 # 仕様書 - Bookmark Studio
 
 ## 1. アプリ概要
-- **種別**: Desktopアプリケーション（Python + CustomTkinter）
+- **種別**: Desktopアプリケーション（Python + PySide6）
 - **主な目的**: ブックマークHTMLファイルの読み込み、階層構造の編集、重複削除、AI分類、保存
 - **想定ユーザー**: ブックマークを整理する個人ユーザー
 
@@ -17,14 +17,14 @@
 
 ### 共通UI要素
 - **メニューバー**: File（Open/Save/Save As/Exit）、Edit（New Folder/New Bookmark/Rename/Edit URL/Move/Delete）、Tools（各種ツール）
-- **ボタン**: StyledButton（primary/secondary/danger/successバリアント）
+- **ボタン**: QPushButton（primary/secondary/dangerスタイル）
 - **カード**: BookmarkCard（カードビュー用）
 - **行**: BookmarkRow（リストビュー用）
 - **ダイアログ**: 進捗表示、確認、エラー表示用
 
 ### 状態表示
 - **ローディング**: AI分類・タイトル修正時に進捗ダイアログを表示
-- **エラー**: `messagebox`でエラーメッセージを表示
+- **エラー**: `QMessageBox`でエラーメッセージを表示
 - **空状態**: コード上で明示的な実装は未確認
 
 ## 3. 操作フロー
@@ -35,17 +35,17 @@
 3. **フォルダ作成**: Edit > New Folder → 名前入力 → 現在フォルダに追加
 4. **編集**: アイテム選択 → Edit > Rename/Edit URL → 入力 → 更新
 5. **削除**: アイテム選択 → Delete → 確認ダイアログ → 削除
-6. **ドラッグ&ドロップ**: カード/行をドラッグ → 別アイテムにドロップ → 順序変更（**同一フォルダ内のみ**）
-7. **検索**: 検索バーに入力 → インデックス検索 → マッチするノードの親フォルダを表示（**結果の絞り込み表示は未実装**）
-8. **AI分類**: Tools > Smart Classify → 進捗表示 → プレビュー → Apply → 分類実行
-9. **ルール分類**: Tools > Auto Classify → ルール適用 → プレビュー → Apply
+6. **ドラッグ&ドロップ**: ツリービュー上でブックマーク/フォルダを移動・並び替え
+7. **2画面モード**: ツリービューを左右に並べて整理
+8. **検索**: 検索バーに入力 → インデックス検索 → マッチするノードを表示
+9. **スマート分類（ドメインベース）**: Tools > Rule-based Classification → プレビュー表示 → 分類実行
 10. **タイトル修正**: アイテム選択 → Tools > Fix Titles from URL → 進捗表示 → タイトル更新
 11. **保存**: File > Save/Save As → HTML出力 → ルールファイル（.bookmark_rules.json）も保存
 
 ## 4. UI実装構造
 
 ### UIコンポーネントの構成方針
-- **フレームワーク**: CustomTkinter（テーマ: light、カラーテーマ: blue）
+- **フレームワーク**: PySide6（Qt6ベース）
 - **コンポーネント化**: `gui/components.py`に定義
   - `BookmarkCard`: カード表示用コンポーネント
   - `BookmarkRow`: リスト表示用コンポーネント
@@ -53,26 +53,17 @@
   - `SearchBar`: 検索バーコンポーネント
   - `DetailPanel`: 詳細パネルコンポーネント
 
-### 共通化されている要素
-- **UIキット**: `gui/ui_kit.py`に定義
-  - `StyledButton`: スタイル付きボタン（primary/secondary/danger/successバリアント）
-  - `StyledCard`: スタイル付きカードコンテナ
-  - `IconButton`: アイコンボタン
-
 ### スタイル定義の場所
-- **テーマシステム**: `gui/theme.py`に定義
-  - `Colors`: カラーパレット（PRIMARY, BACKGROUND, SURFACE, TEXT_PRIMARY等）
-  - `Fonts`: フォント設定（Yu Gothic UI優先、Segoe UIフォールバック）
-  - `Dims`: サイズ・間隔・角丸の定義
+- **テーマシステム**: `gui/style.qss` と `gui/resources.py` に定義
 
 ## 5. エラーハンドリング
 
 ### ユーザー向けエラー表示の方法
-- **メッセージボックス**: `tkinter.messagebox`を使用
-  - `showinfo`: 情報表示
-  - `showwarning`: 警告表示
-  - `showerror`: エラー表示
-  - `askyesno`: 確認ダイアログ
+- **メッセージボックス**: `QMessageBox`を使用
+  - `information`: 情報表示
+  - `warning`: 警告表示
+  - `critical`: エラー表示
+  - `question`: 確認ダイアログ
 
 ### 例外処理の実装有無
 - **実装あり**: try-exceptで例外を捕捉し、ログ出力後に`messagebox`でユーザーに通知
@@ -80,9 +71,9 @@
 ### ログ出力仕様
 - **形式**: `[%(asctime)s] [%(levelname)s] %(message)s`
 - **日時フォーマット**: `%Y-%m-%d %H:%M:%S`
-- **出力先**: 
+- **出力先**:
   - コンソール（`sys.stdout`）
-  - ファイル（`bookmark_editor.log`、RotatingFileHandler、最大5MB、バックアップ3ファイル）
+  - ファイル（`logs/bookmark_editor.log`、RotatingFileHandler、最大5MB、バックアップ3ファイル）
 - **ログレベル**: DEBUG以上
 - **ロガー**: `core/logger.py`で一元管理（`logger`）
 
@@ -90,7 +81,7 @@
 
 ### 技術的制約
 - **Python**: 3.10以上必須
-- **GUIフレームワーク**: CustomTkinter 5.2.0以上
+- **GUIフレームワーク**: PySide6 6.7.0
 - **AI API**: Google Generative AI API（Gemini 1.5 Flash）必須（AI分類機能使用時）
 
 ### 互換性要件
@@ -98,8 +89,8 @@
 - **ルールファイル**: JSON形式（`.bookmark_rules.json`、HTMLファイルと同名で自動生成）
 
 ### 変更しにくい前提条件
-- **設定ファイル**: `config.ini`の存在（APIキー・プロキシ設定用）
-- **プロンプトファイル**: `prompt.txt`の存在（AI分類用プロンプト）
+- **設定ファイル**: `config/config.ini`の存在（APIキー・プロキシ設定用）
+- **プロンプトファイル**: `config/prompt.txt`の存在（AI分類用プロンプト）
 - **外部ライブラリ**: `requests`、`beautifulsoup4`、`google-generativeai`（オプションだが機能制限あり）
 
 ## 7. 設定ファイル・データ構造

@@ -2,6 +2,7 @@ import os
 import configparser
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from .logger import logger
@@ -15,16 +16,24 @@ from .logger import logger
 class ConfigManager:
     """設定ファイル(config.ini)の管理を専門に行うクラス（`bookmark_editor.py` から移植）。"""
 
-    def __init__(self, config_path='config.ini'):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[str] = None):
+        project_root = Path(__file__).resolve().parent.parent
+        if config_path:
+            self.config_path = Path(config_path)
+        else:
+            default_candidates = [
+                project_root / "config" / "config.ini",
+                project_root / "config.ini",
+            ]
+            self.config_path = next((p for p in default_candidates if p.exists()), default_candidates[0])
         self.config = configparser.ConfigParser()
         self.load_config()
 
     def load_config(self):
         """設定ファイルを読み込む"""
-        if os.path.exists(self.config_path):
+        if self.config_path.exists():
             try:
-                self.config.read(self.config_path, encoding='utf-8')
+                self.config.read(str(self.config_path), encoding='utf-8')
                 logger.info(f"Loaded configuration from {self.config_path}")
             except Exception as e:
                 logger.error(f"Failed to load configuration from {self.config_path}: {e}")
@@ -49,7 +58,7 @@ class ConfigManager:
             return key.strip()
         
         # フォールバック: config.ini
-        if os.path.exists(self.config_path):
+        if self.config_path.exists():
             if self.config.has_section("API") and self.config.has_option("API", "api_key"):
                 return self.config.get("API", "api_key", fallback=None)
         return None
@@ -178,6 +187,7 @@ class ConfigManager:
             if not self.config.has_section(section):
                 self.config.add_section(section)
             self.config.set(section, option, str(value))
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 self.config.write(f)
             logger.info(f"Set [{section}].{option} = {value}")

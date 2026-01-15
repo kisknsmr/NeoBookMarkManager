@@ -10,8 +10,19 @@ Simplified component architecture:
 
 from typing import Optional, Callable, Dict, Any
 from PySide6.QtWidgets import (
-    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem, QTextEdit, QStyle
+    QAbstractItemView,
+    QFrame,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QTextEdit,
+    QStyle,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QFont, QPixmap, QCursor
@@ -253,6 +264,7 @@ class FolderTree(QTreeWidget):
     
     item_selected = Signal(Node)
     item_double_clicked = Signal(Node)
+    node_moved = Signal(object, object, object, int)
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -265,6 +277,13 @@ class FolderTree(QTreeWidget):
         self.setAnimated(True)
         self.setUniformRowHeights(True)
         self.setColumnCount(1)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._dragged_node = None
+        self._dragged_old_parent = None
         
         # シグナル接続
         self.itemSelectionChanged.connect(self._on_item_selected)
@@ -275,6 +294,10 @@ class FolderTree(QTreeWidget):
         item = QTreeWidgetItem(parent_item or self)
         item.setText(0, node.title or "Folder")
         item.setData(0, Qt.ItemDataRole.UserRole, node)
+        if node.parent is None:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+        else:
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
         
         # アイコン設定（Qtのアイコンを使用）
         if hasattr(QStyle.StandardPixmap, 'SP_DirIcon'):
@@ -288,6 +311,8 @@ class FolderTree(QTreeWidget):
         item = QTreeWidgetItem(parent_item or self)
         item.setText(0, node.title or node.url or "Bookmark")
         item.setData(0, Qt.ItemDataRole.UserRole, node)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
 
         pixmap = get_favicon_image(node.icon) if getattr(node, "icon", "") else None
         if pixmap:
@@ -311,6 +336,105 @@ class FolderTree(QTreeWidget):
         node = item.data(0, Qt.ItemDataRole.UserRole)
         if node:
             self.item_double_clicked.emit(node)
+
+    def startDrag(self, supported_actions):
+        item = self.currentItem()
+        if not item:
+            return
+        node = item.data(0, Qt.ItemDataRole.UserRole)
+        if not node or getattr(node, "parent", None) is None:
+            return
+        self._dragged_node = node
+        self._dragged_old_parent = node.parent
+        super().startDrag(supported_actions)
+
+    def dropEvent(self, event):
+        source = event.source()
+        if isinstance(source, FolderTree) and source is not self:
+            dragged_item = source.currentItem()
+            dragged_node = dragged_item.data(0, Qt.ItemDataRole.UserRole) if dragged_item else None
+            if not dragged_node or getattr(dragged_node, "parent", None) is None:
+                event.ignore()
+                return
+
+            target_item = self.itemAt(event.position().toPoint())
+            if target_item and target_item.data(0, Qt.ItemDataRole.UserRole):
+                target_node = target_item.data(0, Qt.ItemDataRole.UserRole)
+                if getattr(target_node, "type", "") == "folder":
+                    new_parent_node = target_node
+                    parent_item = target_item
+                else:
+                    parent_item = target_item.parent() or self.topLevelItem(0)
+                    new_parent_node = parent_item.data(0, Qt.ItemDataRole.UserRole) if parent_item else None
+                index = parent_item.indexOfChild(target_item) if parent_item else 0
+            else:
+                parent_item = self.topLevelItem(0)
+                new_parent_node = parent_item.data(0, Qt.ItemDataRole.UserRole) if parent_item else None
+                index = parent_item.childCount() if parent_item else 0
+
+            if new_parent_node:
+                self.node_moved.emit(dragged_node, dragged_node.parent, new_parent_node, index)
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
+
+        if not self._dragged_node:
+            super().dropEvent(event)
+            return
+
+        dragged_node = self._dragged_node
+        old_parent = self._dragged_old_parent
+        self._dragged_node = None
+        self._dragged_old_parent = None
+
+        super().dropEvent(event)
+
+        dragged_item = self._find_item_by_node(dragged_node)
+        if not dragged_item:
+            return
+
+        parent_item = dragged_item.parent()
+        if parent_item is None:
+            parent_item = self.topLevelItem(0)
+        if parent_item is None:
+            return
+
+        new_parent_node = parent_item.data(0, Qt.ItemDataRole.UserRole)
+        if not new_parent_node:
+            return
+        if getattr(new_parent_node, "type", "") != "folder":
+            new_parent_node = getattr(new_parent_node, "parent", None)
+            if not new_parent_node:
+                return
+
+        index = self._get_item_index(dragged_item)
+        self.node_moved.emit(dragged_node, old_parent, new_parent_node, index)
+
+    def _get_item_index(self, item: QTreeWidgetItem) -> int:
+        parent = item.parent()
+        if parent is None:
+            parent = self.invisibleRootItem()
+        for i in range(parent.childCount()):
+            if parent.child(i) is item:
+                return i
+        return parent.childCount()
+
+    def _find_item_by_node(self, node: Node) -> Optional[QTreeWidgetItem]:
+        def walk(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+            if item.data(0, Qt.ItemDataRole.UserRole) is node:
+                return item
+            for i in range(item.childCount()):
+                found = walk(item.child(i))
+                if found:
+                    return found
+            return None
+
+        for i in range(self.topLevelItemCount()):
+            found = walk(self.topLevelItem(i))
+            if found:
+                return found
+        return None
 
 
 class SearchBar(QFrame):

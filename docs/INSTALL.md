@@ -29,7 +29,7 @@ python3 -m pip install --user -r requirements.txt
 インストールが完了したら、以下のコマンドで確認できます：
 
 ```bash
-python3 -c "import tkinter; print('✓ tkinter: OK')"
+python3 -c "import PySide6; print('✓ PySide6: OK')"
 python3 -c "import google.generativeai; print('✓ google-generativeai: OK')"
 python3 -c "import requests; print('✓ requests: OK')"
 python3 -c "from bs4 import BeautifulSoup; print('✓ beautifulsoup4: OK')"

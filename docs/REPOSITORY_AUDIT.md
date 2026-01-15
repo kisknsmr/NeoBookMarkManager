@@ -2,7 +2,7 @@
 
 ## 1. プロジェクト概要（事実）
 
-- **種別**: Desktopアプリケーション（Python + CustomTkinter）
+- **種別**: Desktopアプリケーション（Python + PySide6）
 - **エントリポイント**: `main.py` → `gui.main_window.App`
 - **ビルド/実行方法**:
   - 直接実行: `python3 main.py`
@@ -103,7 +103,7 @@ services.workers
 
 ### 外部依存（主要ライブラリ）
 
-- **customtkinter>=5.2.0**: メインGUIフレームワーク（実際に使用）
+- **PySide6==6.7.0**: メインGUIフレームワーク（実際に使用）
 - **ttkthemes**: requirements.txtに記載（**コード内で未使用**）
 - **ttkbootstrap>=1.19.0**: requirements.txtに記載（**コード内で未使用**、`test_imports.py`でのみインポートテスト）
 - **Pillow>=9.0.0**: 画像処理（ファビコン・プレビュー表示）

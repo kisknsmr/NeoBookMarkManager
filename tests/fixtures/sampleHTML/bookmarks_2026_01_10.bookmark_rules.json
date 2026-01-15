@@ -1,0 +1,79 @@
+{
+  "Google": {
+    "domains": [
+      "google.com",
+      "gmail.com",
+      "drive.google.com"
+    ],
+    "keywords": [
+      "google",
+      "gmail",
+      "drive"
+    ]
+  },
+  "YouTube": {
+    "domains": [
+      "youtube.com",
+      "youtu.be"
+    ],
+    "keywords": [
+      "youtube",
+      "yt"
+    ]
+  },
+  "News": {
+    "domains": [
+      "cnn.com",
+      "bbc.co.uk",
+      "nytimes.com",
+      "news.yahoo"
+    ],
+    "keywords": [
+      "news",
+      "article"
+    ]
+  },
+  "Social": {
+    "domains": [
+      "twitter.com",
+      "x.com",
+      "facebook.com",
+      "instagram.com",
+      "linkedin.com"
+    ],
+    "keywords": [
+      "twitter",
+      "facebook",
+      "instagram",
+      "linkedin"
+    ]
+  },
+  "Dev": {
+    "domains": [
+      "github.com",
+      "gitlab.com",
+      "stackoverflow.com",
+      "pypi.org",
+      "readthedocs"
+    ],
+    "keywords": [
+      "github",
+      "docs",
+      "api",
+      "stack overflow"
+    ]
+  },
+  "Shopping": {
+    "domains": [
+      "amazon.",
+      "rakuten.",
+      "taobao.",
+      "jd.com"
+    ],
+    "keywords": [
+      "cart",
+      "buy",
+      "store"
+    ]
+  }
+}

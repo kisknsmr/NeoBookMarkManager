@@ -5,7 +5,7 @@ PySide6 (Qt6) を使用したクロスプラットフォームデスクトップ
 【実装状況】
 - PySide6 依存関係ファイルは更新済み（requirements.txt）
 - theme.py に get_stylesheet() 等のPySide6ヘルパー関数を追加
-- gui/main_window.py は CustomTkinter → PySide6 への移行が必要（後続タスク）
+- gui/main_window.py は PySide6 移行済み
 """
 
 import sys

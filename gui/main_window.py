@@ -37,6 +37,7 @@ from core.utils import LRUCache, is_valid_url
 from gui.components import BookmarkCard, BookmarkRow, DetailPanel, FolderTree, SearchBar
 from gui.dialogs import CustomPromptDialog, FolderSelectDialog
 from gui.resources import Typography, WindowSize
+from services.legacy.ai_classifier import AIBookmarkClassifier, BookmarkNode
 from services.workers import fetch_preview, fix_titles
 
 
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         self.progress_history: List[Any] = []
         self.use_proxy = True
         self.view_mode = "card"  # "card" | "list" | "tree"
+        self.dual_tree_mode = False
         self.network_updates_enabled = False
         self._building_tree = False
 
@@ -132,8 +134,10 @@ class MainWindow(QMainWindow):
                 return
 
         log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        log_path = Path(__file__).resolve().parent.parent / "logs" / "bookmark_editor.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            "bookmark_editor.log",
+            str(log_path),
             maxBytes=1024 * 1024,
             backupCount=2,
             encoding="utf-8",
@@ -237,11 +241,6 @@ class MainWindow(QMainWindow):
 
         # View menu
         view_menu = menubar.addMenu("&View")
-        tree_mode_action = QAction("&Tree Mode", self, checkable=True)
-        tree_mode_action.setChecked(self.view_mode == "tree")
-        tree_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("tree"))
-        view_menu.addAction(tree_mode_action)
-
         card_mode_action = QAction("&Card Mode", self, checkable=True)
         card_mode_action.setChecked(self.view_mode == "card")
         card_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("card"))
@@ -252,9 +251,15 @@ class MainWindow(QMainWindow):
         list_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("list"))
         view_menu.addAction(list_mode_action)
 
-        self.tree_mode_action = tree_mode_action
+        view_menu.addSeparator()
+        dual_tree_action = QAction("Two-Pane Tree Mode", self, checkable=True)
+        dual_tree_action.setChecked(self.dual_tree_mode)
+        dual_tree_action.triggered.connect(self._set_dual_tree_mode)
+        view_menu.addAction(dual_tree_action)
+
         self.card_mode_action = card_mode_action
         self.list_mode_action = list_mode_action
+        self.dual_tree_action = dual_tree_action
 
     def _build_ui(self) -> None:
         """Build main layout with topbar + splitter panels."""
@@ -311,17 +316,27 @@ class MainWindow(QMainWindow):
         chip1 = QLabel("v1.0")
         chip1.setObjectName("chip")
         layout.addWidget(chip1)
+
+        # Search bar
+        self.search_bar = SearchBar()
+        self.search_bar.search_triggered.connect(self._on_search)
+        self.search_bar.search_text_changed.connect(self._on_search)
+        layout.addWidget(self.search_bar, 1)
         
         # Spacer
         layout.addStretch()
         
         # Right actions
-        chip2 = QLabel("2画面モード")
-        chip2.setObjectName("chip")
-        layout.addWidget(chip2)
+        dual_btn = QPushButton("2画面モード")
+        dual_btn.setCheckable(True)
+        dual_btn.setChecked(self.dual_tree_mode)
+        dual_btn.setObjectName("chip")
+        dual_btn.clicked.connect(lambda checked: self._set_dual_tree_mode(checked))
+        layout.addWidget(dual_btn)
+        self.dual_tree_button = dual_btn
         
         # View mode chip
-        display_text = "Tree" if self.view_mode == "tree" else ("Card" if self.view_mode == "card" else "List")
+        display_text = "Card" if self.view_mode == "card" else "List"
         mode_chip = QLabel(f"表示: {display_text}")
         mode_chip.setObjectName("chip")
         self.mode_chip = mode_chip
@@ -372,11 +387,6 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
         layout.addWidget(header_widget)
 
-        # Search bar
-        self.search_bar = SearchBar()
-        self.search_bar.search_triggered.connect(self._on_search)
-        layout.addWidget(self.search_bar)
-
         # Workspace header with view toggle (above main view)
         workspace_header = QWidget()
         workspace_layout = QHBoxLayout(workspace_header)
@@ -394,13 +404,6 @@ class MainWindow(QMainWindow):
         
         workspace_layout.addStretch()
         
-        tree_btn = QPushButton("Tree")
-        tree_btn.setObjectName("ghostButton")
-        tree_btn.setMaximumWidth(60)
-        tree_btn.setMaximumHeight(30)
-        tree_btn.clicked.connect(lambda: self.cmd_set_view_mode("tree"))
-        workspace_layout.addWidget(tree_btn)
-
         list_btn = QPushButton("List")
         list_btn.setObjectName("ghostButton")
         list_btn.setMaximumWidth(60)
@@ -416,29 +419,16 @@ class MainWindow(QMainWindow):
         workspace_layout.addWidget(card_btn)
 
         self.view_buttons = {
-            "tree": tree_btn,
             "list": list_btn,
             "card": card_btn,
         }
         
         layout.addWidget(workspace_header)
 
-        # Main view (cards/list)
-        self.cards_container = QFrame()
-        self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setContentsMargins(8, 8, 8, 8)
-        self.cards_layout.setSpacing(12)
-        
-        cards_scroll = QScrollArea()
-        cards_scroll.setWidgetResizable(True)
-        cards_scroll.setObjectName("contentScroll")
-        cards_scroll.setWidget(self.cards_container)
-        layout.addWidget(cards_scroll, 1)
-        self.cards_scroll = cards_scroll
-
         # Folder tree (tree view)
         self.folder_tree = FolderTree()
-        self.folder_tree.item_selected.connect(self._on_folder_selected)
+        self.folder_tree.item_selected.connect(lambda node: self._on_folder_selected(node, self.folder_tree))
+        self.folder_tree.node_moved.connect(self._on_tree_node_moved)
 
         tree_scroll = QScrollArea()
         tree_scroll.setWidgetResizable(True)
@@ -447,6 +437,67 @@ class MainWindow(QMainWindow):
         tree_scroll.setVisible(False)
         layout.addWidget(tree_scroll, 1)
         self.tree_scroll = tree_scroll
+
+        # Dual tree mode (two panes)
+        self.folder_tree_left = FolderTree()
+        self.folder_tree_left.item_selected.connect(
+            lambda node: self._on_folder_selected(node, self.folder_tree_left)
+        )
+        self.folder_tree_left.node_moved.connect(self._on_tree_node_moved)
+
+        self.folder_tree_right = FolderTree()
+        self.folder_tree_right.item_selected.connect(
+            lambda node: self._on_folder_selected(node, self.folder_tree_right)
+        )
+        self.folder_tree_right.node_moved.connect(self._on_tree_node_moved)
+
+        left_tree_scroll = QScrollArea()
+        left_tree_scroll.setWidgetResizable(True)
+        left_tree_scroll.setObjectName("treeScrollLeft")
+        left_tree_scroll.setWidget(self.folder_tree_left)
+
+        right_tree_scroll = QScrollArea()
+        right_tree_scroll.setWidgetResizable(True)
+        right_tree_scroll.setObjectName("treeScrollRight")
+        right_tree_scroll.setWidget(self.folder_tree_right)
+
+        dual_tree_splitter = QSplitter(Qt.Orientation.Horizontal)
+        dual_tree_splitter.addWidget(left_tree_scroll)
+        dual_tree_splitter.addWidget(right_tree_scroll)
+        dual_tree_splitter.setSizes([400, 400])
+        dual_tree_splitter.setStretchFactor(0, 1)
+        dual_tree_splitter.setStretchFactor(1, 1)
+        dual_tree_splitter.setVisible(False)
+        self.dual_tree_splitter = dual_tree_splitter
+
+        # Main view (cards/list)
+        self.cards_container = QFrame()
+        self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_layout.setContentsMargins(8, 8, 8, 8)
+        self.cards_layout.setSpacing(12)
+
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setObjectName("contentScroll")
+        cards_scroll.setWidget(self.cards_container)
+        self.cards_scroll = cards_scroll
+
+        # Split tree (top) and cards/list (bottom)
+        tree_container = QWidget()
+        tree_layout = QVBoxLayout(tree_container)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.setSpacing(0)
+        tree_layout.addWidget(tree_scroll)
+        tree_layout.addWidget(dual_tree_splitter)
+
+        left_splitter = QSplitter(Qt.Orientation.Vertical)
+        left_splitter.addWidget(tree_container)
+        left_splitter.addWidget(cards_scroll)
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 1)
+        left_splitter.setSizes([350, 350])
+        layout.addWidget(left_splitter, 1)
+        self.left_splitter = left_splitter
 
         return panel
 
@@ -465,10 +516,16 @@ class MainWindow(QMainWindow):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll_layout.setContentsMargins(8, 8, 8, 8)
-        scroll_layout.setSpacing(12)
+        scroll_layout.setSpacing(8)
         
+        actions_container = QFrame()
+        actions_layout = QVBoxLayout(actions_container)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        self.actions_container = actions_container
+
         # File Actions Section
-        scroll_layout.addWidget(self._create_action_section(
+        actions_layout.addWidget(self._create_action_section(
             "📁 ファイル",
             "高",
             [
@@ -479,7 +536,7 @@ class MainWindow(QMainWindow):
         ))
         
         # Edit Actions Section
-        scroll_layout.addWidget(self._create_action_section(
+        actions_layout.addWidget(self._create_action_section(
             "✏️ 編集",
             "中",
             [
@@ -495,20 +552,20 @@ class MainWindow(QMainWindow):
         ))
         
         # Organize Section
-        scroll_layout.addWidget(self._create_action_section(
+        actions_layout.addWidget(self._create_action_section(
             "🧹 整理",
             "低",
             [
                 ("タイトル順", lambda: self._apply_sort("title")),
                 ("ドメイン順", lambda: self._apply_sort("domain")),
                 ("上へ移動", self.cmd_move_up),
-                ("重複削除", self.cmd_delete),
-                ("フォルダ統合", self.cmd_new_folder),
+                ("重複削除", self.cmd_delete_duplicates),
+                ("フォルダ統合", self.cmd_merge_duplicate_folders),
             ]
         ))
         
         # AI Classification Section
-        scroll_layout.addWidget(self._create_action_section(
+        actions_layout.addWidget(self._create_action_section(
             "✨ AI分類",
             "高",
             [
@@ -519,10 +576,13 @@ class MainWindow(QMainWindow):
                 ("タイトル取得", self.cmd_fix_titles_from_url),
             ]
         ))
-        
+
         # Details panel at bottom
         details_panel = self._create_details_panel()
-        scroll_layout.addWidget(details_panel)
+        self.detail_panel = details_panel
+
+        scroll_layout.addWidget(actions_container, stretch=1)
+        scroll_layout.addWidget(details_panel, stretch=1)
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
@@ -530,50 +590,14 @@ class MainWindow(QMainWindow):
         
         return panel
 
-    def _create_details_panel(self) -> QFrame:
-        """Create details panel with URL input and preview."""
-        details = QFrame()
-        details.setObjectName("detailsSection")
-        layout = QVBoxLayout(details)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        
-        # Title
-        title_label = QLabel("ℹ️ 詳細")
-        title_font = QFont(Typography.FONT_FAMILY, 11)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        layout.addWidget(title_label)
-        
-        # URL field
-        url_label = QLabel("URL")
-        url_label.setObjectName("detailLabel")
-        layout.addWidget(url_label)
-        
-        url_input = QLineEdit()
-        url_input.setObjectName("textbox")
-        url_input.setPlaceholderText("https://example.com/kpi")
-        url_input.setReadOnly(True)
-        self.url_input = url_input
-        layout.addWidget(url_input)
-        
-        # Preview field
-        preview_label = QLabel("Preview")
-        preview_label.setObjectName("detailLabel")
-        layout.addWidget(preview_label)
-        
-        preview_area = QFrame()
-        preview_area.setObjectName("previewArea")
-        preview_layout = QVBoxLayout(preview_area)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        
-        preview_text = QLabel("プレビュー領域（任意）")
-        preview_text.setAlignment(Qt.Alignment.AlignCenter)
-        preview_text.setStyleSheet("color: #808080; font-size: 12px;")
-        preview_layout.addWidget(preview_text)
-        
-        layout.addWidget(preview_area, 1)
-        
+    def _create_details_panel(self) -> DetailPanel:
+        """Create details panel with actions."""
+        details = DetailPanel()
+        details.edit_requested.connect(self._on_detail_edit)
+        details.copy_url_requested.connect(self._copy_to_clipboard)
+        details.move_requested.connect(lambda node: self._on_detail_move(node))
+        details.delete_requested.connect(lambda node: self._on_detail_delete(node))
+        self.detail_panel = details
         return details
 
 
@@ -592,8 +616,8 @@ class MainWindow(QMainWindow):
         section = QFrame()
         section.setObjectName("actionSection")
         layout = QVBoxLayout(section)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
         
         # Section header with title and frequency
         header = QWidget()
@@ -618,13 +642,14 @@ class MainWindow(QMainWindow):
         
         # Buttons grid
         grid = QGridLayout()
-        grid.setSpacing(8)
+        grid.setSpacing(6)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 1)
         
         for i, (btn_text, callback) in enumerate(actions):
             btn = QPushButton(btn_text)
-            btn.setMinimumHeight(44)
+            btn.setMinimumHeight(30)
             btn.clicked.connect(callback)
             
             # Apply danger style to destructive actions
@@ -633,14 +658,9 @@ class MainWindow(QMainWindow):
             else:
                 btn.setObjectName("actionButton")
             
-            row = i // 2
-            col = i % 2
-            
-            # Last button spans full width if odd number
-            if len(actions) % 2 == 1 and i == len(actions) - 1:
-                grid.addWidget(btn, row, 0, 1, 2)
-            else:
-                grid.addWidget(btn, row, col)
+            row = i // 3
+            col = i % 3
+            grid.addWidget(btn, row, col)
         
         layout.addLayout(grid)
         return section
@@ -661,6 +681,22 @@ class MainWindow(QMainWindow):
                     QTimer.singleShot(100, lambda: self._auto_load_bookmarks(last_file))
                 except Exception as e:
                     self.logger.warning(f"Failed to auto-load bookmarks: {e}")
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._resize_right_pane()
+
+    def _resize_right_pane(self) -> None:
+        if not hasattr(self, "right_panel"):
+            return
+        if not hasattr(self, "actions_container") or not hasattr(self, "detail_panel"):
+            return
+        available = self.right_panel.height()
+        if available <= 0:
+            return
+        target = max(200, available // 2)
+        self.actions_container.setMinimumHeight(target)
+        self.detail_panel.setMinimumHeight(target)
     
     def _auto_load_bookmarks(self, file_path: str) -> None:
         """Auto-load bookmarks without user dialog."""
@@ -737,44 +773,49 @@ class MainWindow(QMainWindow):
             self._refresh_content()
 
     # --------------------------- event handlers ---------------------------
-    def _on_folder_selected(self, node: Node) -> None:
-        if self.view_mode == "tree" and self._building_tree:
+    def _on_folder_selected(self, node: Node, source_tree: Optional[FolderTree] = None) -> None:
+        if self._building_tree:
             return
+        if source_tree is not None:
+            self._sync_tree_selection(node, source_tree)
         if node.type == "folder":
             self.current_folder = node
             self.selected_node = None
             self._refresh_content()
         else:
             self.selected_node = node
+            if node.parent:
+                self.current_folder = node.parent
+                self._refresh_content()
             self.detail_panel.set_node(node)
 
     def _on_search(self, query: str) -> None:
         self._apply_search(query)
         self._refresh_content()
 
+    def _on_detail_edit(self, node: Node) -> None:
+        self.selected_node = node
+        self.cmd_rename()
+
+    def _on_detail_move(self, node: Node) -> None:
+        self.selected_node = node
+        self.cmd_move_to_folder()
+
+    def _on_detail_delete(self, node: Node) -> None:
+        self._delete_node(node)
+
     # ---------------------------- core actions ----------------------------
     def _refresh_content(self) -> None:
         if not hasattr(self, "cards_layout") or self.cards_layout is None:
             return
-        if self.view_mode == "tree":
-            if hasattr(self, "cards_scroll"):
-                self.cards_scroll.setVisible(False)
-            if hasattr(self, "tree_scroll"):
-                self.tree_scroll.setVisible(True)
-            select_node = self.current_folder if self.current_folder else self.root_node
-            self._building_tree = True
-            try:
-                with QSignalBlocker(self.folder_tree):
-                    self._populate_folder_tree(select_node)
-            finally:
-                self._building_tree = False
-            self._update_bookmark_count()
-            return
-
-        if hasattr(self, "cards_scroll"):
-            self.cards_scroll.setVisible(True)
         if hasattr(self, "tree_scroll"):
-            self.tree_scroll.setVisible(False)
+            self.tree_scroll.setVisible(not self.dual_tree_mode)
+        if hasattr(self, "dual_tree_splitter"):
+            self.dual_tree_splitter.setVisible(self.dual_tree_mode)
+
+        select_node = self.current_folder if self.current_folder else self.root_node
+        self._refresh_folder_trees(select_node)
+        self._update_bookmark_count()
 
         self._clear_cards()
         nodes = self._get_display_nodes()
@@ -903,8 +944,29 @@ class MainWindow(QMainWindow):
         if hasattr(self, "workspace_count_label"):
             self.workspace_count_label.setText(f"{total:,}")
 
-    def _populate_folder_tree(self, select_node: Optional[Node] = None) -> None:
-        self.folder_tree.clear()
+    def _refresh_folder_trees(self, select_node: Optional[Node] = None) -> None:
+        self._building_tree = True
+        try:
+            with QSignalBlocker(self.folder_tree):
+                self._populate_folder_tree(self.folder_tree, select_node)
+            if self.dual_tree_mode:
+                with QSignalBlocker(self.folder_tree_left):
+                    self._populate_folder_tree(self.folder_tree_left, select_node)
+                with QSignalBlocker(self.folder_tree_right):
+                    self._populate_folder_tree(self.folder_tree_right, select_node)
+        finally:
+            self._building_tree = False
+
+    def _sync_tree_selection(self, node: Node, source_tree: FolderTree) -> None:
+        trees = [self.folder_tree, self.folder_tree_left, self.folder_tree_right]
+        for tree in trees:
+            if tree is source_tree:
+                continue
+            with QSignalBlocker(tree):
+                self._select_tree_item_for_node(node, tree)
+
+    def _populate_folder_tree(self, tree: FolderTree, select_node: Optional[Node] = None) -> None:
+        tree.clear()
 
         filter_active = bool(self.search_query)
 
@@ -915,7 +977,7 @@ class MainWindow(QMainWindow):
 
         def add_folder(node: Node, parent_item=None) -> Optional[Any]:
             # Build children first when filtering to decide whether to keep the folder
-            item = self.folder_tree.add_folder(parent_item, node)
+            item = tree.add_folder(parent_item, node)
             has_visible_child = False
             for child in node.children:
                 if child.type == "folder":
@@ -923,7 +985,7 @@ class MainWindow(QMainWindow):
                     has_visible_child = has_visible_child or (child_item is not None)
                 elif child.type == "bookmark":
                     if should_include(child):
-                        self.folder_tree.add_bookmark(item, child)
+                        tree.add_bookmark(item, child)
                         has_visible_child = True
 
             if filter_active and not should_include(node) and not has_visible_child:
@@ -937,7 +999,7 @@ class MainWindow(QMainWindow):
             return item
 
         root_item = add_folder(self.root_node, None)
-        self.folder_tree.expandAll()
+        tree.expandAll()
 
         # Try to select the current folder/bookmark in tree
         if select_node is not None:
@@ -952,25 +1014,48 @@ class MainWindow(QMainWindow):
 
             target = walk(root_item)
             if target is not None:
-                self.folder_tree.setCurrentItem(target)
+                tree.setCurrentItem(target)
         if select_node:
-            self._select_tree_item_for_node(select_node)
+            self._select_tree_item_for_node(select_node, tree)
         else:
-            self.folder_tree.setCurrentItem(root_item)
+            tree.setCurrentItem(root_item)
 
-    def _select_tree_item_for_node(self, target: Node) -> None:
+    def _select_tree_item_for_node(self, target: Node, tree: FolderTree) -> None:
         def walk(item):
             if item.data(0, Qt.ItemDataRole.UserRole) is target:
-                self.folder_tree.setCurrentItem(item)
+                tree.setCurrentItem(item)
                 return True
             for i in range(item.childCount()):
                 if walk(item.child(i)):
                     return True
             return False
 
-        for i in range(self.folder_tree.topLevelItemCount()):
-            if walk(self.folder_tree.topLevelItem(i)):
+        for i in range(tree.topLevelItemCount()):
+            if walk(tree.topLevelItem(i)):
                 break
+
+    def _on_tree_node_moved(self, node: Node, old_parent: Node, new_parent: Node, index: int) -> None:
+        if not node or not old_parent or not new_parent:
+            return
+        if node is self.root_node:
+            return
+        if new_parent is node or self._is_descendant_of(new_parent, node):
+            self.statusBar().showMessage("Cannot move a folder into its descendant", 3000)
+            self._refresh_folder_trees(select_node=node)
+            return
+
+        if old_parent and node in old_parent.children:
+            old_parent.children.remove(node)
+
+        if index < 0 or index > len(new_parent.children):
+            new_parent.children.append(node)
+        else:
+            new_parent.children.insert(index, node)
+
+        node.parent = new_parent
+        self._build_search_index()
+        self._refresh_content()
+        self._refresh_folder_trees(select_node=node)
 
     def _default_rules(self) -> list:
         return []
@@ -993,7 +1078,7 @@ class MainWindow(QMainWindow):
         self.rules_path = rules_path
         self.current_file = file_path
         self.current_folder = self.root_node
-        self._populate_folder_tree(select_node=self.root_node)
+        self._refresh_folder_trees(select_node=self.root_node)
         self._build_search_index()
         self._refresh_content()
         # Remember last file
@@ -1032,7 +1117,7 @@ class MainWindow(QMainWindow):
             return
         new_node = Node("folder", name.strip())
         self.current_folder.append(new_node)
-        self._populate_folder_tree(select_node=new_node)
+        self._refresh_folder_trees(select_node=new_node)
         self._build_search_index()
         self._refresh_content()
 
@@ -1061,7 +1146,7 @@ class MainWindow(QMainWindow):
         if not ok or not name.strip():
             return
         self.selected_node.title = name.strip()
-        self._populate_folder_tree(select_node=self.selected_node if self.selected_node.type == "folder" else None)
+        self._refresh_folder_trees(select_node=self.selected_node if self.selected_node.type == "folder" else None)
         self._build_search_index()
         self._refresh_content()
 
@@ -1095,7 +1180,7 @@ class MainWindow(QMainWindow):
             parent.children.remove(self.selected_node)
         target_folder.append(self.selected_node)
         self.current_folder = target_folder
-        self._populate_folder_tree(select_node=target_folder)
+        self._refresh_folder_trees(select_node=target_folder)
         self._build_search_index()
         self._refresh_content()
 
@@ -1108,7 +1193,7 @@ class MainWindow(QMainWindow):
             return
         siblings[idx - 1], siblings[idx] = siblings[idx], siblings[idx - 1]
         self._refresh_content()
-        self._populate_folder_tree(select_node=self.selected_node.parent)
+        self._refresh_folder_trees(select_node=self.selected_node.parent)
 
     def _delete_node(self, node: Node) -> None:
         if not node.parent:
@@ -1119,7 +1204,7 @@ class MainWindow(QMainWindow):
             self.selected_node = None
         self._build_search_index()
         self._refresh_content()
-        self._populate_folder_tree(select_node=node.parent)
+        self._refresh_folder_trees(select_node=node.parent)
 
     def cmd_delete(self) -> None:
         if not self.selected_node:
@@ -1145,37 +1230,152 @@ class MainWindow(QMainWindow):
 
     def _build_domain_plan(self) -> Dict[str, List[Node]]:
         plan: Dict[str, List[Node]] = {}
-        for node in self._iter_bookmarks(self.root_node):
+        base = self.current_folder if self.current_folder else self.root_node
+        for node in self._iter_bookmarks(base):
             domain = urlparse(node.url or "").netloc or "Unsorted"
             plan.setdefault(domain, []).append(node)
         return plan
 
+    def _build_rules_plan(self) -> Dict[str, List[Node]]:
+        plan: Dict[str, List[Node]] = {}
+        rules = self.rules or {}
+        if not rules:
+            return plan
+
+        base = self.current_folder if self.current_folder else self.root_node
+        for node in self._iter_bookmarks(base):
+            title = (node.title or "").lower()
+            url = (node.url or "").lower()
+            domain = urlparse(node.url or "").netloc.lower()
+            for folder, rule in rules.items():
+                domains = [d.lower() for d in rule.get("domains", [])]
+                keywords = [k.lower() for k in rule.get("keywords", [])]
+                if any(d in domain for d in domains) or any(k in title or k in url for k in keywords):
+                    plan.setdefault(folder, []).append(node)
+                    break
+        return plan
+
     def cmd_show_classify_preview(self) -> None:
-        plan = self._build_domain_plan()
+        plan = self._build_rules_plan()
         if not plan:
-            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+            QMessageBox.information(self, "Classify", "No rules or matching bookmarks.")
             return
         lines = [f"{folder}: {len(nodes)}" for folder, nodes in plan.items()]
-        QMessageBox.information(self, "Classify Preview", "\n".join(lines))
-
-    def cmd_smart_classify(self) -> None:
-        plan = self._build_domain_plan()
-        if not plan:
-            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+        preview = "\n".join(lines)
+        res = QMessageBox.question(self, "Rule-based Classification", preview + "\n\nApply this plan?")
+        if res != QMessageBox.StandardButton.Yes:
             return
+        base = self.current_folder if self.current_folder else self.root_node
         for folder_name, nodes in plan.items():
-            if not nodes:
-                continue
-            target = self._find_or_create_folder(self.root_node, folder_name)
-            for node in nodes[: self.max_smart_items]:
+            target = self._find_or_create_folder(base, folder_name)
+            for node in nodes:
                 parent = node.parent
                 if parent and node in parent.children:
                     parent.children.remove(node)
                 target.append(node)
-        self._populate_folder_tree(select_node=self.root_node)
+        self._refresh_folder_trees(select_node=base)
         self._build_search_index()
         self._refresh_content()
-        self.statusBar().showMessage("Classification completed", 4000)
+        self.statusBar().showMessage("Rule-based classification applied", 4000)
+
+    def cmd_smart_classify(self) -> None:
+        base = self.current_folder if self.current_folder else self.root_node
+        nodes = list(self._iter_bookmarks(base))
+        if not nodes:
+            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+            return
+
+        dialog = CustomPromptDialog(self, title="追加指示（任意）", previous_prompts=[])
+        if dialog.exec() != dialog.Accepted:
+            additional_prompt = None
+        else:
+            additional_prompt = dialog.result or None
+
+        try:
+            classifier = AIBookmarkClassifier(config_path=str(self.config_manager.config_path))
+            priority_terms = self.config_manager.get_priority_terms()
+            node_map: Dict[BookmarkNode, Node] = {}
+            items: List[BookmarkNode] = []
+            for node in nodes:
+                bn = BookmarkNode(title=node.title or "", url=node.url or "")
+                items.append(bn)
+                node_map[bn] = node
+            result = classifier.classify_bookmarks(
+                items,
+                priority_terms=priority_terms,
+                max_items=self.max_smart_items,
+                additional_prompt=additional_prompt,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "AI Classify", f"AI分類に失敗しました:\n{exc}")
+            return
+
+        if not result.plan:
+            QMessageBox.information(self, "AI Classify", "分類結果が空でした。")
+            return
+
+        for folder_name, items in result.plan.items():
+            target = self._find_or_create_folder(base, folder_name)
+            for item in items:
+                node = node_map.get(item)
+                if not node:
+                    continue
+                parent = node.parent
+                if parent and node in parent.children:
+                    parent.children.remove(node)
+                target.append(node)
+
+        self._refresh_folder_trees(select_node=base)
+        self._build_search_index()
+        self._refresh_content()
+        self.statusBar().showMessage("AI classification completed", 4000)
+
+    def cmd_delete_duplicates(self) -> None:
+        if not self.current_folder:
+            return
+        seen: set[str] = set()
+        removed = 0
+        new_children = []
+        for child in self.current_folder.children:
+            if child.type != "bookmark":
+                new_children.append(child)
+                continue
+            key = (child.url or "").strip().lower()
+            if key and key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+            new_children.append(child)
+        self.current_folder.children = new_children
+        self._build_search_index()
+        self._refresh_content()
+        self._refresh_folder_trees(select_node=self.current_folder)
+        self.statusBar().showMessage(f"Removed {removed} duplicate bookmarks", 3000)
+
+    def cmd_merge_duplicate_folders(self) -> None:
+        if not self.current_folder:
+            return
+        folders: Dict[str, Node] = {}
+        removed = 0
+        new_children = []
+        for child in list(self.current_folder.children):
+            if child.type != "folder":
+                new_children.append(child)
+                continue
+            key = (child.title or "").strip().lower()
+            if key in folders:
+                target = folders[key]
+                for sub in list(child.children):
+                    target.append(sub)
+                removed += 1
+                continue
+            folders[key] = child
+            new_children.append(child)
+        self.current_folder.children = new_children
+        self._build_search_index()
+        self._refresh_content()
+        self._refresh_folder_trees(select_node=self.current_folder)
+        self.statusBar().showMessage(f"Merged {removed} duplicate folders", 3000)
 
     def _find_or_create_folder(self, parent: Node, name: str) -> Node:
         for child in parent.children:
@@ -1187,20 +1387,18 @@ class MainWindow(QMainWindow):
 
     def cmd_set_view_mode(self, mode: str) -> None:
         """Switch between card and list view modes."""
-        if mode not in ("card", "list", "tree"):
+        if mode not in ("card", "list"):
             return
         
         self.view_mode = mode
         
         # Update checkboxes
-        if hasattr(self, "tree_mode_action"):
-            self.tree_mode_action.setChecked(mode == "tree")
         self.card_mode_action.setChecked(mode == "card")
         self.list_mode_action.setChecked(mode == "list")
         
         # Update top bar chip
         if hasattr(self, 'mode_chip'):
-            display_text = "Tree" if mode == "tree" else ("Card" if mode == "card" else "List")
+            display_text = "Card" if mode == "card" else "List"
             self.mode_chip.setText(f"表示: {display_text}")
 
         # Update view toggle button styles
@@ -1214,6 +1412,15 @@ class MainWindow(QMainWindow):
         # Refresh content with new mode
         self._refresh_content()
         self.statusBar().showMessage(f"Switched to {mode.title()} Mode", 2000)
+
+    def _set_dual_tree_mode(self, enabled: bool) -> None:
+        self.dual_tree_mode = bool(enabled)
+        if hasattr(self, "dual_tree_action"):
+            self.dual_tree_action.setChecked(self.dual_tree_mode)
+        if hasattr(self, "dual_tree_button"):
+            self.dual_tree_button.setChecked(self.dual_tree_mode)
+        if self.view_mode == "tree":
+            self._refresh_content()
 
     def _apply_sort(self, sort_by: str) -> None:
         """Sort bookmarks by specified field."""

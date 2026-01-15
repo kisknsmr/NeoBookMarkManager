@@ -1,5 +1,7 @@
 # タイポグラフィ設計書
 
+> ⚠ このドキュメントは CustomTkinter 時代の内容を含みます。現行の PySide6 実装とは一部一致しない可能性があります。
+
 ## 📝 概要
 
 Bookmark StudioはMaterial Design 3（Material You）の原則に基づき、プロフェッショナル品質のタイポグラフィシステムを採用しています。

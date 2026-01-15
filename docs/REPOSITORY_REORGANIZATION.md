@@ -2,7 +2,7 @@
 
 ## 1. プロジェクト概要（事実）
 
-- **種別**: Desktopアプリケーション（Python + CustomTkinter）
+- **種別**: Desktopアプリケーション（Python + PySide6）
 - **エントリポイント**: `main.py` → `gui.main_window.App`
 - **ビルド・実行方法**:
   - 直接実行: `python3 main.py`
@@ -160,7 +160,7 @@ tests/test_services.py
 
 ### 主要外部ライブラリ
 
-- **customtkinter>=5.2.0**: メインGUIフレームワーク（実際に使用）
+- **PySide6==6.7.0**: メインGUIフレームワーク（実際に使用）
 - **google-generativeai**: Gemini APIクライアント（AI分類機能）
 - **requests**: HTTPリクエスト（プレビュー取得、タイトル修正、ファビコン取得）
 - **beautifulsoup4**: HTMLパーサー（ブックマークHTML解析、プレビュー取得）
