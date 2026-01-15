@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont
 
 from gui.theme import ColorTokens, Typography, create_qfont
 from core.model import Node
-from gui.ui_kit import StyledButton
+# from discard.ui_kit import StyledButton # Removed unused import
 
 
 class CustomPromptDialog(QDialog):
@@ -89,11 +89,15 @@ class CustomPromptDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        ok_btn = StyledButton(text="OK", command=self._accept, variant="primary")
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self._accept)
+        ok_btn.setObjectName("primaryButton")
         ok_btn.setMaximumWidth(100)
         btn_layout.addWidget(ok_btn)
         
-        cancel_btn = StyledButton(text="キャンセル", command=self._reject, variant="secondary")
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.clicked.connect(self._reject)
+        cancel_btn.setObjectName("secondaryButton")
         cancel_btn.setMaximumWidth(100)
         btn_layout.addWidget(cancel_btn)
         
@@ -198,11 +202,15 @@ class FolderSelectDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        ok_btn = StyledButton(text="OK", command=self._accept, variant="primary")
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self._accept)
+        ok_btn.setObjectName("primaryButton")
         ok_btn.setMaximumWidth(100)
         btn_layout.addWidget(ok_btn)
         
-        cancel_btn = StyledButton(text="キャンセル", command=self._reject, variant="secondary")
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.clicked.connect(self._reject)
+        cancel_btn.setObjectName("secondaryButton")
         cancel_btn.setMaximumWidth(100)
         btn_layout.addWidget(cancel_btn)
         

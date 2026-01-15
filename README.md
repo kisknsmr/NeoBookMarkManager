@@ -2,6 +2,12 @@
 
 **AIの力で、煩雑になったブックマークを「賢く」整理・統合するデスクトップツール**
 
+> **🎉 Status**: Version 2.0.0 (PySide6 Edition) — READY FOR USE
+> 
+> ✅ Full PySide6 GUI migration complete | ✅ All features functional | ✅ Session memory ready
+>
+> See [MIGRATION_COMPLETE.md](MIGRATION_COMPLETE.md) for detailed technical report.
+
 Bookmark Studioは、Chrome等のブラウザからエクスポートしたブックマークHTMLファイルを読み込み、階層構造の編集、重複削除、そしてGemini AIを活用した自動分類を行うことができるプロフェッショナルな管理ツールです。
 
 ## 📋 目次

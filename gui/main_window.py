@@ -1,2161 +1,1275 @@
-"""
-CustomTkinterベースの新しいメインウィンドウ
-モダンなWebアプリ風UI
+﻿"""
+PySide6-based main window for NeoBookMarkManager.
+Material Design 3 layout with splitter-based 3-column structure.
 """
 
 import os
-import json
+import queue
 import re
 import threading
-import queue
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import urlparse
-from typing import Optional, Dict, List, Set, Any
-import tkinter as tk
-from tkinter import filedialog, simpledialog, messagebox
-import customtkinter as ctk
-import logging
-from logging.handlers import RotatingFileHandler
 
-# Optional external libs
-try:
-    import requests
-except Exception:
-    requests = None
+from PySide6.QtCore import QTimer, Qt, QUrl, QSignalBlocker
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QFont
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+    QGridLayout,
+)
 
-try:
-    from services.ai_classifier import AIBookmarkClassifier, BookmarkNode
-except Exception:
-    AIBookmarkClassifier = None
-    class BookmarkNode:
-        def __init__(self, title=None, url=None):
-            self.title = title
-            self.url = url
-
-from core.utils import is_valid_url, LRUCache
-from core.storage import ConfigManager, load_bookmarks, save_bookmarks
+from core.logger import logger
 from core.model import Node
-from core.logger import logger  # Import global logger
+from core.storage import ConfigManager, load_bookmarks, save_bookmarks
+from core.utils import LRUCache, is_valid_url
+from gui.components import BookmarkCard, BookmarkRow, DetailPanel, FolderTree, SearchBar
 from gui.dialogs import CustomPromptDialog, FolderSelectDialog
-from gui.components import BookmarkCard, FolderTree, SearchBar, DetailPanel, BookmarkRow
+from gui.resources import Typography, WindowSize
 from services.workers import fetch_preview, fix_titles
-from gui.drag_manager import DragManager
-
-# CustomTkinterのテーマ設定 - Dark Theme
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
-
-from gui.ui_kit import StyledButton
-from gui.theme import Colors, Fonts, Dims
 
 
-# ==================== Shim: 新規 App との互換性ブリッジ ====================
+class MainWindow(QMainWindow):
+    """Main application window (PySide6)."""
 
-def _use_new_app_architecture():
-    """
-    新規 gui/app.py を使用するかどうかを判定。
-    環境変数やフラグで制御可能。
-    """
-    import os
-    return os.environ.get("NBOOKMARK_USE_NEW_APP", "0") != "0"
-
-
-class App(ctk.CTk):
-    """
-    メインアプリケーションクラス（互換性シム版）。
-    
-    新規アーキテクチャ（gui/app.py + gui/worker_manager.py）への
-    段階的移行をサポートするシムレイヤー。
-    
-    既存コードの呼び出しは引き続き動作し、
-    新規コンポーネントは新しい API を使用できる。
-    """
-    
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-        # Font family stabilization
-        try:
-            import tkinter.font as tkfont
-            available = set(tkfont.families(self))
-            candidates = [
-                getattr(Fonts, "FAMILY", None),
-                getattr(Fonts, "FAMILY_FALLBACK", None),
-                "Noto Sans CJK JP",
-                "Noto Sans JP",
-                "Noto Sans",
-                "DejaVu Sans",
-                "Arial",
-            ]
-            chosen = None
-            for cand in candidates:
-                if cand and cand in available:
-                    chosen = cand
-                    break
-            if not chosen:
-                chosen = tkfont.nametofont("TkDefaultFont").cget("family")
-            Fonts.FAMILY = chosen
-        except Exception:
-            pass
-        
-        self.title("Bookmark Studio — Chrome Bookmarks Organizer")
-        self.geometry("1400x800")
-        self.minsize(1000, 600)
-        
-        # ログ設定
+        # logging and config
         self.logger = logger
         self._setup_logging()
-        
-        # 設定管理
         self.config_manager = ConfigManager()
-        
-        # ドラッグマネージャー
-        self.drag_manager = DragManager(self, on_drop=self._on_drop_item)
 
-        # ========== 新規アーキテクチャ互換性レイヤー ==========
-        # 新しい gui/app.py と gui/worker_manager.py を内部で使用し、
-        # 既存コードとの互換性を保つ
-        
+        # optional worker stack (kept for future integration)
+        self.worker = None
+        self._image_cache = None
+        self._new_app_available = False
         try:
-            from gui.worker_manager import WorkerManager
-            from gui.ui_state import UIState
-            from core.image_utils import ImageCache
-            
-            # 新規アーキテクチャ
-            self.worker = WorkerManager(max_workers=2)  # ワーカー数削減
-            self.ui_state = UIState()
-            self._image_cache = ImageCache(max_size=128)  # キャッシュ削減
-            self._new_app_available = True
-        except Exception as e:
-            logger.warning(f"New app architecture not available: {e}")
-            self._new_app_available = False
+            from gui.worker_manager import WorkerManager  # type: ignore
+            from core.image_utils import ImageCache  # type: ignore
 
-        # データモデル
+            self.worker = WorkerManager(max_workers=2)
+            self._image_cache = ImageCache(max_size=128)
+            self._new_app_available = True
+        except Exception as exc:  # pragma: no cover - optional path
+            self.logger.warning("New app architecture not available: %s", exc)
+
+        # data model
         self.root_node = Node("folder", "Bookmarks")
-        self.current_file = None
+        self.current_file: Optional[str] = None
         self.rules = self._default_rules()
-        self.rules_path = None
-        self.current_folder = self.root_node  # 現在表示中のフォルダ
-        
-        # UI状態
-        self.card_to_node: Dict[Any, Node] = {} # Card or Row -> Node
+        self.rules_path: Optional[str] = None
+        self.current_folder = self.root_node
+        self.selected_node: Optional[Node] = None
+        self._startup_complete = False
+
+        # ui state
+        self.card_to_node: Dict[Any, Node] = {}
         self.selected_cards: Set[Any] = set()
         self.preview_cache = LRUCache(maxsize=50)
-        self.ui_queue = queue.Queue()
-        self.search_index = {}
+        self.ui_queue: "queue.Queue[Any]" = queue.Queue()
+        self.search_index: Dict[Node, str] = {}
+        self._url_lookup: Dict[str, List[Node]] = {}
+        self.search_query: str = ""
+        self.search_hits: Set[Node] = set()
         self.max_smart_items = 300
-        self.progress_history = []
-        self.use_proxy_var = ctk.BooleanVar(value=True)
-        self.view_mode = "card" # "card" or "list"
-        
-        # AI分類関連
-        self.last_classified_bookmarks = []
-        self.last_classification_prompts = []
+        self.progress_history: List[Any] = []
+        self.use_proxy = True
+        self.view_mode = "card"  # "card" | "list" | "tree"
+        self.network_updates_enabled = False
+        self._building_tree = False
+
+        # async related
         self._smart_dialog = None
         self._smart_cancelled = False
-        self.progress_var = None
-        self.progress_label = None
-        self.traffic_label = None
-        
-        # タイトル修正関連
         self._titlefix_dialog = None
         self._titlefix_cancelled = False
-        self._titlefix_var = None
-        self._titlefix_label = None
         self.fetch_timeout = 10
-        
-        # HTML読み込み関連
         self._load_dialog = None
         self._load_cancelled = False
-        self._load_var = None
-        self._load_label = None
-        
-        # UI構築（遅延読み込み対応）
+
+        # build UI
+        self._setup_ui()
+        self._create_menu_bar()
         self._build_ui()
-        
-        # 検索インデックスは遅延構築
-        self.after(500, self._build_search_index)
-        
-        # ポーラーの開始（間隔を200msに変更して負荷軽減）
-        if self._new_app_available:
-            self.after(200, self._poll_worker_results)
-        else:
-            self.after(200, self._process_ui_queue)
-    
-    def _poll_worker_results(self) -> None:
-        """WorkerManager の結果をポーリング（200ms 間隔）"""
-        try:
-            if hasattr(self, 'worker'):
-                self.worker.poll_results()
-            # ui_queueも処理する（重要！）
-            self._process_ui_queue_once()
-        except Exception as e:
-            # クリティカルなエラーのみログ記録
-            self.logger.error(f"Worker polling failed: {e}", exc_info=True)
-        finally:
-            self.after(200, self._poll_worker_results)
-    
-    def _setup_logging(self):
-        """ログ設定 (WARNING以上のみファイル出力)"""
-        # 既存ハンドラーチェック
+
+        # delayed search index build
+        QTimer.singleShot(500, self._build_search_index)
+
+        # start polling
+        self._start_polling()
+
+    # ---------------------------- UI construction ----------------------------
+    def _setup_ui(self) -> None:
+        """Basic window setup and stylesheet loading."""
+        self.setWindowTitle("Bookmark Studio — Chrome Bookmarks Organizer")
+        self.resize(WindowSize.DEFAULT_WIDTH, WindowSize.DEFAULT_HEIGHT)
+        self.setMinimumSize(WindowSize.MIN_WIDTH, WindowSize.MIN_HEIGHT)
+
+        style_path = Path(__file__).parent / "style.qss"
+        if style_path.exists():
+            with open(style_path, "r", encoding="utf-8") as f:
+                self.setStyleSheet(f.read())
+
+    def _setup_logging(self) -> None:
+        """Set up file logging at WARNING level or above."""
+        from logging.handlers import RotatingFileHandler
+        import logging
+
         for handler in self.logger.handlers:
             if isinstance(handler, RotatingFileHandler):
                 return
 
-        # WARNING以上のみファイル出力（パフォーマンスとデバッグのバランス）
-        log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         file_handler = RotatingFileHandler(
-            'bookmark_editor.log', 
-            maxBytes=1024 * 1024,  # 1MB
-            backupCount=2, 
-            encoding='utf-8'
+            "bookmark_editor.log",
+            maxBytes=1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
         )
         file_handler.setFormatter(log_formatter)
-        file_handler.setLevel(logging.WARNING)  # WARNING以上のみ
+        file_handler.setLevel(logging.WARNING)
         self.logger.addHandler(file_handler)
         self.logger.setLevel(logging.WARNING)
 
-    def _build_ui(self):
-        """
-        UI を HTML モックアップ構造に合わせて再構築します。
-        - 左: `self.left_panel` (FolderTree + Search + Cards)
-        - 右: `self.right_sidebar` (スクロール可能なコマンドカード群)
-        ロジック（command 等）は変更しません。
-        """
+    def _create_menu_bar(self) -> None:
+        """Create application menu bar."""
+        menubar = self.menuBar()
 
-        # -----------------------
-        # ルート: メニューバー（既存ロジックを保持）
-        # -----------------------
-        menubar = tk.Menu(self)
-        filem = tk.Menu(menubar, tearoff=0)
-        filem.add_command(label="Open HTML…", command=self.cmd_open, accelerator="Ctrl+O")
-        filem.add_command(label="Save", command=self.cmd_save, accelerator="Ctrl+S")
-        filem.add_command(label="Save As…", command=self.cmd_save_as, accelerator="Ctrl+Shift+S")
-        filem.add_separator()
-        filem.add_command(label="Exit", command=self.destroy)
-        menubar.add_cascade(label="File", menu=filem)
+        # File menu
+        file_menu = menubar.addMenu("&File")
+        open_action = QAction("&Open HTML...", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self.cmd_open)
+        file_menu.addAction(open_action)
 
-        editm = tk.Menu(menubar, tearoff=0)
-        editm.add_command(label="New Folder", command=self.cmd_new_folder, accelerator="Ctrl+Shift+N")
-        editm.add_command(label="New Bookmark", command=self.cmd_new_bookmark, accelerator="Ctrl+N")
-        editm.add_command(label="Rename", command=self.cmd_rename, accelerator="F2")
-        editm.add_command(label="Edit URL", command=self.cmd_edit_url)
-        editm.add_separator()
-        editm.add_command(label="Move to Folder…", command=self.cmd_move_to_folder)
-        editm.add_command(label="Move Up", command=self.cmd_move_up, accelerator="Ctrl+Up")
-        editm.add_command(label="Delete", command=self.cmd_delete, accelerator="Delete")
-        menubar.add_cascade(label="Edit", menu=editm)
+        save_action = QAction("&Save", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.cmd_save)
+        file_menu.addAction(save_action)
 
-        toolsm = tk.Menu(menubar, tearoff=0)
-        toolsm.add_checkbutton(label="プロキシを使用する", variable=self.use_proxy_var, onvalue=True, offvalue=False)
-        toolsm.add_command(label="プロキシ接続をテスト", command=self.cmd_check_proxy)
-        toolsm.add_separator()
-        toolsm.add_command(label="Sort by Title (A→Z)", command=lambda: self.cmd_sort("title"))
-        toolsm.add_command(label="Sort by Domain (A→Z)", command=lambda: self.cmd_sort("domain"))
-        toolsm.add_command(label="Deduplicate in Folder", command=self.cmd_dedupe)
-        toolsm.add_command(label="Merge Duplicate Folders", command=self.cmd_merge_folders)
-        toolsm.add_separator()
-        toolsm.add_command(label="Auto Classify (Rules)…", command=self.cmd_show_classify_preview)
-        toolsm.add_command(label="Smart Classify (AI)…", command=self.cmd_smart_classify)
-        toolsm.add_command(label="Set Smart Classify Limit…", command=self.cmd_set_smart_classify_limit)
-        toolsm.add_separator()
-        toolsm.add_command(label="Fix Titles from URL…", command=self.cmd_fix_titles_from_url)
-        toolsm.add_command(label="Set Title Fetch Timeout…", command=self.cmd_set_title_fetch_timeout)
-        toolsm.add_separator()
-        toolsm.add_command(label="Edit Classify Rules…", command=self.cmd_edit_rules)
-        toolsm.add_command(label="Show Progress Chart", command=self.cmd_show_progress_chart)
-        menubar.add_cascade(label="Tools", menu=toolsm)
+        save_as_action = QAction("Save &As...", self)
+        save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_action.triggered.connect(self.cmd_save_as)
+        file_menu.addAction(save_as_action)
 
-        try:
-            self.tk.call('tk', 'windowingsystem') == 'aqua'
-            self.createcommand('tk::mac::ReopenApplication', lambda: None)
-        except Exception:
-            pass
-        self.config(menu=menubar)
+        file_menu.addSeparator()
 
-        # -----------------------
-        # ルートグリッド: 左(主) / 右(サイドバー)
-        # -----------------------
-        self.grid_columnconfigure(0, weight=3)
-        self.grid_columnconfigure(1, weight=1, minsize=280)
-        self.grid_rowconfigure(0, weight=1)
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
 
-        # 左カラム (FolderTree + Cards)
-        self.left_panel = ctk.CTkFrame(self, fg_color=Colors.BACKGROUND)
-        self.left_panel.grid(row=0, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+        new_folder_action = QAction("New &Folder", self)
+        new_folder_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        new_folder_action.triggered.connect(self.cmd_new_folder)
+        edit_menu.addAction(new_folder_action)
 
-        # 右サイドバー (スクロール可能なコマンド領域)
-        self.right_sidebar = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.right_sidebar.grid(row=0, column=1, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
+        new_bookmark_action = QAction("New &Bookmark", self)
+        new_bookmark_action.setShortcut(QKeySequence.StandardKey.New)
+        new_bookmark_action.triggered.connect(self.cmd_new_bookmark)
+        edit_menu.addAction(new_bookmark_action)
 
-        # -----------------------
-        # 左カラム内部レイアウト（上: Tree, 下: Cards）
-        # -----------------------
-        self.left_panel.grid_columnconfigure(0, weight=1)
-        self.left_panel.grid_rowconfigure(0, weight=65)
-        self.left_panel.grid_rowconfigure(1, weight=35)
+        rename_action = QAction("&Rename", self)
+        rename_action.setShortcut(QKeySequence("F2"))
+        rename_action.triggered.connect(self.cmd_rename)
+        edit_menu.addAction(rename_action)
 
-        # Tree コンテナ
-        tree_container = ctk.CTkFrame(self.left_panel, fg_color=Colors.SURFACE_1, corner_radius=Dims.RADIUS_M)
-        tree_container.grid(row=0, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=(0, Dims.SPACING_S))
-        tree_container.grid_columnconfigure(0, weight=1)
-        tree_container.grid_rowconfigure(1, weight=1)
+        edit_url_action = QAction("Edit &URL", self)
+        edit_url_action.triggered.connect(self.cmd_edit_url)
+        edit_menu.addAction(edit_url_action)
 
-        # Tree header
-        tree_header = ctk.CTkFrame(tree_container, fg_color="transparent")
-        tree_header.grid(row=0, column=0, sticky="ew", padx=Dims.SPACING_M, pady=(Dims.SPACING_M // 2, Dims.SPACING_S // 2))
-        tree_header.grid_columnconfigure(0, weight=1)
-        tree_label = ctk.CTkLabel(tree_header, text="📁 Bookmarks",
-                                  font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD),
-                                  text_color=Colors.TEXT_PRIMARY, anchor="w")
-        tree_label.grid(row=0, column=0, sticky="w")
+        edit_menu.addSeparator()
 
-        ops_frame = ctk.CTkFrame(tree_header, fg_color="transparent")
-        ops_frame.grid(row=0, column=1, sticky="e")
-        expand_btn = ctk.CTkButton(ops_frame, text="展開", width=50, height=22,
-                                   font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS),
-                                   fg_color=Colors.SURFACE_1, text_color=Colors.TEXT_PRIMARY,
-                                   hover_color=Colors.HOVER_BG,
-                                   command=lambda: getattr(self, "folder_tree").expand_selected() if hasattr(self, "folder_tree") else None)
-        expand_btn.pack(side="left", padx=2)
-        collapse_btn = ctk.CTkButton(ops_frame, text="縮小", width=50, height=22,
-                                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS),
-                                     fg_color=Colors.SURFACE_1, text_color=Colors.TEXT_PRIMARY,
-                                     hover_color=Colors.HOVER_BG,
-                                     command=lambda: getattr(self, "folder_tree").collapse_selected() if hasattr(self, "folder_tree") else None)
-        collapse_btn.pack(side="left", padx=2)
+        move_action = QAction("&Move to Folder...", self)
+        move_action.triggered.connect(self.cmd_move_to_folder)
+        edit_menu.addAction(move_action)
 
-        # FolderTree 実体
-        self.folder_tree = FolderTree(
-            tree_container,
-            self.root_node,
-            on_folder_select=self._on_folder_selected,
-            on_bookmark_click=self._on_card_click,
-            on_bookmark_double_click=self._on_card_double_click
-        )
-        self.folder_tree.grid(row=1, column=0, sticky="nsew", padx=Dims.SPACING_M, pady=Dims.SPACING_M)
+        move_up_action = QAction("Move &Up", self)
+        move_up_action.setShortcut(QKeySequence("Ctrl+Up"))
+        move_up_action.triggered.connect(self.cmd_move_up)
+        edit_menu.addAction(move_up_action)
 
-        # Cards エリア（下部）
-        cards_container = ctk.CTkFrame(self.left_panel, fg_color="transparent")
-        cards_container.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        cards_container.grid_columnconfigure(0, weight=1)
-        cards_container.grid_rowconfigure(1, weight=1)
+        delete_action = QAction("&Delete", self)
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.triggered.connect(self.cmd_delete)
+        edit_menu.addAction(delete_action)
 
-        header_frame = ctk.CTkFrame(cards_container, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, Dims.SPACING_S))
-        header_frame.grid_columnconfigure(0, weight=1)
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+        proxy_action = QAction("Use Proxy", self, checkable=True)
+        proxy_action.setChecked(self.use_proxy)
+        proxy_action.triggered.connect(lambda checked: setattr(self, "use_proxy", checked))
+        tools_menu.addAction(proxy_action)
 
-        self.search_bar = SearchBar(header_frame, on_search=self._on_search)
-        self.search_bar.grid(row=0, column=0, sticky="ew", padx=(0, Dims.SPACING_S))
+        test_proxy_action = QAction("Test Proxy Connection", self)
+        test_proxy_action.triggered.connect(self.cmd_check_proxy)
+        tools_menu.addAction(test_proxy_action)
 
-        self.view_toggle_btn = ctk.CTkButton(
-            header_frame,
-            text="List View",
-            width=100,
-            height=36,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S),
-            command=self._toggle_view_mode
-        )
-        self.view_toggle_btn.grid(row=0, column=1, padx=(0, Dims.SPACING_S))
+        tools_menu.addSeparator()
 
-        self.cards_frame = ctk.CTkFrame(cards_container, fg_color=Colors.BACKGROUND)
-        self.cards_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
-        self.cards_frame.grid_columnconfigure(0, weight=1)
+        classify_action = QAction("Rule-based Classification...", self)
+        classify_action.triggered.connect(self.cmd_show_classify_preview)
+        tools_menu.addAction(classify_action)
 
-        # -----------------------
-        # 右サイドバー: カード群を追加
-        # -----------------------
-        def _make_card(parent, title):
-            card = ctk.CTkFrame(parent, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-            card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-            header = ctk.CTkLabel(card, text=title,
-                                  font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD),
-                                  text_color=Colors.TEXT_SECONDARY, anchor="w")
-            header.pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_M, Dims.SPACING_S // 2))
-            return card
+        smart_classify_action = QAction("AI Smart Classification...", self)
+        smart_classify_action.triggered.connect(self.cmd_smart_classify)
+        tools_menu.addAction(smart_classify_action)
 
-        # ファイルカード
-        file_card = _make_card(self.right_sidebar, "ファイル")
-        StyledButton(file_card, text="保存", command=self.cmd_save, variant="primary", height=44,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_L, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        file_actions = ctk.CTkFrame(file_card, fg_color="transparent")
-        file_actions.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
-        left_grp = ctk.CTkFrame(file_actions, fg_color="transparent"); left_grp.pack(side="left")
-        right_grp = ctk.CTkFrame(file_actions, fg_color="transparent"); right_grp.pack(side="right")
-        StyledButton(left_grp, text="別名保存", command=self.cmd_save_as, variant="secondary", height=34, width=120,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).pack(side="left")
-        StyledButton(right_grp, text="開く", command=self.cmd_open, variant="ghost", height=34, width=120,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_BOLD)).pack(side="right")
+        tools_menu.addSeparator()
 
-        # 編集カード
-        edit_card = _make_card(self.right_sidebar, "編集")
-        StyledButton(edit_card, text="新規フォルダ", command=self.cmd_new_folder, variant="primary", height=44,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        edit_grid = ctk.CTkFrame(edit_card, fg_color="transparent"); edit_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
-        edit_grid.grid_columnconfigure(0, weight=1); edit_grid.grid_columnconfigure(1, weight=1)
-        edit_buttons = [
-            ("新規ブックマーク", self.cmd_new_bookmark, "secondary"),
-            ("名前変更", self.cmd_rename, "ghost"),
-            ("URL編集", self.cmd_edit_url, "ghost"),
-            ("移動", self.cmd_move_to_folder, "ghost"),
-            ("削除", self.cmd_delete, "danger"),
-        ]
-        for idx, (txt, cmd, var) in enumerate(edit_buttons):
-            r = idx // 2; c = idx % 2
-            StyledButton(edit_grid, text=txt, command=cmd, variant=var, height=34,
-                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+        fix_titles_action = QAction("Fix Titles from URL", self)
+        fix_titles_action.triggered.connect(self.cmd_fix_titles_from_url)
+        tools_menu.addAction(fix_titles_action)
 
-        # 整理カード
-        organize_card = _make_card(self.right_sidebar, "整理")
-        StyledButton(organize_card, text="重複削除", command=self.cmd_dedupe, variant="primary", height=44,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        org_grid = ctk.CTkFrame(organize_card, fg_color="transparent"); org_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
-        org_grid.grid_columnconfigure(0, weight=1); org_grid.grid_columnconfigure(1, weight=1)
-        organize_buttons = [
-            ("タイトル順", lambda: self.cmd_sort("title"), "ghost"),
-            ("ドメイン順", lambda: self.cmd_sort("domain"), "ghost"),
-            ("上へ移動", self.cmd_move_up, "ghost"),
-            ("フォルダ統合", self.cmd_merge_folders, "ghost"),
-        ]
-        for idx, (txt, cmd, var) in enumerate(organize_buttons):
-            r = idx // 2; c = idx % 2
-            StyledButton(org_grid, text=txt, command=cmd, variant=var, height=34,
-                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+        # View menu
+        view_menu = menubar.addMenu("&View")
+        tree_mode_action = QAction("&Tree Mode", self, checkable=True)
+        tree_mode_action.setChecked(self.view_mode == "tree")
+        tree_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("tree"))
+        view_menu.addAction(tree_mode_action)
 
-        # AI分類カード
-        ai_card = _make_card(self.right_sidebar, "AI分類")
-        StyledButton(ai_card, text="スマート分類", command=self.cmd_smart_classify, variant="primary", height=44,
-                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)).pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S))
-        ai_grid = ctk.CTkFrame(ai_card, fg_color="transparent"); ai_grid.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_M))
-        ai_grid.grid_columnconfigure(0, weight=1); ai_grid.grid_columnconfigure(1, weight=1)
-        ai_buttons = [
-            ("ルール分類", self.cmd_show_classify_preview, "secondary"),
-            ("ルール編集", self.cmd_edit_rules, "ghost"),
-            ("上限設定", self.cmd_set_smart_classify_limit, "ghost"),
-            ("タイトル取得", self.cmd_fix_titles_from_url, "secondary"),
-        ]
-        for idx, (txt, cmd, var) in enumerate(ai_buttons):
-            r = idx // 2; c = idx % 2
-            StyledButton(ai_grid, text=txt, command=cmd, variant=var, height=34,
-                         font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S)).grid(row=r, column=c, sticky="ew", padx=6, pady=4)
+        card_mode_action = QAction("&Card Mode", self, checkable=True)
+        card_mode_action.setChecked(self.view_mode == "card")
+        card_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("card"))
+        view_menu.addAction(card_mode_action)
 
-        # その他カード
-        other_card = _make_card(self.right_sidebar, "その他")
-        btn_container = ctk.CTkFrame(other_card, fg_color="transparent"); btn_container.pack(fill="x", padx=8, pady=(0, 10))
-        btn_container.grid_columnconfigure(0, weight=1); btn_container.grid_columnconfigure(1, weight=1)
-        proxy_check = ctk.CTkCheckBox(btn_container, text="プロキシ使用", variable=self.use_proxy_var,
-                                      font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS))
-        proxy_check.grid(row=0, column=0, columnspan=2, sticky="w", padx=4, pady=4)
-        other_buttons = [
-            ("テスト", self.cmd_check_proxy, "ghost"),
-            ("タイムアウト", self.cmd_set_title_fetch_timeout, "ghost"),
-            ("進捗表示", self.cmd_show_progress_chart, "ghost"),
-            ("終了", self.destroy, "ghost"),
-        ]
-        for idx, (txt, cmd, var) in enumerate(other_buttons):
-            r = (idx // 2) + 1; c = idx % 2
-            btn = StyledButton(btn_container, text=txt, command=cmd, variant=var, height=32,
-                               font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_S, weight=Fonts.WEIGHT_NORMAL))
-            btn.grid(row=r, column=c, sticky="ew", padx=4, pady=3)
+        list_mode_action = QAction("&List Mode", self, checkable=True)
+        list_mode_action.setChecked(self.view_mode == "list")
+        list_mode_action.triggered.connect(lambda: self.cmd_set_view_mode("list"))
+        view_menu.addAction(list_mode_action)
 
-        # 詳細パネル（右下固定） — UI要件により右下に固定表示
-        detail_container = ctk.CTkFrame(self, fg_color=Colors.SURFACE_1, height=140)
-        detail_container.grid(row=1, column=1, sticky="ew", padx=Dims.SPACING_S, pady=(Dims.SPACING_S // 2, 0))
-        detail_header = ctk.CTkLabel(detail_container, text="ℹ️ 詳細情報",
-                                     font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_XXS, weight=Fonts.WEIGHT_BOLD),
-                                     text_color=Colors.TEXT_PRIMARY, anchor="w")
-        detail_header.pack(fill="x", padx=8, pady=(6, 2))
-        self.detail_panel = DetailPanel(detail_container)
-        self.detail_panel.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        self.tree_mode_action = tree_mode_action
+        self.card_mode_action = card_mode_action
+        self.list_mode_action = list_mode_action
 
-        # キーバインド継承
-        self.bind_all("<Control-o>", lambda e: self.cmd_open())
-        self.bind_all("<Control-s>", lambda e: self.cmd_save())
-        self.bind_all("<Control-S>", lambda e: self.cmd_save_as())
-        self.bind_all("<Control-n>", lambda e: self.cmd_new_bookmark())
-        self.bind_all("<Control-N>", lambda e: self.cmd_new_folder())
-        self.bind_all("<Delete>", lambda e: self.cmd_delete())
-        self.bind_all("<F2>", lambda e: self.cmd_rename())
-        self.bind_all("<Control-Up>", lambda e: self.cmd_move_up())
+    def _build_ui(self) -> None:
+        """Build main layout with topbar + splitter panels."""
+        central = QWidget()
+        self.setCentralWidget(central)
 
-        # 初期表示呼び出し
-        self._refresh_content()
-    
-    def _add_command_card(self, parent, title: str, buttons: list):
-        """
-        マテリアルデザインのコマンドカードを追加（2列グリッドレイアウト）
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # Top bar
+        main_layout.addWidget(self._create_topbar())
+        
+        # Content area
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(8)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        content_layout.addWidget(splitter)
+
+        self.left_panel = self._create_left_panel()
+        splitter.addWidget(self.left_panel)
+
+        self.right_panel = self._create_right_panel()
+        splitter.addWidget(self.right_panel)
+
+        splitter.setSizes([600, 300])
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        
+        main_layout.addWidget(content_widget, 1)
+
+        self.statusBar().showMessage("Ready")
+        self._update_bookmark_count()
+
+    def _create_topbar(self) -> QFrame:
+        """Create top bar with brand, chips, and actions."""
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        layout = QHBoxLayout(topbar)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(12)
+        
+        # Brand section
+        brand_label = QLabel("📑 Bookmark Studio")
+        brand_font = QFont(Typography.FONT_FAMILY, 12)
+        brand_font.setBold(True)
+        brand_label.setFont(brand_font)
+        layout.addWidget(brand_label)
+        
+        # Chip: version
+        chip1 = QLabel("v1.0")
+        chip1.setObjectName("chip")
+        layout.addWidget(chip1)
+        
+        # Spacer
+        layout.addStretch()
+        
+        # Right actions
+        chip2 = QLabel("2画面モード")
+        chip2.setObjectName("chip")
+        layout.addWidget(chip2)
+        
+        # View mode chip
+        display_text = "Tree" if self.view_mode == "tree" else ("Card" if self.view_mode == "card" else "List")
+        mode_chip = QLabel(f"表示: {display_text}")
+        mode_chip.setObjectName("chip")
+        self.mode_chip = mode_chip
+        layout.addWidget(mode_chip)
+        
+        # Expand all button
+        expand_btn = QPushButton("すべて展開")
+        expand_btn.setObjectName("outlineButton")
+        expand_btn.setMaximumHeight(30)
+        expand_btn.setMinimumWidth(80)
+        expand_btn.clicked.connect(self.cmd_expand_all)
+        layout.addWidget(expand_btn)
+        
+        # Collapse all button
+        collapse_btn = QPushButton("すべて縮小")
+        collapse_btn.setObjectName("ghostButton")
+        collapse_btn.setMaximumHeight(30)
+        collapse_btn.setMinimumWidth(80)
+        collapse_btn.clicked.connect(self.cmd_collapse_all)
+        layout.addWidget(collapse_btn)
+        
+        return topbar
+
+    def _create_left_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("leftPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # Header with title
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+        
+        header = QLabel("📁 Bookmarks")
+        header_font = Typography.get_title_font()
+        header.setFont(header_font)
+        header.setObjectName("panelHeader")
+        header_layout.addWidget(header)
+
+        count_label = QLabel("0")
+        count_label.setObjectName("chip")
+        header_layout.addWidget(count_label)
+        self.bookmarks_count_label = count_label
+        
+        header_layout.addStretch()
+        layout.addWidget(header_widget)
+
+        # Search bar
+        self.search_bar = SearchBar()
+        self.search_bar.search_triggered.connect(self._on_search)
+        layout.addWidget(self.search_bar)
+
+        # Workspace header with view toggle (above main view)
+        workspace_header = QWidget()
+        workspace_layout = QHBoxLayout(workspace_header)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(12)
+        
+        workspace_title = QLabel("Bookmarks")
+        workspace_title.setObjectName("panelHeader")
+        workspace_layout.addWidget(workspace_title)
+
+        workspace_count = QLabel("0")
+        workspace_count.setObjectName("chip")
+        workspace_layout.addWidget(workspace_count)
+        self.workspace_count_label = workspace_count
+        
+        workspace_layout.addStretch()
+        
+        tree_btn = QPushButton("Tree")
+        tree_btn.setObjectName("ghostButton")
+        tree_btn.setMaximumWidth(60)
+        tree_btn.setMaximumHeight(30)
+        tree_btn.clicked.connect(lambda: self.cmd_set_view_mode("tree"))
+        workspace_layout.addWidget(tree_btn)
+
+        list_btn = QPushButton("List")
+        list_btn.setObjectName("ghostButton")
+        list_btn.setMaximumWidth(60)
+        list_btn.setMaximumHeight(30)
+        list_btn.clicked.connect(lambda: self.cmd_set_view_mode("list"))
+        workspace_layout.addWidget(list_btn)
+
+        card_btn = QPushButton("Card")
+        card_btn.setObjectName("tonalButton")
+        card_btn.setMaximumWidth(60)
+        card_btn.setMaximumHeight(30)
+        card_btn.clicked.connect(lambda: self.cmd_set_view_mode("card"))
+        workspace_layout.addWidget(card_btn)
+
+        self.view_buttons = {
+            "tree": tree_btn,
+            "list": list_btn,
+            "card": card_btn,
+        }
+        
+        layout.addWidget(workspace_header)
+
+        # Main view (cards/list)
+        self.cards_container = QFrame()
+        self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_layout.setContentsMargins(8, 8, 8, 8)
+        self.cards_layout.setSpacing(12)
+        
+        cards_scroll = QScrollArea()
+        cards_scroll.setWidgetResizable(True)
+        cards_scroll.setObjectName("contentScroll")
+        cards_scroll.setWidget(self.cards_container)
+        layout.addWidget(cards_scroll, 1)
+        self.cards_scroll = cards_scroll
+
+        # Folder tree (tree view)
+        self.folder_tree = FolderTree()
+        self.folder_tree.item_selected.connect(self._on_folder_selected)
+
+        tree_scroll = QScrollArea()
+        tree_scroll.setWidgetResizable(True)
+        tree_scroll.setObjectName("treeScroll")
+        tree_scroll.setWidget(self.folder_tree)
+        tree_scroll.setVisible(False)
+        layout.addWidget(tree_scroll, 1)
+        self.tree_scroll = tree_scroll
+
+        return panel
+
+    def _create_right_panel(self) -> QWidget:
+        """Create right action panel with multiple sections."""
+        panel = QFrame()
+        panel.setObjectName("rightPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("actionScroll")
+        
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        scroll_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_layout.setSpacing(12)
+        
+        # File Actions Section
+        scroll_layout.addWidget(self._create_action_section(
+            "📁 ファイル",
+            "高",
+            [
+                ("別名保存", self.cmd_save_as),
+                ("保存", self.cmd_save),
+                ("開く", self.cmd_open),
+            ]
+        ))
+        
+        # Edit Actions Section
+        scroll_layout.addWidget(self._create_action_section(
+            "✏️ 編集",
+            "中",
+            [
+                ("新規フォルダ", self.cmd_new_folder),
+                ("新規ブックマーク", self.cmd_new_bookmark),
+                ("名前変更", self.cmd_rename),
+                ("URL編集", self.cmd_edit_url),
+                ("プレビュー取得", self.cmd_fetch_preview),
+                ("移動", self.cmd_move_to_folder),
+                ("削除", self.cmd_delete),
+            ],
+            danger_buttons={"削除"}
+        ))
+        
+        # Organize Section
+        scroll_layout.addWidget(self._create_action_section(
+            "🧹 整理",
+            "低",
+            [
+                ("タイトル順", lambda: self._apply_sort("title")),
+                ("ドメイン順", lambda: self._apply_sort("domain")),
+                ("上へ移動", self.cmd_move_up),
+                ("重複削除", self.cmd_delete),
+                ("フォルダ統合", self.cmd_new_folder),
+            ]
+        ))
+        
+        # AI Classification Section
+        scroll_layout.addWidget(self._create_action_section(
+            "✨ AI分類",
+            "高",
+            [
+                ("スマート分類", self.cmd_smart_classify),
+                ("ルール分類", self.cmd_show_classify_preview),
+                ("ルール編集", self.cmd_show_classify_preview),
+                ("上限設定", self.cmd_save),
+                ("タイトル取得", self.cmd_fix_titles_from_url),
+            ]
+        ))
+        
+        # Details panel at bottom
+        details_panel = self._create_details_panel()
+        scroll_layout.addWidget(details_panel)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll, stretch=1)
+        
+        return panel
+
+    def _create_details_panel(self) -> QFrame:
+        """Create details panel with URL input and preview."""
+        details = QFrame()
+        details.setObjectName("detailsSection")
+        layout = QVBoxLayout(details)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        
+        # Title
+        title_label = QLabel("ℹ️ 詳細")
+        title_font = QFont(Typography.FONT_FAMILY, 11)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        layout.addWidget(title_label)
+        
+        # URL field
+        url_label = QLabel("URL")
+        url_label.setObjectName("detailLabel")
+        layout.addWidget(url_label)
+        
+        url_input = QLineEdit()
+        url_input.setObjectName("textbox")
+        url_input.setPlaceholderText("https://example.com/kpi")
+        url_input.setReadOnly(True)
+        self.url_input = url_input
+        layout.addWidget(url_input)
+        
+        # Preview field
+        preview_label = QLabel("Preview")
+        preview_label.setObjectName("detailLabel")
+        layout.addWidget(preview_label)
+        
+        preview_area = QFrame()
+        preview_area.setObjectName("previewArea")
+        preview_layout = QVBoxLayout(preview_area)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        preview_text = QLabel("プレビュー領域（任意）")
+        preview_text.setAlignment(Qt.Alignment.AlignCenter)
+        preview_text.setStyleSheet("color: #808080; font-size: 12px;")
+        preview_layout.addWidget(preview_text)
+        
+        layout.addWidget(preview_area, 1)
+        
+        return details
+
+
+    def _create_action_section(self, title: str, frequency: str, actions: List[tuple], danger_buttons: Optional[Set[str]] = None) -> QFrame:
+        """Create an action section with title, frequency, and buttons.
         
         Args:
-            parent: 親ウィジェット
-            title: カードのタイトル
-            buttons: [(text, command, variant), ...] のリスト
+            title: Section title with emoji
+            frequency: Usage frequency: "高", "中", or "低"
+            actions: List of (button_text, callback) tuples
+            danger_buttons: Set of button texts that should use dangerButton style
         """
-        card = ctk.CTkFrame(parent, fg_color=Colors.SURFACE_2, corner_radius=Dims.RADIUS_M)
-        card.pack(fill="x", padx=Dims.SPACING_M, pady=Dims.SPACING_S)
-        
-        # カードヘッダー（控えめなテキスト色）
-        header_label = ctk.CTkLabel(
-            card,
-            text=title,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        )
-        header_label.pack(fill="x", padx=Dims.SPACING_M, pady=(Dims.SPACING_S, 6))
-        
-        # ボタンコンテナ（2列グリッド）
-        btn_container = ctk.CTkFrame(card, fg_color="transparent")
-        btn_container.pack(fill="x", padx=Dims.SPACING_M, pady=(0, Dims.SPACING_S + 2))
-        
-        # 2列グリッド設定
-        btn_container.grid_columnconfigure(0, weight=1, uniform="col")
-        btn_container.grid_columnconfigure(1, weight=1, uniform="col")
-        
-        # ボタンを2列で配置
-        # Enforce at most one primary per card: convert extra primaries to secondary
-        normalized_buttons = list(buttons)
-        primary_seen = False
-        for i, item in enumerate(normalized_buttons):
-            if len(item) >= 3 and item[2] == "primary":
-                if not primary_seen:
-                    primary_seen = True
-                else:
-                    # replace variant with secondary for additional primaries
-                    normalized_buttons[i] = (item[0], item[1], "secondary")
-
-        for idx, (text, command, variant) in enumerate(normalized_buttons):
-            row = idx // 2
-            col = idx % 2
-            btn = StyledButton(
-                btn_container,
-                text=text,
-                command=command,
-                variant=variant,
-                height=34,
-                font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)
-            )
-            btn.grid(row=row, column=col, sticky="ew", padx=4, pady=3)
-    
-    def _add_section_header(self, parent, text: str):
-        """セクションヘッダーを追加（旧スタイル、互換性用）"""
-        header = ctk.CTkLabel(
-            parent,
-            text=text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
-        header.pack(fill="x", padx=8, pady=(10, 3))
-    
-    def _add_grid_section_header(self, parent, text: str, row: int, colspan: int = 3):
-        """グリッドレイアウト用セクションヘッダー"""
-        header = ctk.CTkLabel(
-            parent,
-            text=text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight=Fonts.WEIGHT_BOLD),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
-        header.grid(row=row, column=0, columnspan=colspan, sticky="ew", padx=5, pady=(8, 2))
-    
-    def _add_grid_button(self, parent, text: str, command, variant: str, row: int, col: int, colspan: int = 1):
-        """グリッドレイアウト用ボタン"""
-        btn = StyledButton(
-            parent,
-            text=text,
-            command=command,
-            variant=variant,
-            height=34,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=Fonts.SIZE_M, weight=Fonts.WEIGHT_BOLD)
-        )
-        btn.grid(row=row, column=col, columnspan=colspan, sticky="ew", padx=3, pady=2)
-    
-    def _add_grid_separator(self, parent, row: int, colspan: int = 3):
-        """グリッドレイアウト用セパレータ"""
-        sep = ctk.CTkFrame(parent, height=1, fg_color=Colors.BORDER)
-        sep.grid(row=row, column=0, columnspan=colspan, sticky="ew", padx=8, pady=6)
-    
-    def _add_button(self, parent, text: str, command, variant: str = "primary"):
-        """ボタンを追加（旧スタイル、互換性用）"""
-        btn = StyledButton(
-            parent,
-            text=text,
-            command=command,
-            variant=variant,
-            height=28  # ボタンの高さを縮小
-        )
-        btn.pack(fill="x", padx=8, pady=1.5)
-    
-    def _add_separator(self, parent):
-        """セパレータを追加"""
-        sep = ctk.CTkFrame(parent, height=1, fg_color=Colors.BORDER)
-        sep.pack(fill="x", padx=8, pady=4)
-
-    def _toggle_view_mode(self):
-        """ビューモードの切り替え"""
-        if self.view_mode == "card":
-            self.view_mode = "list"
-            self.view_toggle_btn.configure(text="Card View")
-        else:
-            self.view_mode = "card"
-            self.view_toggle_btn.configure(text="List View")
-        self._refresh_content()
-    
-    def _toggle_dual_view_mode(self):
-        """2画面モードの切り替え"""
-        self.dual_view_mode = not self.dual_view_mode
-        
-        if self.dual_view_mode:
-            # 2画面モード: 左右に2つのツリービューを表示
-            self.dual_view_btn.configure(text="1画面モード", fg_color=Colors.PRIMARY)
-            tree_container = self.folder_tree.master
+        if danger_buttons is None:
+            danger_buttons = set()
             
-            # 左側ツリービュー
-            self.folder_tree.grid(row=1, column=0, sticky="nsew", padx=(Dims.SPACING_S, Dims.SPACING_S // 2), pady=Dims.SPACING_S)
+        section = QFrame()
+        section.setObjectName("actionSection")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        
+        # Section header with title and frequency
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(0)
+        
+        title_label = QLabel(title)
+        title_font = QFont(Typography.FONT_FAMILY, 11)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setObjectName("sectionTitle")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
+        
+        freq_label = QLabel(f"頻度: {frequency}")
+        freq_label.setObjectName("sectionNote")
+        header_layout.addWidget(freq_label)
+        
+        layout.addWidget(header)
+        
+        # Buttons grid
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        
+        for i, (btn_text, callback) in enumerate(actions):
+            btn = QPushButton(btn_text)
+            btn.setMinimumHeight(44)
+            btn.clicked.connect(callback)
             
-            # 右側ツリービュー
-            self.folder_tree_right.grid(row=1, column=1, sticky="nsew", padx=(Dims.SPACING_S // 2, Dims.SPACING_S), pady=Dims.SPACING_S)
-            
-            # カラム設定
-            tree_container.grid_columnconfigure(0, weight=1)
-            tree_container.grid_columnconfigure(1, weight=1)
-            
-            # 右側ツリービューを更新
-            self.folder_tree_right.refresh(self.root_node)
-        else:
-            # 1画面モード: 左側のみ表示
-            self.dual_view_btn.configure(text="2画面モード", fg_color=Colors.SURFACE_1)
-            tree_container = self.folder_tree.master
-            
-            # 左側ツリービュー
-            self.folder_tree.grid(row=1, column=0, sticky="nsew", padx=Dims.SPACING_S, pady=Dims.SPACING_S)
-            
-            # 右側ツリービューを非表示
-            self.folder_tree_right.grid_remove()
-            
-            # カラム設定
-            tree_container.grid_columnconfigure(0, weight=1)
-            tree_container.grid_columnconfigure(1, weight=0)
-    
-    def _on_folder_selected_right(self, folder_node: Node):
-        """右側ツリービューでフォルダが選択されたとき"""
-        # 右側のツリービューでは、下側のパネルは更新しない（左側のみ）
-        pass
-    
-    def _on_folder_selected(self, folder_node: Node):
-        """フォルダが選択されたとき"""
-        self.current_folder = folder_node
-        self._refresh_content()
-    
-    def _on_search(self, query: str):
-        """検索クエリが変更されたとき"""
-        self._apply_search(query)
-
-    def _refresh_content(self):
-        """コンテンツ表示を更新（カードまたはリスト）"""
-        # スクロール位置と選択状態を保存
-        scroll_position = None
-        selected_node_ids = set()
-        
-        try:
-            # スクロール位置を取得
-            if hasattr(self.cards_frame, '_parent_canvas'):
-                canvas = self.cards_frame._parent_canvas
-                if canvas:
-                    scroll_position = canvas.canvasy(0)
-        except Exception as e:
-            self.logger.debug(f"Failed to get scroll position: {e}")
-        
-        # 選択されているノードのIDを保存（ノードオブジェクトのIDを使用）
-        for card in self.selected_cards:
-            if card in self.card_to_node:
-                node = self.card_to_node[card]
-                selected_node_ids.add(id(node))
-        
-        # 既存のアイテムを削除
-        for item in list(self.card_to_node.keys()):
-            item.destroy()
-        self.card_to_node.clear()
-        self.selected_cards.clear()
-        self.drag_manager.clear_targets() # Clear old drop targets
-        
-        # 現在のフォルダのブックマークを表示
-        if not self.current_folder:
-            return
-            
-        if self.view_mode == "card":
-            self._render_cards()
-        else:
-            self._render_list()
-        
-        # スクロール位置と選択状態を復元
-        try:
-            # スクロール位置を復元
-            if scroll_position is not None:
-                if hasattr(self.cards_frame, '_parent_canvas'):
-                    canvas = self.cards_frame._parent_canvas
-                    if canvas:
-                        # yview_scrollは'pixels'をサポートしていないため、yview_movetoを使用
-                        # scroll_positionはピクセル単位なので、全体の高さに対する比率に変換
-                        canvas.update_idletasks()  # レイアウトを更新
-                        total_height = canvas.winfo_height()
-                        if total_height > 0:
-                            ratio = scroll_position / total_height
-                            canvas.yview_moveto(max(0, min(1, ratio)))
-        except Exception as e:
-            self.logger.debug(f"Failed to restore scroll position: {e}")
-        
-        # 選択状態を復元
-        if selected_node_ids:
-            for card, node in self.card_to_node.items():
-                if id(node) in selected_node_ids:
-                    self.selected_cards.add(card)
-                    if hasattr(card, 'set_selected'):
-                        card.set_selected(True)
-
-    def _filtered_nodes(self):
-        """現在のフォルダの子要素を返す（将来的にフィルタリング機能を追加可能）"""
-        if not self.current_folder:
-            return []
-        return self.current_folder.children
-
-    def _render_cards(self):
-        """カード表示モード（段階的レンダリング）"""
-        for w in self.cards_frame.winfo_children():
-            w.destroy()
-        
-        nodes = [n for n in self._filtered_nodes() if not n.is_folder]
-        if not nodes:
-            return
-        
-        # レスポンシブグリッド設定
-        self.cards_frame.update_idletasks()
-        frame_width = self.cards_frame.winfo_width()
-        min_card_width = 280
-        cols = max(1, frame_width // min_card_width)
-        
-        for i in range(cols):
-            self.cards_frame.grid_columnconfigure(i, weight=1)
-        
-        # 段階的レンダリング（50件ずつ、50ms間隔）
-        BATCH_SIZE = 50
-        total_nodes = len(nodes)
-        
-        def render_batch(start_idx, row_offset, col_offset):
-            try:
-                end_idx = min(start_idx + BATCH_SIZE, total_nodes)
-                row, col = row_offset, col_offset
-                
-                for i in range(start_idx, end_idx):
-                    node = nodes[i]
-                    card = BookmarkCard(
-                        self.cards_frame, 
-                        node, 
-                        on_click=self._on_card_click, 
-                        on_double_click=self._on_card_double_click
-                    )
-                    card.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
-                    col += 1
-                    if col >= cols:
-                        col = 0
-                        row += 1
-                
-                # 次のバッチ
-                if end_idx < total_nodes:
-                    self.after(50, lambda: render_batch(end_idx, row, col))
-                else:
-                    # 完了後にスクロール位置復元
-                    self._restore_scroll_position()
-            except Exception as e:
-                self.logger.error(f"Batch rendering failed at index {start_idx}: {e}", exc_info=True)
-        
-        render_batch(0, 0, 0)
-    
-    def _reorder_cards(self):
-        """カードの位置のみ更新（再作成しない）"""
-        if not self.current_folder:
-            return
-        
-        # ノードからカードへのマッピングを作成
-        node_to_card = {node: card for card, node in self.card_to_node.items()}
-        
-        if self.view_mode == "card":
-            row = 0
-            col = 0
-            max_cols = 3
-            
-            for child in self.current_folder.children:
-                if child.type == "bookmark" and child in node_to_card:
-                    card = node_to_card[child]
-                    card.grid(row=row, column=col, padx=12, pady=12, sticky="nsew")
-                    col += 1
-                    if col >= max_cols:
-                        col = 0
-                        row += 1
-        else:
-            for i, child in enumerate(self.current_folder.children):
-                if child.type == "bookmark" and child in node_to_card:
-                    card = node_to_card[child]
-                    card.grid(row=i, column=0, padx=12, pady=4, sticky="ew")
-
-    def _render_list(self):
-        """リスト表示モード（段階的レンダリング）"""
-        for w in self.cards_frame.winfo_children():
-            w.destroy()
-        
-        nodes = [n for n in self._filtered_nodes() if not n.is_folder]
-        if not nodes:
-            return
-        
-        self.cards_frame.grid_columnconfigure(0, weight=1)
-        
-        # 段階的レンダリング（100件ずつ、30ms間隔）
-        BATCH_SIZE = 100
-        total_nodes = len(nodes)
-        
-        def render_batch(start_idx, row_offset):
-            try:
-                end_idx = min(start_idx + BATCH_SIZE, total_nodes)
-                
-                for i in range(start_idx, end_idx):
-                    node = nodes[i]
-                    row_widget = BookmarkRow(
-                        self.cards_frame, 
-                        node, 
-                        on_click=self._on_card_click, 
-                        on_double_click=self._on_card_double_click
-                    )
-                    row_widget.grid(row=row_offset + (i - start_idx), column=0, padx=12, pady=4, sticky="ew")
-                
-                # 次のバッチ
-                if end_idx < total_nodes:
-                    self.after(30, lambda: render_batch(end_idx, row_offset + (end_idx - start_idx)))
-                else:
-                    self._restore_scroll_position()
-            except Exception as e:
-                self.logger.error(f"List rendering failed at index {start_idx}: {e}", exc_info=True)
-        
-        render_batch(0, 0)
-
-    def _bind_drag(self, widget, node):
-        """Bind drag start/motion/end events to DragManager (親ウィジェットと全子ウィジェット)"""
-        def get_all_children(w):
-            """再帰的に全ての子ウィジェットを取得"""
-            children = []
-            try:
-                for child in w.winfo_children():
-                    children.append(child)
-                    children.extend(get_all_children(child))
-            except Exception as e:
-                # ウィジェットが破棄されている場合など
-                self.logger.debug(f"Failed to get children of widget: {e}")
-            return children
-        
-        # 親ウィジェットと全子ウィジェットのリスト
-        all_widgets = [widget] + get_all_children(widget)
-        
-        # 各ウィジェットにドラッグイベントをbind
-        for w in all_widgets:
-            # Start drag wrapper - 子ウィジェットからでも親カード/行をsource_widgetとして使用
-            def start_drag_wrapper(event, parent_widget=widget, child_widget=w):
-                # 子ウィジェットからドラッグ開始した場合、offsetを親ウィジェット座標系に変換
-                if child_widget != parent_widget:
-                    try:
-                        # 子ウィジェットの座標を親ウィジェットの座標に変換
-                        child_x = event.x
-                        child_y = event.y
-                        # 子ウィジェットの親ウィジェット相対座標を取得
-                        child_root_x = child_widget.winfo_rootx()
-                        child_root_y = child_widget.winfo_rooty()
-                        parent_root_x = parent_widget.winfo_rootx()
-                        parent_root_y = parent_widget.winfo_rooty()
-                        # 親ウィジェット相対座標に変換
-                        parent_x = child_x + (child_root_x - parent_root_x)
-                        parent_y = child_y + (child_root_y - parent_root_y)
-                        # イベントオブジェクトを作成
-                        class EventProxy:
-                            def __init__(self, orig, x, y):
-                                self.x = x
-                                self.y = y
-                                self.x_root = orig.x_root
-                                self.y_root = orig.y_root
-                        proxy_event = EventProxy(event, parent_x, parent_y)
-                        self.drag_manager.start_drag(parent_widget, node, proxy_event)
-                    except Exception as e:
-                        # 変換に失敗した場合は元のイベントを使用
-                        self.logger.debug(f"Failed to convert widget coordinates, using original event: {e}")
-                        self.drag_manager.start_drag(parent_widget, node, event)
-                else:
-                    # 親ウィジェットから開始した場合はそのまま
-                    self.drag_manager.start_drag(parent_widget, node, event)
-            
-            # Motion wrapper - x_root/y_rootはそのまま使える
-            def motion_wrapper(event):
-                self.drag_manager.update_drag(event)
-            
-            # Bind events
-            w.bind("<Button-1>", start_drag_wrapper, add="+")
-            w.bind("<B1-Motion>", motion_wrapper, add="+")
-            # ButtonRelease-1はグローバルで処理するので、ここではbindしない
-        
-        # Also register as drop target (親ウィジェットのみ)
-        self.drag_manager.register_target(widget, node)
-
-    def _on_drop_item(self, source_node, target_node):
-        """Handle drop event from DragManager"""
-        if not self.current_folder:
-            return
-            
-        if source_node == target_node:
-            return
-
-        children = self.current_folder.children
-        if source_node in children and target_node in children:
-            old_idx = children.index(source_node)
-            new_idx = children.index(target_node)
-            
-            children.remove(source_node)
-            children.insert(new_idx, source_node)
-            
-            self.logger.info(f"Interactive Drop: Moved '{source_node.title}' from {old_idx} to {new_idx}")
-            
-            # 位置のみ更新（全体再構築しない）
-            self._reorder_cards()
-            
-            # ツリービューも更新
-            if hasattr(self.folder_tree, '_reorder_tree_items'):
-                self.folder_tree._reorder_tree_items(self.current_folder)
-    
-    def _on_card_click(self, node: Node, event=None):
-        """カードがクリックされたとき"""
-        # ブックマークがツリービューからクリックされた場合、親フォルダを表示
-        if node.type == "bookmark" and node.parent:
-            parent_folder = node.parent
-            if parent_folder != self.current_folder:
-                self.current_folder = parent_folder
-                self._refresh_content()
-        
-        # 対応するカードを探す
-        card = None
-        for c, n in self.card_to_node.items():
-            if n is node:
-                card = c
-                break
-        
-        if not card:
-            # カードがない場合は詳細パネルのみ更新
-            self._update_detail_panel(node)
-            return
-        
-        # イベントからキー状態を取得（Ctrl/Cmdキーの判定）
-        # event.state のビット: 0x0004 = Control (Windows/Linux), 0x0001 = Shift, 0x0008 = Alt
-        # macOSでは Command キーは通常 0x0004 として扱われる（tkinterの実装による）
-        is_ctrl_or_cmd = False
-        if event and hasattr(event, 'state'):
-            # Control キー（Windows/Linux）または Command キー（macOS）
-            is_ctrl_or_cmd = bool(event.state & 0x0004)
-        
-        # 選択状態を切り替え（Ctrl/Cmdキーで複数選択）
-        if card in self.selected_cards:
-            # 既に選択されている場合、Ctrl/Cmdキーが押されていれば選択解除
-            if is_ctrl_or_cmd:
-                self.selected_cards.remove(card)
-                card.set_selected(False)
+            # Apply danger style to destructive actions
+            if btn_text in danger_buttons:
+                btn.setObjectName("dangerButton")
             else:
-                # Ctrl/Cmdキーが押されていない場合は、既存の選択をクリアして再選択
-                for c in self.selected_cards:
-                    c.set_selected(False)
-                self.selected_cards.clear()
-                self.selected_cards.add(card)
-                card.set_selected(True)
-        else:
-            # 選択されていない場合
-            if not is_ctrl_or_cmd:
-                # Ctrl/Cmdキーが押されていない場合は、既存の選択をクリア
-                for c in self.selected_cards:
-                    c.set_selected(False)
-                self.selected_cards.clear()
+                btn.setObjectName("actionButton")
             
-            self.selected_cards.add(card)
-            card.set_selected(True)
-        
-        # 詳細パネルを更新
-        self._update_detail_panel(node)
-    
-    def _on_card_double_click(self, node: Node):
-        """カードがダブルクリックされたとき"""
-        if node.url:
-            import webbrowser
-            try:
-                webbrowser.open(node.url)
-            except Exception as e:
-                self.logger.error(f"Failed to open URL: {e}")
-    
-    
-    def _update_detail_panel(self, node: Optional[Node]):
-        """詳細パネルを更新"""
-        if not node:
-            self.detail_panel.update_node(None)
-            return
-        
-        preview_data = None
-        if node.type == "bookmark" and node.url:
-            if node.url in self.preview_cache:
-                preview_data = self.preview_cache[node.url]
+            row = i // 2
+            col = i % 2
+            
+            # Last button spans full width if odd number
+            if len(actions) % 2 == 1 and i == len(actions) - 1:
+                grid.addWidget(btn, row, 0, 1, 2)
             else:
-                # プレビューを非同期で取得
-                self.detail_panel.update_node(node, {"title": "Loading preview...", "description": ""})
-                threading.Thread(target=self._fetch_preview_worker, args=(node.url,), daemon=True).start()
+                grid.addWidget(btn, row, col)
+        
+        layout.addLayout(grid)
+        return section
+
+    # ------------------------------ window events ----------------------------
+    def showEvent(self, event: Any) -> None:
+        """Auto-load last bookmarks file on first window show."""
+        super().showEvent(event)
+        
+        # Load last bookmarks file if available
+        if not self._startup_complete:
+            self._startup_complete = True
+            config = ConfigManager()
+            last_file = config.get("Session", "last_bookmarks_file", "")
+            
+            if last_file and os.path.exists(last_file):
+                try:
+                    QTimer.singleShot(100, lambda: self._auto_load_bookmarks(last_file))
+                except Exception as e:
+                    self.logger.warning(f"Failed to auto-load bookmarks: {e}")
+    
+    def _auto_load_bookmarks(self, file_path: str) -> None:
+        """Auto-load bookmarks without user dialog."""
+        try:
+            root, rules, rules_path = load_bookmarks(file_path)
+            if root is None:
+                self.logger.error("Auto-load failed: root node is None")
                 return
-        
-        self.detail_panel.update_node(node, preview_data)
-    
-    def _fetch_preview_worker(self, url: str):
-        """プレビュー情報を非同期で取得"""
-        proxy_info = self._get_proxies_for_requests()
-        fetch_preview(url, self.ui_queue, proxy_info)
-    
-    def _process_ui_queue_once(self):
-        """UIキューを一度だけ処理（再スケジューリングなし）"""
+
+            if not isinstance(root, Node):
+                self.logger.error("Auto-load failed: invalid root node type: %s", type(root))
+                return
+
+            self.root_node = root
+            self.rules = rules or self._default_rules()
+            self.rules_path = rules_path
+            self.current_file = file_path
+            self.current_folder = self.root_node
+            self.selected_node = None
+            
+            self._refresh_content()
+            self._build_search_index()
+            
+            self.statusBar().showMessage(f"Loaded: {os.path.basename(file_path)}", 5000)
+            self.logger.info(f"Auto-loaded bookmarks: {file_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to auto-load bookmarks: {e}")
+
+    # ------------------------------ polling ------------------------------
+    def _start_polling(self) -> None:
+        self.poll_timer = QTimer()
+        self.poll_timer.timeout.connect(self._poll_worker_results)
+        self.poll_timer.start(200)
+
+    def _poll_worker_results(self) -> None:
         try:
-            while True:
-                task_type, data = self.ui_queue.get_nowait()
-                if task_type == 'smart_classify_result':
-                    if self._smart_dialog and self._smart_dialog.winfo_exists():
-                        self._smart_dialog.destroy()
-                    self._smart_dialog = None
-                    if not self._smart_cancelled:
-                        result_obj = data
-                        plan = result_obj.plan
-                        all_nodes_to_move = []
-                        original_nodes_map = {(node.title, node.url): node for node in self.last_classified_bookmarks}
-                        final_plan = {}
-                        for folder, bm_nodes in plan.items():
-                            original_nodes = []
-                            for bm_node in bm_nodes:
-                                original = original_nodes_map.get((bm_node.title, bm_node.url))
-                                if original:
-                                    original_nodes.append(original)
-                            if original_nodes:
-                                final_plan[folder] = original_nodes
-                                all_nodes_to_move.extend(original_nodes)
-                        base_node = self._find_common_parent(all_nodes_to_move)
-                        self._show_smart_classify_preview(final_plan, base_node)
-                elif task_type == 'error':
-                    if self._smart_dialog and self._smart_dialog.winfo_exists():
-                        self._smart_dialog.destroy()
-                    self._smart_dialog = None
-                    messagebox.showwarning("Error", data)
-                elif task_type == 'progress_update':
-                    loaded_count, total_bms, sent_bytes, recv_bytes = data
-                    self.progress_history.append(loaded_count)
-                    if self.traffic_label and self._smart_dialog and self._smart_dialog.winfo_exists():
-                        sent_kb = sent_bytes / 1024
-                        recv_kb = recv_bytes / 1024
-                        self.traffic_label.configure(text=f"Traffic: Sent {sent_kb:.2f} KB | Received {recv_kb:.2f} KB")
-                elif task_type == 'proxy_check_success':
-                    dialog = data
-                    if dialog.winfo_exists():
-                        dialog.destroy()
-                    messagebox.showinfo("Proxy Check", "プロキシ接続は正常です。")
-                elif task_type == 'proxy_check_failure':
-                    dialog, error_msg = data
-                    if dialog.winfo_exists():
-                        dialog.destroy()
-                    messagebox.showerror("Proxy Check", f"プロキシ接続に失敗しました。\nconfig.iniの設定を確認してください。\n\nエラー: {error_msg}")
-                elif task_type == 'preview':
-                    url, preview_data = data
-                    self.preview_cache[url] = preview_data
-                    # 現在選択中のノードのURLと一致する場合、詳細パネルを更新
-                    selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-                    if selected_nodes and len(selected_nodes) == 1:
-                        node = selected_nodes[0]
-                        if node and node.url == url:
-                            self._update_detail_panel(node)
-                elif task_type == 'titlefix_progress':
-                    processed, total = data
-                    if self._titlefix_dialog and self._titlefix_dialog.winfo_exists():
-                        try:
-                            # CTkProgressBarは0.0から1.0の範囲で値を設定
-                            progress_value = processed / total if total > 0 else 0.0
-                            self._titlefix_var.set(progress_value)
-                            self._titlefix_label.configure(text=f"{processed} / {total}")
-                        except tk.TclError:
-                            pass
-                elif task_type == 'titlefix_done':
-                    if self._titlefix_dialog and self._titlefix_dialog.winfo_exists():
-                        try:
-                            self._titlefix_dialog.destroy()
-                        except tk.TclError:
-                            pass
-                    self._titlefix_dialog = None
-                    self._refresh_content()
-                    self.folder_tree.refresh(self.root_node)
-                    messagebox.showinfo("Fix Titles", "処理が完了しました。")
-                elif task_type == 'load_progress':
-                    current, total, message = data
-                    if self._load_dialog and self._load_dialog.winfo_exists():
-                        try:
-                            # CTkProgressBarは0.0から1.0の範囲で値を設定
-                            progress_value = current / total if total > 0 else 0.0
-                            self._load_var.set(progress_value)
-                            self._load_label.configure(text=message or f"{current} / {total}")
-                            # UIを強制的に更新
-                            self._load_dialog.update_idletasks()
-                        except tk.TclError:
-                            pass
-                elif task_type == 'load_done':
-                    # データを受け取る（検索インデックスも含む）
-                    if len(data) == 5:
-                        root, rules, rules_path, path, search_index = data
-                    else:
-                        # 後方互換性のため
-                        root, rules, rules_path, path = data
-                        search_index = None
-                    
-                    # プログレスバーを閉じる前にUIを更新
-                    if not self._load_cancelled:
-                        # データを設定
-                        self.root_node = root
-                        self.rules = rules or self._default_rules()
-                        self.rules_path = rules_path
-                        self.current_file = path
-                        self.current_folder = root
-                        
-                        # 検索インデックスを設定（既に構築済み）
-                        if search_index is not None:
-                            self.search_index = search_index
-                        else:
-                            # フォールバック：検索インデックスが無い場合は構築
-                            self._build_search_index()
-                        
-                        # タイトルを更新
-                        self.title(f"Bookmark Studio — {os.path.basename(path)}")
-                        
-                        # フォルダツリーとコンテンツを更新
-                        self.folder_tree.refresh(root)
-                        self._refresh_content()
-                        
-                        # UIを強制的に更新（プログレスバーを閉じる前に）
-                        self.update_idletasks()
-                    
-                    # プログレスバーを閉じる（UIは既に更新済み）
-                    if self._load_dialog and self._load_dialog.winfo_exists():
-                        try:
-                            self._load_dialog.destroy()
-                        except tk.TclError:
-                            pass
-                    self._load_dialog = None
-                elif task_type == 'load_error':
-                    error_msg = data
-                    if self._load_dialog and self._load_dialog.winfo_exists():
-                        try:
-                            self._load_dialog.destroy()
-                        except tk.TclError:
-                            pass
-                    self._load_dialog = None
-                    messagebox.showerror("Error", f"Failed to load bookmarks:\n{error_msg}")
+            if self.worker is not None:
+                self.worker.poll_results()
+            self._process_ui_queue_once()
+        except Exception as exc:  # pragma: no cover
+            self.logger.error("Worker polling failed: %s", exc, exc_info=True)
+
+    def _process_ui_queue_once(self) -> None:
+        try:
+            while not self.ui_queue.empty():
+                item = self.ui_queue.get_nowait()
+                if callable(item):
+                    item()
+                    continue
+                if isinstance(item, tuple) and len(item) == 2:
+                    kind, payload = item
+                    self._handle_worker_event(kind, payload)
         except queue.Empty:
             pass
-    
-    def _process_ui_queue(self):
-        """UIキューを処理（スレッドセーフな更新）"""
-        self._process_ui_queue_once()
-        self.after(100, self._process_ui_queue)
-    
-    def _get_proxies_for_requests(self):
-        """requestsライブラリ用にプロキシ設定を返す"""
-        if not self.use_proxy_var.get():
-            return None
-        
-        settings = self.config_manager.get_proxy_settings()
-        if not settings or not settings.get('url'):
-            return None
-        
-        proxy_url = settings['url']
-        user = settings['user']
-        password = settings['password']
-        
-        auth = (user, password) if user and password else None
-        
-        proxies = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-        return {'proxies': proxies, 'auth': auth}
-    
-    def _build_search_index(self):
-        """検索インデックスを構築"""
-        self.search_index = {}
-        
-        def index_node(node: Node):
-            if node.type == "bookmark":
-                full_text = f"{(node.title or '').lower()} {(node.url or '').lower()}"
-                words = set(re.split(r'\W+', full_text))
-                for word in words:
-                    if not word:
-                        continue
-                    if word not in self.search_index:
-                        self.search_index[word] = set()
-                    self.search_index[word].add(node)
-            
-            for child in node.children:
-                index_node(child)
-        
-        index_node(self.root_node)
-    
-    def _apply_search(self, query: str):
-        """検索を適用（完全一致方式に変更して性能向上）"""
-        if not query:
+        except Exception as exc:  # pragma: no cover
+            self.logger.error("UI queue processing failed: %s", exc, exc_info=True)
+
+    def _handle_worker_event(self, kind: str, payload: Any) -> None:
+        if kind == "preview":
+            url, data = payload
+            nodes = self._url_lookup.get(url, [])
+            for node in nodes:
+                if data.get("title") and not node.title:
+                    node.title = data.get("title")
+                if data.get("description"):
+                    setattr(node, "description", data.get("description"))
             self._refresh_content()
-            return
-        
-        query_lower = query.lower()
-        search_words = [word for word in re.split(r'\W+', query_lower) if word]
-        
-        if not search_words:
-            self._refresh_content()
-            return
-        
-        # 完全一致方式：検索語がインデックスのキーに完全一致する場合のみマッチ
-        # これにより全走査を避け、O(1)のルックアップが可能
-        matching_nodes = None
-        for word in search_words:
-            found_nodes = self.search_index.get(word, set())
-            if matching_nodes is None:
-                matching_nodes = found_nodes.copy()
-            else:
-                matching_nodes.intersection_update(found_nodes)
-        
-        # マッチするノードを含むフォルダを表示
-        if matching_nodes:
-            # 最初のマッチノードの親フォルダを表示
-            first_node = next(iter(matching_nodes))
-            if first_node.parent:
-                self.current_folder = first_node.parent
-                self.folder_tree._select_folder(first_node.parent)
-                self._refresh_content()
-    
-    # 以下、既存のコマンドメソッドを移植（簡略版）
-    # 完全な実装には、元のファイルからすべてのメソッドを移植する必要があります
-    
-    def cmd_open(self):
-        """ブックマークファイルを開く"""
-        path = filedialog.askopenfilename(
-            title="Open Chrome Bookmarks HTML",
-            filetypes=[("HTML files", "*.html;*.htm"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-        
-        # ファイルサイズを取得してプログレス表示用の最大値を設定
-        try:
-            file_size = os.path.getsize(path)
-            self._show_load_progress(file_size)
-            self._load_cancelled = False
-            threading.Thread(target=self._load_bookmarks_worker, args=(path,), daemon=True).start()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to get file info:\n{e}")
-    
-    def _show_load_progress(self, file_size: int):
-        """HTML読み込みの進捗ダイアログ"""
-        if self._load_dialog and self._load_dialog.winfo_exists():
-            return
-        
-        d = ctk.CTkToplevel(self)
-        d.title("Loading Bookmarks")
-        d.geometry("400x140")
-        d.transient(self)
-        d.grab_set()
-        d.resizable(False, False)
-        self._load_dialog = d
-        self._load_cancelled = False
-        
-        file_size_mb = file_size / (1024 * 1024)
-        ctk.CTkLabel(d, text=f"ブックマークファイルを読み込み中... ({file_size_mb:.2f} MB)").pack(pady=10)
-        
-        self._load_var = ctk.DoubleVar(value=0.0)
-        pb = ctk.CTkProgressBar(d, variable=self._load_var)
-        pb.pack(fill="x", padx=12, pady=6)
-        
-        self._load_label = ctk.CTkLabel(d, text="読み込み中...")
-        self._load_label.pack()
-        
-        def on_cancel():
-            self._load_cancelled = True
-            try:
-                d.destroy()
-            except tk.TclError:
-                pass
-        
-        ctk.CTkButton(d, text="Cancel", command=on_cancel).pack(pady=10)
-        d.protocol("WM_DELETE_WINDOW", on_cancel)
-    
-    def _load_bookmarks_worker(self, path: str):
-        """ブックマーク読み込みを別スレッドで実行"""
-        import time
-        import threading
-        
-        def update_progress_with_delay(progress, message, delay=0.05):
-            """進捗を更新し、UI更新の機会を与える"""
-            if self._load_cancelled:
-                return False
-            self.ui_queue.put(('load_progress', (progress, 100, message)))
-            time.sleep(delay)
-            return not self._load_cancelled
-        
-        try:
-            # 開始（5%）
-            if not update_progress_with_delay(5, "準備中..."):
-                return
-            
-            # ファイルサイズを取得
-            file_size = os.path.getsize(path)
-            chunk_size = max(1024 * 1024, file_size // 20)  # 20チャンクに分割
-            
-            # ファイル読み込み（チャンクごとに進捗更新）
-            if not update_progress_with_delay(10, "ファイルを読み込み中..."):
-                return
-            
-            data_parts = []
-            read_bytes = 0
-            with open(path, 'r', encoding='utf-8') as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    data_parts.append(chunk)
-                    read_bytes += len(chunk.encode('utf-8'))
-                    # 進捗を更新（10%から30%まで）
-                    progress = 10 + int((read_bytes / file_size) * 20)
-                    if not update_progress_with_delay(progress, f"ファイルを読み込み中... ({read_bytes // 1024} KB / {file_size // 1024} KB)", 0.01):
-                        return
-            
-            data = ''.join(data_parts)
-            
-            # ファイル読み込み完了
-            if not update_progress_with_delay(30, "ファイル読み込み完了"):
-                return
-            
-            # HTMLパース開始
-            if not update_progress_with_delay(35, "HTML構造を解析中..."):
-                return
-            
-            from core.model import NetscapeBookmarkParser
-            parser = NetscapeBookmarkParser()
-            
-            # パース処理中に進捗を更新（アニメーション効果）
-            parse_progress = 35
-            parse_dots = 0
-            parse_messages = [
-                "HTML構造を解析中...",
-                "ブックマークデータを処理中...",
-                "フォルダ階層を構築中...",
-                "メタデータを読み込み中..."
-            ]
-            parse_msg_index = 0
-            
-            # パース処理を別スレッドで実行し、進捗を更新
-            parse_done = threading.Event()
-            parse_error = [None]
-            
-            def do_parse():
-                try:
-                    parser.feed(data)
-                    parse_done.set()
-                except Exception as e:
-                    parse_error[0] = e
-                    parse_done.set()
-            
-            parse_thread = threading.Thread(target=do_parse, daemon=True)
-            parse_thread.start()
-            
-            # パース処理中、定期的に進捗を更新
-            while not parse_done.is_set() and not self._load_cancelled:
-                parse_progress = min(parse_progress + 2, 75)  # 35%から75%まで
-                msg = parse_messages[parse_msg_index % len(parse_messages)]
-                dots = "." * ((parse_dots % 3) + 1)
-                if not update_progress_with_delay(parse_progress, f"{msg}{dots}", 0.2):
-                    return
-                parse_msg_index += 1
-                parse_dots += 1
-            
-            # パース処理完了を待つ
-            parse_thread.join(timeout=1.0)
-            
-            if parse_error[0]:
-                raise parse_error[0]
-            
-            root = parser.root
-            
-            # HTMLパース完了
-            if not update_progress_with_delay(80, "HTML解析完了"):
-                return
-            
-            # ルールファイル読み込み
-            if not update_progress_with_delay(85, "ルールファイルを確認中..."):
-                return
-            
-            sidecar = os.path.splitext(path)[0] + '.bookmark_rules.json'
-            rules = None
-            rules_path = None
-            if os.path.exists(sidecar):
-                if not update_progress_with_delay(90, "ルールファイルを読み込み中..."):
-                    return
-                try:
-                    with open(sidecar, 'r', encoding='utf-8') as rf:
-                        rules = json.load(rf)
-                        rules_path = sidecar
-                except Exception as e:
-                    self.logger.warning(f"Failed to load rules file '{sidecar}': {e}")
-                    rules = None
-            
-            # 検索インデックス構築（プログレスバー表示中に完了させる）
-            if not update_progress_with_delay(90, "検索インデックスを構築中..."):
-                return
-            
-            # 検索インデックスを構築（重い処理なので進捗を更新しながら）
-            search_index = {}
-            total_nodes = 0
-            processed_nodes = 0
-            
-            def count_nodes(node):
-                nonlocal total_nodes
-                total_nodes += 1
-                for child in node.children:
-                    count_nodes(child)
-            
-            count_nodes(root)
-            
-            def build_search_index(node):
-                nonlocal processed_nodes
-                if node.type == "bookmark":
-                    full_text = f"{(node.title or '').lower()} {(node.url or '').lower()}"
-                    words = set(re.split(r'\W+', full_text))
-                    for word in words:
-                        if not word:
-                            continue
-                        if word not in search_index:
-                            search_index[word] = set()
-                        search_index[word].add(node)
-                
-                processed_nodes += 1
-                # 100ノードごとに進捗を更新
-                if processed_nodes % 100 == 0 or processed_nodes == total_nodes:
-                    progress = 90 + int((processed_nodes / total_nodes) * 8)  # 90%から98%まで
-                    msg = f"検索インデックスを構築中... ({processed_nodes} / {total_nodes})"
-                    if not update_progress_with_delay(progress, msg, 0.01):
-                        return False
-                
-                for child in node.children:
-                    if not build_search_index(child):
-                        return False
-                return True
-            
-            if not build_search_index(root):
-                return
-            
-            # UI更新準備（プログレスバー表示中に完了）
-            if not update_progress_with_delay(98, "UIを準備中..."):
-                return
-            
-            # 完了
-            if not update_progress_with_delay(100, "完了"):
-                return
-            
-            time.sleep(0.1)  # UI更新の機会を与える
-            if not self._load_cancelled:
-                # 検索インデックスも含めて完了データを送信
-                self.ui_queue.put(('load_done', (root, rules or {}, rules_path, path, search_index)))
-        except Exception as e:
-            if not self._load_cancelled:
-                self.ui_queue.put(('load_error', str(e)))
-    
-    def cmd_save(self):
-        """保存"""
-        if not self.current_file:
-            return self.cmd_save_as()
-        try:
-            sp = save_bookmarks(self.current_file, self.root_node, self.rules)
-            if sp:
-                self.rules_path = sp
-            messagebox.showinfo("Saved", "Saved successfully.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save:\n{e}")
-    
-    def cmd_save_as(self):
-        """名前を付けて保存"""
-        if not self.root_node:
-            return
-        path = filedialog.asksaveasfilename(
-            title="Export Chrome HTML",
-            defaultextension=".html",
-            filetypes=[("HTML files", "*.html;*.htm")]
-        )
-        if not path:
-            return
-        try:
-            sp = save_bookmarks(path, self.root_node, self.rules)
-            messagebox.showinfo("Exported", "Export completed.")
-            self.rules_path = sp
-            self.current_file = path
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export:\n{e}")
-    
-    def cmd_new_folder(self):
-        """新しいフォルダを作成"""
-        if not self.current_folder:
-            return
-        name = simpledialog.askstring("New Folder", "Folder name:")
-        if name is None:
-            return
-        n = Node("folder", title=name)
-        self.current_folder.append(n)
-        self.folder_tree.refresh(self.root_node)
-        self._refresh_content()
-    
-    def cmd_new_bookmark(self):
-        """新しいブックマークを作成"""
-        if not self.current_folder:
-            return
-        title = simpledialog.askstring("New Bookmark", "Title:")
-        if title is None:
-            return
-        url = simpledialog.askstring("New Bookmark", "URL:")
-        if url is None:
-            return
-        if url and not is_valid_url(url):
-            messagebox.showerror("Error", "無効なURL形式です。http:// または https:// で始まるURLを入力してください。")
-            return
-        n = Node("bookmark", title=title, url=url)
-        self.current_folder.append(n)
-        self._build_search_index()
-        self._refresh_content()
-    
-    def cmd_rename(self):
-        """選択したアイテムの名前を変更"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes or len(selected_nodes) > 1:
-            messagebox.showinfo("Rename", "1つのアイテムを選択してください。")
-            return
-        
-        node = selected_nodes[0]
-        new_name = simpledialog.askstring("Rename", "New name:", initialvalue=node.title or "")
-        if new_name is None:
-            return
-        node.title = new_name
-        self._build_search_index()
-        self._refresh_content()
-        self.folder_tree.refresh(self.root_node)
-    
-    def cmd_edit_url(self):
-        """選択したブックマークのURLを編集"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes or len(selected_nodes) > 1:
-            messagebox.showinfo("Edit URL", "1つのブックマークを選択してください。")
-            return
-        
-        node = selected_nodes[0]
-        if node.type != "bookmark":
-            messagebox.showinfo("Edit URL", "ブックマークを選択してください。")
-            return
-        
-        new_url = simpledialog.askstring("Edit URL", "New URL:", initialvalue=node.url or "")
-        if new_url is None:
-            return
-        if new_url and not is_valid_url(new_url):
-            messagebox.showerror("Error", "無効なURL形式です。http:// または https:// で始まるURLを入力してください。")
-            return
-        node.url = new_url
-        self._build_search_index()
-        self._refresh_content()
-    
-    def cmd_move_to_folder(self):
-        """選択したアイテムをフォルダに移動"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes:
-            messagebox.showinfo("Move to Folder", "移動するアイテムを選択してください。")
-            return
-        
-        # フォルダ選択ダイアログを表示
-        dialog = FolderSelectDialog(self, self.root_node, exclude_nodes=selected_nodes)
-        self.wait_window(dialog)
-        
-        target_folder = dialog.result
-        if not target_folder:
-            # ユーザーがキャンセルした場合
-            return
-        
-        # 選択したアイテムを移動
-        moved_count = 0
-        for node in selected_nodes:
-            # 自分自身や親フォルダへの移動はスキップ
-            if node == target_folder or (node.parent and node.parent == target_folder):
-                continue
-            
-            # 移動先が移動対象の子孫フォルダでないことを確認
-            is_descendant = False
-            current = target_folder.parent
-            while current:
-                if current == node:
-                    is_descendant = True
-                    break
-                current = current.parent
-            
-            if is_descendant:
-                continue
-            
-            # 移動実行
-            if node.parent:
-                node.parent.children.remove(node)
-            target_folder.append(node)
-            moved_count += 1
-        
-        if moved_count > 0:
+        elif kind == "titlefix_progress":
+            processed, total = payload
+            self.statusBar().showMessage(f"Fixing titles... {processed}/{total}")
+        elif kind == "titlefix_done":
+            self.statusBar().showMessage("Title fix complete", 4000)
             self._build_search_index()
             self._refresh_content()
-            self.folder_tree.refresh(self.root_node)
-            messagebox.showinfo("Move to Folder", f"{moved_count}個のアイテムを移動しました。")
-        else:
-            messagebox.showinfo("Move to Folder", "移動できるアイテムがありませんでした。")
-    
-    def cmd_move_up(self):
-        """選択したアイテムを一つ上の階層に移動"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes:
-            messagebox.showinfo("Move Up", "移動するアイテムを選択してください。")
+
+    # --------------------------- event handlers ---------------------------
+    def _on_folder_selected(self, node: Node) -> None:
+        if self.view_mode == "tree" and self._building_tree:
             return
-        
-        for node in selected_nodes:
-            if not node.parent or not node.parent.parent:
-                messagebox.showwarning("Move Up", "トップレベルのアイテムはこれ以上上に移動できません。")
-                return
-        
-        new_parent = selected_nodes[0].parent.parent
-        for node in selected_nodes:
-            if node.parent:
-                node.parent.children.remove(node)
-            new_parent.append(node)
-        
-        self._refresh_content()
-        self.folder_tree.refresh(self.root_node)
-    
-    def cmd_delete(self):
-        """選択したアイテムを削除"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes:
-            return
-        
-        if not messagebox.askyesno("Delete", f"Delete {len(selected_nodes)} selected item(s)?"):
-            return
-        
-        for node in selected_nodes:
-            if node.parent:
-                node.parent.children.remove(node)
-        
-        self._build_search_index()
-        self._refresh_content()
-        self.folder_tree.refresh(self.root_node)
-    
-    def cmd_sort(self, mode: str = "title"):
-        """ソート"""
-        if not self.current_folder:
-            return
-        
-        def sort_key(n: Node):
-            # フォルダを常に先頭に（0: folder, 1: bookmark）
-            type_score = 0 if n.type == "folder" else 1
-            
-            if mode == "domain" and n.type == "bookmark":
-                return (type_score, self._domain_of(n.url), (n.title or "").lower())
-            return (type_score, (n.title or "").lower())
-        
-        self.current_folder.children.sort(key=sort_key)
-        self._refresh_content()
-    
-    def cmd_dedupe(self):
-        """重複削除"""
-        if not self.current_folder:
-            return
-        
-        seen, new_children, removed = set(), [], 0
-        for ch in self.current_folder.children:
-            if ch.type == "bookmark":
-                key = (ch.url or "").strip().rstrip("/")
-                if key and key in seen:
-                    removed += 1
-                    continue
-                if key:
-                    seen.add(key)
-            new_children.append(ch)
-        
-        self.current_folder.children = new_children
-        self._refresh_content()
-        messagebox.showinfo("Deduplicate", f"Removed {removed} duplicated bookmark(s).")
-    
-    def cmd_merge_folders(self):
-        """重複フォルダを統合"""
-        if not self.current_folder:
-            return
-        
-        folders_by_name = {}
-        nodes_to_remove = []
-        merged_count = 0
-        
-        for child in list(self.current_folder.children):
-            if child.type == 'folder':
-                key = child.title.lower()
-                if key in folders_by_name:
-                    primary_folder = folders_by_name[key]
-                    for sub_child in list(child.children):
-                        child.children.remove(sub_child)
-                        primary_folder.append(sub_child)
-                    nodes_to_remove.append(child)
-                    merged_count += 1
-                else:
-                    folders_by_name[key] = child
-        
-        if nodes_to_remove:
-            for node_to_remove in nodes_to_remove:
-                self.current_folder.children.remove(node_to_remove)
+        if node.type == "folder":
+            self.current_folder = node
+            self.selected_node = None
             self._refresh_content()
-            self.folder_tree.refresh(self.root_node)
-            messagebox.showinfo("Merge Folders", f"{merged_count}個の重複フォルダを統合しました。")
         else:
-            messagebox.showinfo("Merge Folders", "重複する名前のフォルダは見つかりませんでした。")
-    
-    def _domain_of(self, url: str) -> str:
-        """URLからドメインを取得"""
-        try:
-            return urlparse(url).netloc.lower()
-        except Exception as e:
-            self.logger.debug(f"Failed to parse URL domain from '{url}': {e}")
-            return ""
-    
-    def _default_rules(self):
-        """デフォルトの分類ルール"""
-        return {
-            "Google": {"domains": ["google.com", "gmail.com", "drive.google.com"], "keywords": ["google", "gmail", "drive"]},
-            "YouTube": {"domains": ["youtube.com", "youtu.be"], "keywords": ["youtube", "yt"]},
-            "News": {"domains": ["cnn.com", "bbc.co.uk", "nytimes.com", "news.yahoo"], "keywords": ["news", "article"]},
-            "Social": {"domains": ["twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com"], "keywords": ["twitter", "facebook", "instagram", "linkedin"]},
-            "Dev": {"domains": ["github.com", "gitlab.com", "stackoverflow.com", "pypi.org", "readthedocs"], "keywords": ["github", "docs", "api", "stack overflow"]},
-            "Shopping": {"domains": ["amazon.", "rakuten.", "taobao.", "jd.com"], "keywords": ["cart", "buy", "store"]},
-        }
-    
-    def _match_rule(self, url: str, title: str, rule: dict) -> bool:
-        """ルールにマッチするかチェック"""
-        u = (url or "").lower()
-        t = (title or "").lower()
-        for d in rule.get("domains", []):
-            if d in u:
-                return True
-        for k in rule.get("keywords", []):
-            if k in u or k in t:
-                return True
-        return False
-    
-    def _get_classification_plan(self, bookmarks_to_check: List[Node]) -> Dict[str, List[Node]]:
-        """分類プランを取得"""
-        plan = {}
-        for bm in bookmarks_to_check:
-            if bm.type != 'bookmark':
-                continue
-            for folder_name, rule in self.rules.items():
-                if self._match_rule(bm.url, bm.title, rule):
-                    current_parent = bm.parent
-                    if current_parent and current_parent.title == folder_name:
-                        continue
-                    if folder_name not in plan:
-                        plan[folder_name] = []
-                    plan[folder_name].append(bm)
-                    break
-        return plan
-    
-    def _find_common_parent(self, nodes):
-        """共通の親フォルダを探す"""
-        if not nodes:
-            return self.root_node
-        paths = []
-        for node in nodes:
-            path = []
-            curr = node.parent
-            while curr:
-                path.insert(0, curr)
-                curr = curr.parent
-            paths.append(path)
-        if not paths:
-            return self.root_node
-        shortest_path = min(paths, key=len)
-        common_parent = self.root_node
-        for i, parent in enumerate(shortest_path):
-            if all(i < len(p) and p[i] is parent for p in paths):
-                common_parent = parent
-            else:
-                break
-        return common_parent
-    
-    def _execute_classification_plan(self, plan: Dict[str, List[Node]], base_node: Node):
-        """分類プランを実行"""
-        if not plan:
+            self.selected_node = node
+            self.detail_panel.set_node(node)
+
+    def _on_search(self, query: str) -> None:
+        self._apply_search(query)
+        self._refresh_content()
+
+    # ---------------------------- core actions ----------------------------
+    def _refresh_content(self) -> None:
+        if not hasattr(self, "cards_layout") or self.cards_layout is None:
             return
-        target_folders_parent = base_node if base_node else self.root_node
-        
-        existing_folders_map = {
-            ch.title.lower(): ch for ch in target_folders_parent.children if ch.type == "folder"
-        }
-        
-        for folder_name, bookmarks in plan.items():
-            target_folder = existing_folders_map.get(folder_name.lower())
-            if not target_folder:
-                target_folder = Node("folder", folder_name)
-                target_folders_parent.append(target_folder)
-                existing_folders_map[folder_name.lower()] = target_folder
-            
-            for bm in bookmarks:
-                if bm.parent and bm in bm.parent.children:
-                    bm.parent.children.remove(bm)
-                target_folder.append(bm)
-        
+        if self.view_mode == "tree":
+            if hasattr(self, "cards_scroll"):
+                self.cards_scroll.setVisible(False)
+            if hasattr(self, "tree_scroll"):
+                self.tree_scroll.setVisible(True)
+            select_node = self.current_folder if self.current_folder else self.root_node
+            self._building_tree = True
+            try:
+                with QSignalBlocker(self.folder_tree):
+                    self._populate_folder_tree(select_node)
+            finally:
+                self._building_tree = False
+            self._update_bookmark_count()
+            return
+
+        if hasattr(self, "cards_scroll"):
+            self.cards_scroll.setVisible(True)
+        if hasattr(self, "tree_scroll"):
+            self.tree_scroll.setVisible(False)
+
+        self._clear_cards()
+        nodes = self._get_display_nodes()
+
+        if not nodes:
+            placeholder = QLabel("No bookmarks to display.")
+            placeholder.setWordWrap(True)
+            self.cards_layout.addWidget(placeholder)
+            self.detail_panel.clear()
+            return
+
+        for node in nodes:
+            if self.view_mode == "list":
+                widget = BookmarkRow(node)
+                widget.delete_requested.connect(lambda n=node: self._delete_node(n))
+            else:
+                widget = BookmarkCard(node)
+                widget.double_clicked.connect(lambda n=node: self._open_url(n.url))
+
+            widget.clicked.connect(lambda n=node, w=widget: self._select_node(n, w))
+            self.cards_layout.addWidget(widget)
+
+            if node.url and node.url not in self.preview_cache:
+                self.preview_cache[node.url] = True
+                self._enqueue_preview_fetch(node)
+
+        self.cards_layout.addStretch()
+        self._update_bookmark_count()
+
+    def _clear_cards(self) -> None:
+        for i in reversed(range(self.cards_layout.count())):
+            item = self.cards_layout.takeAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+        self.selected_cards.clear()
+
+    def _select_node(self, node: Node, widget: Any) -> None:
+        for w in list(self.selected_cards):
+            if hasattr(w, "set_selected"):
+                w.set_selected(False)
+        self.selected_cards = {widget}
+        if hasattr(widget, "set_selected"):
+            widget.set_selected(True)
+        self.selected_node = node
+        self.detail_panel.set_node(node)
+
+    def _open_url(self, url: str) -> None:
+        if not url:
+            return
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Copy text to clipboard."""
+        if not text:
+            return
+        clipboard = self.app.clipboard() if hasattr(self, 'app') else None
+        if clipboard:
+            clipboard.setText(text)
+            self.statusBar().showMessage("URLをコピーしました", 2000)
+        else:
+            # Fallback: try to get clipboard from QApplication
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(text)
+            self.statusBar().showMessage("URLをコピーしました", 2000)
+
+    def _apply_search(self, query: str) -> None:
+        self.search_query = query.strip()
+        if not self.search_query:
+            self.search_hits = set()
+            return
+
+        tokens = [t for t in re.split(r"\s+", self.search_query.lower()) if t]
+        hits: Set[Node] = set()
+        for node, text in self.search_index.items():
+            if all(tok in text for tok in tokens):
+                hits.add(node)
+        self.search_hits = hits
+
+    def _build_search_index(self) -> None:
+        self.search_index = {}
+        self._url_lookup = {}
+        for node in self._iter_bookmarks(self.root_node):
+            text = f"{node.title} {node.url}".lower()
+            self.search_index[node] = text
+            if node.url:
+                self._url_lookup.setdefault(node.url, []).append(node)
+
+    def _get_display_nodes(self) -> List[Node]:
+        if not self.current_folder:
+            return []
+
+        base_nodes = [ch for ch in self.current_folder.children if ch.type == "bookmark"]
+        if not self.search_query:
+            return base_nodes
+
+        # show matches inside the current subtree when searching
+        filtered: List[Node] = []
+        for node in self.search_hits:
+            if self._is_descendant_of(node, self.current_folder):
+                filtered.append(node)
+        return filtered
+
+    def _is_descendant_of(self, node: Node, folder: Node) -> bool:
+        cur = node.parent
+        while cur:
+            if cur is folder:
+                return True
+            cur = cur.parent
+        return False
+
+    def _iter_bookmarks(self, node: Node) -> Iterable[Node]:
+        for child in getattr(node, "children", []):
+            if child.type == "bookmark":
+                yield child
+            elif child.type == "folder":
+                yield from self._iter_bookmarks(child)
+
+    def _update_bookmark_count(self) -> None:
+        if not self.root_node:
+            total = 0
+        else:
+            total = sum(1 for _ in self._iter_bookmarks(self.root_node))
+
+        if hasattr(self, "bookmarks_count_label"):
+            self.bookmarks_count_label.setText(f"{total:,}")
+        if hasattr(self, "workspace_count_label"):
+            self.workspace_count_label.setText(f"{total:,}")
+
+    def _populate_folder_tree(self, select_node: Optional[Node] = None) -> None:
+        self.folder_tree.clear()
+
+        filter_active = bool(self.search_query)
+
+        def should_include(node: Node) -> bool:
+            if not filter_active:
+                return True
+            return node in self.search_hits
+
+        def add_folder(node: Node, parent_item=None) -> Optional[Any]:
+            # Build children first when filtering to decide whether to keep the folder
+            item = self.folder_tree.add_folder(parent_item, node)
+            has_visible_child = False
+            for child in node.children:
+                if child.type == "folder":
+                    child_item = add_folder(child, item)
+                    has_visible_child = has_visible_child or (child_item is not None)
+                elif child.type == "bookmark":
+                    if should_include(child):
+                        self.folder_tree.add_bookmark(item, child)
+                        has_visible_child = True
+
+            if filter_active and not should_include(node) and not has_visible_child:
+                # Remove empty folder when filtering
+                if parent_item is None:
+                    # Keep root when filtering so tree stays anchored
+                    return item
+                if item.parent():
+                    item.parent().removeChild(item)
+                return None
+            return item
+
+        root_item = add_folder(self.root_node, None)
+        self.folder_tree.expandAll()
+
+        # Try to select the current folder/bookmark in tree
+        if select_node is not None:
+            def walk(item: Any) -> Optional[Any]:
+                if item.data(0, Qt.ItemDataRole.UserRole) is select_node:
+                    return item
+                for i in range(item.childCount()):
+                    found = walk(item.child(i))
+                    if found:
+                        return found
+                return None
+
+            target = walk(root_item)
+            if target is not None:
+                self.folder_tree.setCurrentItem(target)
+        if select_node:
+            self._select_tree_item_for_node(select_node)
+        else:
+            self.folder_tree.setCurrentItem(root_item)
+
+    def _select_tree_item_for_node(self, target: Node) -> None:
+        def walk(item):
+            if item.data(0, Qt.ItemDataRole.UserRole) is target:
+                self.folder_tree.setCurrentItem(item)
+                return True
+            for i in range(item.childCount()):
+                if walk(item.child(i)):
+                    return True
+            return False
+
+        for i in range(self.folder_tree.topLevelItemCount()):
+            if walk(self.folder_tree.topLevelItem(i)):
+                break
+
+    def _default_rules(self) -> list:
+        return []
+
+    # ----------------------------- commands ------------------------------
+    def cmd_open(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open HTML", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not file_path:
+            return
+        try:
+            root, rules, rules_path = load_bookmarks(file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{exc}")
+            return
+
+        self.root_node = root
+        self.rules = rules
+        self.rules_path = rules_path
+        self.current_file = file_path
+        self.current_folder = self.root_node
+        self._populate_folder_tree(select_node=self.root_node)
         self._build_search_index()
         self._refresh_content()
-        self.folder_tree.refresh(self.root_node)
-        messagebox.showinfo("Auto Classify", f"Moved {sum(len(v) for v in plan.values())} bookmarks.")
-    
-    def cmd_show_classify_preview(self):
-        """分類プレビューを表示"""
-        # 現在のフォルダのブックマークを取得
-        bookmarks_to_classify = [ch for ch in self.current_folder.children if ch.type == 'bookmark']
-        
-        if not bookmarks_to_classify:
-            if not messagebox.askyesno("Auto Classify", "No items selected. Classify ALL bookmarks?"):
-                return
-            # すべてのブックマークを収集
-            bookmarks_to_classify = []
-            def collect_all(node):
-                for child in node.children:
-                    if child.type == 'bookmark':
-                        bookmarks_to_classify.append(child)
-                    elif child.type == 'folder':
-                        collect_all(child)
-            collect_all(self.root_node)
-        
-        plan = self._get_classification_plan(list(set(bookmarks_to_classify)))
-        if not plan:
-            messagebox.showinfo("Auto Classify", "No bookmarks to move based on current rules.")
+        # Remember last file
+        self.config_manager.set("Session", "last_bookmarks_file", file_path)
+        self.statusBar().showMessage(f"Loaded {file_path}", 4000)
+
+    def cmd_save(self) -> None:
+        if not self.current_file:
+            self.cmd_save_as()
             return
-        
-        base_node = self._find_common_parent(bookmarks_to_classify)
-        # プレビューダイアログ（簡易版）
-        preview_text = "\n".join([f"{folder}: {len(bms)} bookmarks" for folder, bms in plan.items()])
-        if messagebox.askyesno("Classification Preview", f"Apply classification?\n\n{preview_text}"):
-            self._execute_classification_plan(plan, base_node)
-    
-    def cmd_edit_rules(self):
-        """分類ルールを編集"""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Edit Classify Rules (JSON)")
-        dialog.geometry("720x520")
-        
-        text_widget = tk.Text(dialog, wrap="none")
-        text_widget.pack(fill="both", expand=True, padx=5, pady=5)
-        
         try:
-            pretty = json.dumps(self.rules, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.logger.error(f"Failed to serialize rules to JSON: {e}", exc_info=True)
-            pretty = "{}"
-        text_widget.insert("1.0", pretty)
-        
-        btn_frame = ctk.CTkFrame(dialog)
-        btn_frame.pack(fill="x", padx=5, pady=5)
-        
-        def save_rules():
-            try:
-                data = json.loads(text_widget.get("1.0", "end-1c"))
-                self.rules = data
-                if self.rules_path:
-                    with open(self.rules_path, "w", encoding="utf-8") as wf:
-                        json.dump(self.rules, wf, ensure_ascii=False, indent=2)
-                messagebox.showinfo("Rules", "Saved.", parent=dialog)
-                dialog.destroy()
-            except Exception as e:
-                messagebox.showerror("Rules", f"Invalid JSON:\n{e}", parent=dialog)
-        
-        ctk.CTkButton(btn_frame, text="Save", command=save_rules).pack(side="right", padx=5)
-        ctk.CTkButton(btn_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
-    
-    def cmd_smart_classify(self):
-        """AI分類を実行"""
-        self.progress_history = []
-        self._smart_cancelled = False
-        self.last_classification_prompts = []
-        
-        # 現在のフォルダのブックマークを取得
-        bookmarks_to_process = [ch for ch in self.current_folder.children if ch.type == 'bookmark' and ch.url]
-        
-        if not bookmarks_to_process:
-            # すべてのブックマークを収集
-            def collect(node):
-                result = []
-                if not node:
-                    return result
-                if node.type == 'bookmark' and node.url:
-                    result.append(node)
-                elif node.type == 'folder':
-                    for ch in node.children:
-                        result.extend(collect(ch))
-                return result
-            bookmarks_to_process = collect(self.root_node)
-        
-        bookmarks_to_process = list({id(b): b for b in bookmarks_to_process}.values())
-        self.last_classified_bookmarks = bookmarks_to_process
-        
-        if not bookmarks_to_process:
-            messagebox.showinfo("Smart Classify", "対象ブックマークがありません。")
+            save_bookmarks(self.current_file, self.root_node, self.rules)
+            self.statusBar().showMessage(f"Saved to {self.current_file}", 4000)
+            # Remember last file
+            self.config_manager.set("Session", "last_bookmarks_file", self.current_file)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to save:\n{exc}")
+
+    def cmd_save_as(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save As", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not file_path:
             return
-        
-        total_to_process = min(len(bookmarks_to_process), self.max_smart_items)
-        self._show_smart_progress(total_to_process)
-        threading.Thread(target=self._run_ai_classification_worker, args=(bookmarks_to_process, None), daemon=True).start()
-    
-    def _run_ai_classification_worker(self, bookmarks, additional_prompt):
-        """AI分類を別スレッドで実行"""
-        try:
-            bookmark_nodes = [BookmarkNode(title=b.title, url=b.url) for b in bookmarks]
-            classifier = AIBookmarkClassifier(logger=self.logger)
-            
-            def progress_callback(processed, total, sent, received):
-                if not self._smart_cancelled:
-                    self.ui_queue.put(('progress_update', (processed, total, sent, received)))
-            
-            classifier.set_progress_callback(progress_callback)
-            priority_terms = self.config_manager.get_priority_terms()
-            result = classifier.classify_bookmarks(
-                bookmarks=bookmark_nodes,
-                priority_terms=priority_terms,
-                max_items=self.max_smart_items,
-                additional_prompt=additional_prompt
-            )
-            if not self._smart_cancelled:
-                self.ui_queue.put(('smart_classify_result', result))
-        except Exception as e:
-            self.logger.error("AI Classification worker failed: %s", str(e), exc_info=True)
-            if not self._smart_cancelled:
-                self.ui_queue.put(('error', f"Smart Classify failed: {e}"))
-    
-    def _show_smart_progress(self, total):
-        """AI分類の進捗ダイアログ"""
-        if self._smart_dialog and self._smart_dialog.winfo_exists():
+        self.current_file = file_path
+        self.cmd_save()
+        # Remember last file
+        self.config_manager.set("Session", "last_bookmarks_file", file_path)
+
+    def cmd_new_folder(self) -> None:
+        if not self.current_folder or self.current_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
             return
-        
-        d = ctk.CTkToplevel(self)
-        d.title("Smart Classify")
-        d.geometry("400x150")
-        d.transient(self)
-        d.grab_set()
-        d.resizable(False, False)
-        self._smart_dialog = d
-        
-        ctk.CTkLabel(d, text=f"AIが最大{total}件のブックマークを解析中です...").pack(pady=12)
-        
-        # CustomTkinterのCTkProgressBarはindeterminateモードをサポートしていないため、
-        # 代わりにアニメーション効果を実装
-        pb_frame = ctk.CTkFrame(d)
-        pb_frame.pack(fill="x", padx=14, pady=5)
-        pb = ctk.CTkProgressBar(pb_frame)
-        pb.pack(fill="x")
-        # 簡易的なアニメーション（実際には別の方法が必要かもしれません）
-        pb.set(0.5)  # 中間位置に設定
-        
-        self.traffic_label = ctk.CTkLabel(d, text="AIと通信中...")
-        self.traffic_label.pack(pady=8)
-        
-        def on_hide():
-            self._smart_cancelled = True
-            self.traffic_label = None
-            if self._smart_dialog:
-                try:
-                    self._smart_dialog.destroy()
-                except tk.TclError:
-                    pass
-            self._smart_dialog = None
-        
-        ctk.CTkButton(d, text="Cancel", command=on_hide).pack(pady=10)
-        d.protocol("WM_DELETE_WINDOW", on_hide)
-    
-    def _show_smart_classify_preview(self, plan: Dict, base_node: Node):
-        """AI分類の結果プレビュー"""
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if not ok or not name.strip():
+            return
+        new_node = Node("folder", name.strip())
+        self.current_folder.append(new_node)
+        self._populate_folder_tree(select_node=new_node)
+        self._build_search_index()
+        self._refresh_content()
+
+    def cmd_new_bookmark(self) -> None:
+        if not self.current_folder or self.current_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
+            return
+        url, ok = QInputDialog.getText(self, "New Bookmark", "URL:")
+        if not ok or not url.strip():
+            return
+        if not is_valid_url(url.strip()):
+            QMessageBox.warning(self, "Warning", "Enter a valid URL (http/https).")
+            return
+        title, _ = QInputDialog.getText(self, "New Bookmark", "Title (optional):")
+        node = Node("bookmark", title=title.strip() or url.strip(), url=url.strip())
+        self.current_folder.append(node)
+        self._build_search_index()
+        self._refresh_content()
+        self._enqueue_preview_fetch(node)
+
+    def cmd_rename(self) -> None:
+        if not self.selected_node:
+            QMessageBox.information(self, "Info", "Select an item to rename.")
+            return
+        name, ok = QInputDialog.getText(self, "Rename", "New name:", text=self.selected_node.title)
+        if not ok or not name.strip():
+            return
+        self.selected_node.title = name.strip()
+        self._populate_folder_tree(select_node=self.selected_node if self.selected_node.type == "folder" else None)
+        self._build_search_index()
+        self._refresh_content()
+
+    def cmd_edit_url(self) -> None:
+        if not self.selected_node or self.selected_node.type != "bookmark":
+            QMessageBox.information(self, "Info", "Select a bookmark to edit.")
+            return
+        url, ok = QInputDialog.getText(self, "Edit URL", "URL:", text=self.selected_node.url)
+        if not ok or not url.strip():
+            return
+        if not is_valid_url(url.strip()):
+            QMessageBox.warning(self, "Warning", "Enter a valid URL.")
+            return
+        self.selected_node.url = url.strip()
+        self._build_search_index()
+        self._refresh_content()
+
+    def cmd_move_to_folder(self) -> None:
+        if not self.selected_node or not self.root_node:
+            QMessageBox.information(self, "Info", "Select an item to move.")
+            return
+        dialog = FolderSelectDialog(self, root_node=self.root_node, exclude_nodes=[self.selected_node])
+        if dialog.exec() != dialog.Accepted or not dialog.result:
+            return
+        target_folder = dialog.result
+        if target_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Target must be a folder.")
+            return
+        parent = self.selected_node.parent
+        if parent and self.selected_node in parent.children:
+            parent.children.remove(self.selected_node)
+        target_folder.append(self.selected_node)
+        self.current_folder = target_folder
+        self._populate_folder_tree(select_node=target_folder)
+        self._build_search_index()
+        self._refresh_content()
+
+    def cmd_move_up(self) -> None:
+        if not self.selected_node or not self.selected_node.parent:
+            return
+        siblings = self.selected_node.parent.children
+        idx = siblings.index(self.selected_node)
+        if idx <= 0:
+            return
+        siblings[idx - 1], siblings[idx] = siblings[idx], siblings[idx - 1]
+        self._refresh_content()
+        self._populate_folder_tree(select_node=self.selected_node.parent)
+
+    def _delete_node(self, node: Node) -> None:
+        if not node.parent:
+            QMessageBox.warning(self, "Warning", "Cannot delete root.")
+            return
+        node.parent.children = [ch for ch in node.parent.children if ch is not node]
+        if self.selected_node is node:
+            self.selected_node = None
+        self._build_search_index()
+        self._refresh_content()
+        self._populate_folder_tree(select_node=node.parent)
+
+    def cmd_delete(self) -> None:
+        if not self.selected_node:
+            QMessageBox.information(self, "Info", "Select an item to delete.")
+            return
+        self._delete_node(self.selected_node)
+
+    def cmd_expand_all(self) -> None:
+        """Expand all folders (placeholder)."""
+        QMessageBox.information(self, "Expand", "Expand all folders functionality.")
+
+    def cmd_collapse_all(self) -> None:
+        """Collapse all folders (placeholder)."""
+        QMessageBox.information(self, "Collapse", "Collapse all folders functionality.")
+
+    def cmd_check_proxy(self) -> None:
+        settings = self.config_manager.get_proxy_settings()
+        if not settings:
+            QMessageBox.information(self, "Proxy", "Proxy is disabled or not configured.")
+            return
+        summary = settings.get("url", "")
+        QMessageBox.information(self, "Proxy", f"Using proxy: {summary}")
+
+    def _build_domain_plan(self) -> Dict[str, List[Node]]:
+        plan: Dict[str, List[Node]] = {}
+        for node in self._iter_bookmarks(self.root_node):
+            domain = urlparse(node.url or "").netloc or "Unsorted"
+            plan.setdefault(domain, []).append(node)
+        return plan
+
+    def cmd_show_classify_preview(self) -> None:
+        plan = self._build_domain_plan()
         if not plan:
-            if self.last_classification_prompts:
-                messagebox.showinfo("Smart Classify", "現在の指示では、これ以上分類できる候補が見つかりませんでした。")
-            else:
-                messagebox.showinfo("Smart Classify", "AIによる分類候補が見つかりませんでした。")
+            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+            return
+        lines = [f"{folder}: {len(nodes)}" for folder, nodes in plan.items()]
+        QMessageBox.information(self, "Classify Preview", "\n".join(lines))
+
+    def cmd_smart_classify(self) -> None:
+        plan = self._build_domain_plan()
+        if not plan:
+            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+            return
+        for folder_name, nodes in plan.items():
+            if not nodes:
+                continue
+            target = self._find_or_create_folder(self.root_node, folder_name)
+            for node in nodes[: self.max_smart_items]:
+                parent = node.parent
+                if parent and node in parent.children:
+                    parent.children.remove(node)
+                target.append(node)
+        self._populate_folder_tree(select_node=self.root_node)
+        self._build_search_index()
+        self._refresh_content()
+        self.statusBar().showMessage("Classification completed", 4000)
+
+    def _find_or_create_folder(self, parent: Node, name: str) -> Node:
+        for child in parent.children:
+            if child.type == "folder" and child.title == name:
+                return child
+        new_folder = Node("folder", name)
+        parent.append(new_folder)
+        return new_folder
+
+    def cmd_set_view_mode(self, mode: str) -> None:
+        """Switch between card and list view modes."""
+        if mode not in ("card", "list", "tree"):
             return
         
-        preview_text = "\n".join([f"{folder}: {len(bms)} bookmarks" for folder, bms in plan.items()])
-        if messagebox.askyesno("Smart Classification Preview", f"Apply classification?\n\n{preview_text}"):
-            self._execute_classification_plan(plan, base_node)
-    
-    def cmd_check_proxy(self):
-        """プロキシ接続をテスト"""
-        proxy_info = self._get_proxies_for_requests()
-        if not proxy_info:
-            if not self.use_proxy_var.get():
-                messagebox.showinfo("Proxy Check", "プロキシは使用しない設定です。")
-            else:
-                messagebox.showinfo("Proxy Check", "プロキシ設定がconfig.iniに見つかりません。")
+        self.view_mode = mode
+        
+        # Update checkboxes
+        if hasattr(self, "tree_mode_action"):
+            self.tree_mode_action.setChecked(mode == "tree")
+        self.card_mode_action.setChecked(mode == "card")
+        self.list_mode_action.setChecked(mode == "list")
+        
+        # Update top bar chip
+        if hasattr(self, 'mode_chip'):
+            display_text = "Tree" if mode == "tree" else ("Card" if mode == "card" else "List")
+            self.mode_chip.setText(f"表示: {display_text}")
+
+        # Update view toggle button styles
+        if hasattr(self, "view_buttons"):
+            for key, btn in self.view_buttons.items():
+                btn.setObjectName("tonalButton" if key == mode else "ghostButton")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+                btn.update()
+        
+        # Refresh content with new mode
+        self._refresh_content()
+        self.statusBar().showMessage(f"Switched to {mode.title()} Mode", 2000)
+
+    def _apply_sort(self, sort_by: str) -> None:
+        """Sort bookmarks by specified field."""
+        if sort_by == "title":
+            self.current_folder.children.sort(key=lambda n: n.title or "", reverse=False)
+            self.statusBar().showMessage("Sorted by title", 2000)
+        elif sort_by == "domain":
+            # Sort by domain extracted from URL
+            def get_domain(node: Node) -> str:
+                if node.url:
+                    try:
+                        from urllib.parse import urlparse
+                        return urlparse(node.url).netloc or node.title or ""
+                    except:
+                        return node.title or ""
+                return node.title or ""
+            
+            self.current_folder.children.sort(key=get_domain, reverse=False)
+            self.statusBar().showMessage("Sorted by domain", 2000)
+        
+        self._refresh_content()
+
+    def cmd_fix_titles_from_url(self) -> None:
+        self._enable_network_updates("タイトル取得")
+        nodes = list(self._iter_bookmarks(self.current_folder)) if self.current_folder else []
+        if not nodes:
+            QMessageBox.information(self, "Info", "No bookmarks to update.")
             return
-        
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Proxy Test")
-        dialog.geometry("300x100")
-        dialog.transient(self)
-        dialog.grab_set()
-        ctk.CTkLabel(dialog, text="Testing proxy connection...").pack(pady=20)
-        self.update_idletasks()
-        
-        def worker():
-            try:
-                test_url = "http://www.google.com/generate_204"
-                response = requests.get(test_url, proxies=proxy_info['proxies'], auth=proxy_info['auth'], timeout=10)
-                response.raise_for_status()
-                self.ui_queue.put(('proxy_check_success', dialog))
-            except Exception as e:
-                self.ui_queue.put(('proxy_check_failure', (dialog, str(e))))
-        
-        threading.Thread(target=worker, daemon=True).start()
-    
-    def cmd_set_smart_classify_limit(self):
-        """スマート分類の上限を設定"""
-        current_limit = self.max_smart_items
-        new_limit = simpledialog.askinteger(
-            "Smart Classify Limit",
-            "スマート分類の最大ブックマーク数を入力してください（50～1000）：",
-            initialvalue=current_limit,
-            minvalue=50,
-            maxvalue=1000,
-            parent=self
-        )
-        if new_limit is not None:
-            self.max_smart_items = new_limit
-            messagebox.showinfo("Smart Classify Limit", f"最大処理数を {new_limit} に設定しました。")
-    
-    def cmd_set_title_fetch_timeout(self):
-        """タイトル取得のタイムアウトを設定"""
-        new_timeout = simpledialog.askinteger(
-            "Title Fetch Timeout",
-            "タイトル取得のタイムアウト秒数を入力してください（2～60）：",
-            initialvalue=self.fetch_timeout,
-            minvalue=2,
-            maxvalue=60,
-            parent=self
-        )
-        if new_timeout is not None:
-            self.fetch_timeout = new_timeout
-            messagebox.showinfo("Title Fetch Timeout", f"タイムアウトを {new_timeout} 秒に設定しました。")
-    
-    def cmd_show_progress_chart(self):
-        """進捗チャートを表示"""
-        if not self.progress_history:
-            messagebox.showinfo("Progress Chart", "進捗データがありません。スマート分類を先に行ってください。")
+        proxy_info = self.config_manager.get_proxies_for_requests(use_proxy=self.use_proxy)
+        self.statusBar().showMessage("Starting title fix...", 2000)
+        self._start_background(fix_titles, nodes, self.ui_queue, proxy_info, self.fetch_timeout, None, None)
+
+    def cmd_fetch_preview(self) -> None:
+        """Fetch preview for the selected bookmark (on demand)."""
+        if not self.selected_node or self.selected_node.type != "bookmark":
+            QMessageBox.information(self, "Info", "プレビュー取得はブックマークを選択してください。")
             return
-        
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Smart Classification Progress")
-        dialog.geometry("500x350")
-        
-        canvas = tk.Canvas(dialog, bg="white")
-        canvas.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        history = self.progress_history
-        max_val = max(history) if history else 1
-        canvas_width, canvas_height, padding = 480, 330, 20
-        chart_area_height = canvas_height - (padding * 2)
-        chart_area_width = canvas_width - (padding * 2)
-        bar_count = len(history)
-        bar_width = chart_area_width / (bar_count + 1) if bar_count > 0 else chart_area_width
-        
-        canvas.create_line(padding, padding, padding, canvas_height - padding)
-        canvas.create_line(padding, canvas_height - padding, canvas_width - padding, canvas_height - padding)
-        
-        for i, val in enumerate(history):
-            x0 = padding + (i * bar_width) + (bar_width * 0.1)
-            y0 = canvas_height - padding - ((val / max_val) * chart_area_height)
-            x1 = x0 + bar_width * 0.8
-            y1 = canvas_height - padding
-            canvas.create_rectangle(x0, y0, x1, y1, fill="#4CAF50", outline="#388E3C")
-            if i % (len(history) // 10 or 1) == 0:
-                canvas.create_text(x0 + (bar_width * 0.4), y1 + 10, text=str(val), anchor="n")
-        
-        canvas.create_text(canvas_width / 2, padding / 2, text="Processed Bookmarks Over Time", font=("", 12, "bold"))
-        canvas.create_text(padding - 10, canvas_height / 2, text=f"Total: {max_val}", angle=90, anchor="s")
-    
-    def cmd_fix_titles_from_url(self):
-        """URLからタイトルを修正"""
-        selected_nodes = [self.card_to_node[card] for card in self.selected_cards if card in self.card_to_node]
-        if not selected_nodes:
-            messagebox.showinfo("Fix Titles", "対象のブックマークを選択してください。")
+        self._enable_network_updates("プレビュー取得")
+        self._enqueue_preview_fetch(self.selected_node)
+
+    def _enqueue_preview_fetch(self, node: Node) -> None:
+        if not self.network_updates_enabled:
             return
-        
-        targets = []
-        def collect(node):
-            if not node:
-                return
-            if node.type == "bookmark" and node.url:
-                t = (node.title or "").strip()
-                if t == node.url.strip() or is_valid_url(t):
-                    targets.append(node)
-            elif node.type == "folder":
-                for ch in node.children:
-                    collect(ch)
-        
-        for node in selected_nodes:
-            collect(node)
-        
-        targets = list({id(n): n for n in targets}.values())
-        if not targets:
-            messagebox.showinfo("Fix Titles", "選択範囲に修正対象（タイトルがURLのブックマーク）はありません。")
-            return
-        
-        self._show_titlefix_progress(len(targets))
-        threading.Thread(target=self._fix_titles_worker, args=(targets,), daemon=True).start()
-    
-    def _show_titlefix_progress(self, total: int):
-        """タイトル修正の進捗ダイアログ"""
-        if self._titlefix_dialog and self._titlefix_dialog.winfo_exists():
-            return
-        
-        d = ctk.CTkToplevel(self)
-        d.title("Fix Titles from URL")
-        d.geometry("360x140")
-        d.transient(self)
-        d.grab_set()
-        d.resizable(False, False)
-        self._titlefix_dialog = d
-        self._titlefix_cancelled = False
-        
-        ctk.CTkLabel(d, text=f"合計 {total} 件のタイトルを修正中...").pack(pady=10)
-        
-        self._titlefix_var = ctk.DoubleVar(value=0.0)
-        pb = ctk.CTkProgressBar(d, variable=self._titlefix_var)
-        pb.pack(fill="x", padx=12, pady=6)
-        
-        self._titlefix_label = ctk.CTkLabel(d, text=f"0 / {total}")
-        self._titlefix_label.pack()
-        
-        def on_cancel():
-            self._titlefix_cancelled = True
-            try:
-                d.destroy()
-            except tk.TclError:
-                pass
-        
-        ctk.CTkButton(d, text="Cancel", command=on_cancel).pack(pady=10)
-        d.protocol("WM_DELETE_WINDOW", on_cancel)
-    
-    def _fix_titles_worker(self, nodes):
-        """タイトル修正を別スレッドで実行"""
-        proxy_info = self._get_proxies_for_requests()
-        check_cancel = lambda: getattr(self, "_titlefix_cancelled", False)
-        fix_titles(nodes, self.ui_queue, proxy_info, self.fetch_timeout, self.logger, check_cancel)
+        proxy_info = self.config_manager.get_proxies_for_requests(use_proxy=self.use_proxy)
+        self._start_background(fetch_preview, node.url, self.ui_queue, proxy_info, self.fetch_timeout)
+
+    def _enable_network_updates(self, reason: str) -> None:
+        if not self.network_updates_enabled:
+            self.network_updates_enabled = True
+            self.statusBar().showMessage(f"ネットワーク更新を有効化: {reason}", 3000)
+
+    def _start_background(self, target, *args) -> None:
+        thread = threading.Thread(target=target, args=args, daemon=True)
+        thread.start()
+
+
+# Backward compatibility alias
+App = MainWindow
 

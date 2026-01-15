@@ -14,15 +14,16 @@ BOOKMARK_HTML_FOOTER = """</DL><p>
 
 
 class Node:
-    __slots__ = ("type", "title", "url", "add_date", "last_modified", "icon", "children", "parent")
+    __slots__ = ("type", "title", "url", "add_date", "last_modified", "icon", "description", "children", "parent")
 
-    def __init__(self, type_, title="", url="", add_date="", last_modified="", icon=""):
+    def __init__(self, type_, title="", url="", add_date="", last_modified="", icon="", description=""):
         self.type = type_
         self.title = title
         self.url = url
         self.add_date = add_date
         self.last_modified = last_modified
         self.icon = icon  # ファビコンURLまたはbase64データ
+        self.description = description
         self.children = []
         self.parent = None
 

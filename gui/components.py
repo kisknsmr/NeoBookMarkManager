@@ -1,29 +1,25 @@
 """
-PySide6 モダンな UI コンポーネント
-Material Design 3 準拠のカード型レイアウトコンポーネント
+PySide6 GUI Components - Material Design 3 Compliance
 
-【設計】
-- BookmarkCard: 個別ブックマークを表示するカード
-- BookmarkRow: ブックマークの行表示（リスト用）
-- FolderTree: フォルダツリービュー
-- SearchBar: 検索バー
-- DetailPanel: ブックマーク詳細パネル
+Simplified component architecture:
+- BookmarkCard: Individual bookmark card display
+- FolderTree: Folder tree view with drag-and-drop
+- SearchBar: Search input with signals
+- DetailPanel: Bookmark details display
 """
 
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any
 from PySide6.QtWidgets import (
-    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QScrollArea, QListWidget, QListWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QTextEdit
+    QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QScrollArea, QTreeWidget, QTreeWidgetItem, QTextEdit, QStyle
 )
-from PySide6.QtCore import Qt, pyqtSignal, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QFont, QPixmap, QCursor
 
 from core.model import Node
-from gui.theme import ColorTokens, Typography, Elevation, Spacing, Colors, create_qfont
-from gui.ui_kit import StyledButton, StyledCard, BodyText
+from gui.resources import Theme, Typography, Spacing
 
-# グローバルファビコンキャッシュ（パフォーマンス向上のため）
+# Favicon cache for performance
 _favicon_cache: Dict[str, Optional[QPixmap]] = {}
 
 
@@ -48,7 +44,6 @@ def get_favicon_image(icon_data: str, size: int = 16) -> Optional[QPixmap]:
             img = img.resize((size, size), Image.Resampling.LANCZOS)
             
             # PIL Image から QPixmap に変換
-            # PIL Image の RGB モードを QImage 経由で QPixmap に変換
             import io
             with io.BytesIO() as buf:
                 img.save(buf, format='PNG')
@@ -65,7 +60,7 @@ def get_favicon_image(icon_data: str, size: int = 16) -> Optional[QPixmap]:
     return None
 
 
-class BookmarkCard(StyledCard):
+class BookmarkCard(QFrame):
     """
     個別ブックマークを表示するカードコンポーネント
     
@@ -74,21 +69,25 @@ class BookmarkCard(StyledCard):
     - double_clicked: カードがダブルクリックされた
     """
     
-    clicked = pyqtSignal()
-    double_clicked = pyqtSignal()
+    clicked = Signal()
+    double_clicked = Signal()
     
     def __init__(self, node: Node, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.node = node
         self.is_selected = False
         
+        # QSSクラス設定
+        self.setObjectName("bookmarkCard")
+        
         # レイアウト設定
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
         
         # ヘッダー（ファビコン + タイトル）
         header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
         
         # ファビコン
         favicon = get_favicon_image(node.icon, 20) if node.icon else None
@@ -99,13 +98,16 @@ class BookmarkCard(StyledCard):
             header_layout.addWidget(icon_label)
         else:
             icon_label = QLabel("🔗")
-            icon_label.setFont(create_qfont(size=14))
+            font = QFont(Typography.FONT_FAMILY, 14)
+            icon_label.setFont(font)
             header_layout.addWidget(icon_label)
         
         # タイトル
         title_label = QLabel(node.title or "Untitled")
-        title_label.setFont(create_qfont(family="Noto Sans JP", size=14, bold=True))
-        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        title_font = QFont(Typography.FONT_FAMILY, 14)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setObjectName("cardTitle")
         header_layout.addWidget(title_label, 1)
         
         layout.addLayout(header_layout)
@@ -113,8 +115,9 @@ class BookmarkCard(StyledCard):
         # URL
         if node.url:
             url_label = QLabel(node.url)
-            url_label.setFont(create_qfont(family="Noto Sans JP", size=11))
-            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_font = QFont(Typography.FONT_FAMILY, 11)
+            url_label.setFont(url_font)
+            url_label.setObjectName("cardUrl")
             url_label.setWordWrap(True)
             url_label.setMaximumHeight(30)
             layout.addWidget(url_label)
@@ -122,8 +125,9 @@ class BookmarkCard(StyledCard):
         # 説明
         if hasattr(node, 'description') and node.description:
             desc_label = QLabel(node.description)
-            desc_label.setFont(create_qfont(family="Noto Sans JP", size=12))
-            desc_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            desc_font = QFont(Typography.FONT_FAMILY, 12)
+            desc_label.setFont(desc_font)
+            desc_label.setObjectName("cardDescription")
             desc_label.setWordWrap(True)
             desc_label.setMaximumHeight(40)
             layout.addWidget(desc_label)
@@ -135,30 +139,23 @@ class BookmarkCard(StyledCard):
         """マウスクリックイベント"""
         self.clicked.emit()
         self.set_selected(True)
+        super().mousePressEvent(event)
     
     def mouseDoubleClickEvent(self, event):
         """ダブルクリックイベント"""
         self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
     
     def set_selected(self, selected: bool) -> None:
         """選択状態を設定"""
         self.is_selected = selected
         if selected:
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {ColorTokens.SELECTED_BG};
-                    border: 2px solid {ColorTokens.PRIMARY};
-                    border-radius: {Elevation.RADIUS_M}px;
-                }}
-            """)
+            self.setProperty("selected", "true")
         else:
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {ColorTokens.SURFACE_2};
-                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                    border-radius: {Elevation.RADIUS_M}px;
-                }}
-            """)
+            self.setProperty("selected", "false")
+        # スタイル再適用
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class BookmarkRow(QFrame):
@@ -170,23 +167,16 @@ class BookmarkRow(QFrame):
     - delete_requested: 削除が要求された
     """
     
-    clicked = pyqtSignal()
-    delete_requested = pyqtSignal()
+    clicked = Signal()
+    delete_requested = Signal()
     
     def __init__(self, node: Node, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.node = node
         self.is_selected = False
         
-        # スタイル設定
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {ColorTokens.SURFACE_1};
-                border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                border-radius: {Elevation.RADIUS_S}px;
-                padding: 8px;
-            }}
-        """)
+        # QSSクラス設定
+        self.setObjectName("bookmarkRow")
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -209,22 +199,27 @@ class BookmarkRow(QFrame):
         content_layout.setSpacing(2)
         
         title_label = QLabel(node.title or "Untitled")
-        title_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
-        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        title_font = QFont(Typography.FONT_FAMILY, 13)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setObjectName("rowTitle")
         content_layout.addWidget(title_label)
         
         if node.url:
             url_label = QLabel(node.url)
-            url_label.setFont(create_qfont(family="Noto Sans JP", size=11))
-            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_font = QFont(Typography.FONT_FAMILY, 11)
+            url_label.setFont(url_font)
+            url_label.setObjectName("rowUrl")
             url_label.setMaximumWidth(400)
             content_layout.addWidget(url_label)
         
         layout.addLayout(content_layout, 1)
         
         # 削除ボタン
-        delete_btn = StyledButton(text="削除", command=self.delete_requested.emit, variant="text")
+        delete_btn = QPushButton("削除")
+        delete_btn.clicked.connect(self.delete_requested.emit)
         delete_btn.setMaximumWidth(60)
+        delete_btn.setObjectName("textButton")
         layout.addWidget(delete_btn)
         
         self.setMinimumHeight(60)
@@ -233,28 +228,18 @@ class BookmarkRow(QFrame):
         """マウスクリックイベント"""
         self.clicked.emit()
         self.set_selected(True)
+        super().mousePressEvent(event)
     
     def set_selected(self, selected: bool) -> None:
         """選択状態を設定"""
         self.is_selected = selected
         if selected:
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {ColorTokens.SELECTED_BG};
-                    border: 2px solid {ColorTokens.PRIMARY};
-                    border-radius: {Elevation.RADIUS_S}px;
-                    padding: 8px;
-                }}
-            """)
+            self.setProperty("selected", "true")
         else:
-            self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {ColorTokens.SURFACE_1};
-                    border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                    border-radius: {Elevation.RADIUS_S}px;
-                    padding: 8px;
-                }}
-            """)
+            self.setProperty("selected", "false")
+        # スタイル再適用
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class FolderTree(QTreeWidget):
@@ -266,28 +251,14 @@ class FolderTree(QTreeWidget):
     - item_double_clicked: フォルダアイテムがダブルクリックされた
     """
     
-    item_selected = pyqtSignal(Node)
-    item_double_clicked = pyqtSignal(Node)
+    item_selected = Signal(Node)
+    item_double_clicked = Signal(Node)
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         
-        # スタイル設定
-        self.setStyleSheet(f"""
-            QTreeWidget {{
-                background-color: {ColorTokens.SURFACE_0};
-                color: {ColorTokens.TEXT_PRIMARY};
-                border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                border-radius: {Elevation.RADIUS_S}px;
-            }}
-            QTreeWidget::item:selected {{
-                background-color: {ColorTokens.SELECTED_BG};
-                color: {ColorTokens.TEXT_PRIMARY};
-            }}
-            QTreeWidget::item:hover {{
-                background-color: {ColorTokens.HOVER_OVERLAY};
-            }}
-        """)
+        # QSSクラス設定
+        self.setObjectName("folderTree")
         
         # ツリー設定
         self.setHeaderHidden(True)
@@ -301,23 +272,43 @@ class FolderTree(QTreeWidget):
     
     def add_folder(self, parent_item: Optional[QTreeWidgetItem], node: Node) -> QTreeWidgetItem:
         """フォルダアイテムを追加"""
-        item = QTreeWidgetItem(parent_item)
+        item = QTreeWidgetItem(parent_item or self)
         item.setText(0, node.title or "Folder")
-        item.setData(0, Qt.UserRole, node)
-        item.setIcon(0, QIcon("📁"))
+        item.setData(0, Qt.ItemDataRole.UserRole, node)
+        
+        # アイコン設定（Qtのアイコンを使用）
+        if hasattr(QStyle.StandardPixmap, 'SP_DirIcon'):
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+            item.setIcon(0, icon)
+        
+        return item
+
+    def add_bookmark(self, parent_item: Optional[QTreeWidgetItem], node: Node) -> QTreeWidgetItem:
+        """ブックマークアイテムを追加"""
+        item = QTreeWidgetItem(parent_item or self)
+        item.setText(0, node.title or node.url or "Bookmark")
+        item.setData(0, Qt.ItemDataRole.UserRole, node)
+
+        pixmap = get_favicon_image(node.icon) if getattr(node, "icon", "") else None
+        if pixmap:
+            item.setIcon(0, QIcon(pixmap))
+        elif hasattr(QStyle.StandardPixmap, 'SP_FileIcon'):
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+            item.setIcon(0, icon)
+
         return item
     
     def _on_item_selected(self):
         """アイテム選択イベント"""
         selected_items = self.selectedItems()
         if selected_items:
-            node = selected_items[0].data(0, Qt.UserRole)
+            node = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
             if node:
                 self.item_selected.emit(node)
     
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
         """アイテムダブルクリックイベント"""
-        node = item.data(0, Qt.UserRole)
+        node = item.data(0, Qt.ItemDataRole.UserRole)
         if node:
             self.item_double_clicked.emit(node)
 
@@ -331,19 +322,14 @@ class SearchBar(QFrame):
     - search_triggered: 検索が実行された（Enterキー押下）
     """
     
-    search_text_changed = pyqtSignal(str)
-    search_triggered = pyqtSignal(str)
+    search_text_changed = Signal(str)
+    search_triggered = Signal(str)
     
     def __init__(self, placeholder: str = "検索...", parent: Optional[QWidget] = None):
         super().__init__(parent)
         
-        # スタイル設定
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: transparent;
-                border: none;
-            }}
-        """)
+        # QSSクラス設定
+        self.setObjectName("searchBar")
         
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -351,31 +337,23 @@ class SearchBar(QFrame):
         
         # 検索アイコン
         icon_label = QLabel("🔍")
-        icon_label.setFont(create_qfont(size=14))
+        icon_font = QFont(Typography.FONT_FAMILY, 14)
+        icon_label.setFont(icon_font)
         layout.addWidget(icon_label)
         
         # 入力フィールド
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(placeholder)
-        self.search_input.setFont(create_qfont(family="Noto Sans JP", size=13))
-        self.search_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {ColorTokens.SURFACE_2};
-                color: {ColorTokens.TEXT_PRIMARY};
-                border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                border-radius: {Elevation.RADIUS_S}px;
-                padding: 6px 10px;
-                min-height: 32px;
-            }}
-            QLineEdit:focus {{
-                border: 2px solid {ColorTokens.BORDER_FOCUSED};
-            }}
-        """)
+        input_font = QFont(Typography.FONT_FAMILY, 13)
+        self.search_input.setFont(input_font)
+        self.search_input.setObjectName("searchInput")
         layout.addWidget(self.search_input, 1)
         
         # クリアボタン
-        clear_btn = StyledButton(text="クリア", command=self._clear_search, variant="text")
+        clear_btn = QPushButton("クリア")
+        clear_btn.clicked.connect(self._clear_search)
         clear_btn.setMaximumWidth(70)
+        clear_btn.setObjectName("textButton")
         layout.addWidget(clear_btn)
         
         # シグナル接続
@@ -404,22 +382,26 @@ class DetailPanel(QScrollArea):
     ブックマーク詳細パネル
     
     ブックマークの詳細情報を表示・編集するパネル
+    
+    シグナル:
+    - edit_requested: 編集が要求された
+    - copy_url_requested: URLコピーが要求された
+    - move_requested: 移動が要求された
+    - delete_requested: 削除が要求された
     """
+    
+    edit_requested = Signal(Node)
+    copy_url_requested = Signal(str)
+    move_requested = Signal(Node)
+    delete_requested = Signal(Node)
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         
         self.current_node: Optional[Node] = None
         
-        # スタイル設定
-        self.setStyleSheet(f"""
-            QScrollArea {{
-                background-color: {ColorTokens.SURFACE_0};
-                border: 1px solid {ColorTokens.BORDER_DEFAULT};
-                border-radius: {Elevation.RADIUS_S}px;
-            }}
-        """)
-        
+        # QSSクラス設定
+        self.setObjectName("detailPanel")
         self.setWidgetResizable(True)
         
         # コンテンツウィジェット
@@ -436,46 +418,101 @@ class DetailPanel(QScrollArea):
         
         # 既存ウィジェットをクリア
         while self.content_layout.count():
-            self.content_layout.takeAt(0).widget().deleteLater()
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         
         # タイトル
         title_label = QLabel("タイトル:")
-        title_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
-        title_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+        title_font = QFont(Typography.FONT_FAMILY, 13)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setObjectName("sectionLabel")
         self.content_layout.addWidget(title_label)
         
         title_value = QLabel(node.title or "Untitled")
-        title_value.setFont(create_qfont(family="Noto Sans JP", size=13))
-        title_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+        value_font = QFont(Typography.FONT_FAMILY, 13)
+        title_value.setFont(value_font)
+        title_value.setObjectName("valueLabel")
         title_value.setWordWrap(True)
         self.content_layout.addWidget(title_value)
         
         # URL
         if node.url:
             url_label = QLabel("URL:")
-            url_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
-            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+            url_font = QFont(Typography.FONT_FAMILY, 13)
+            url_font.setBold(True)
+            url_label.setFont(url_font)
+            url_label.setObjectName("sectionLabel")
             self.content_layout.addWidget(url_label)
             
             url_value = QLabel(node.url)
-            url_value.setFont(create_qfont(family="Noto Sans JP", size=11))
-            url_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_value_font = QFont(Typography.FONT_FAMILY, 11)
+            url_value.setFont(url_value_font)
+            url_value.setObjectName("valueLabel")
             url_value.setWordWrap(True)
-            url_value.setCursor(QCursor(Qt.PointingHandCursor))
+            url_value.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             self.content_layout.addWidget(url_value)
         
         # 説明
         if hasattr(node, 'description') and node.description:
             desc_label = QLabel("説明:")
-            desc_label.setFont(create_qfont(family="Noto Sans JP", size=13, bold=True))
-            desc_label.setStyleSheet(f"color: {ColorTokens.TEXT_PRIMARY};")
+            desc_font = QFont(Typography.FONT_FAMILY, 13)
+            desc_font.setBold(True)
+            desc_label.setFont(desc_font)
+            desc_label.setObjectName("sectionLabel")
             self.content_layout.addWidget(desc_label)
             
             desc_value = QLabel(node.description)
-            desc_value.setFont(create_qfont(family="Noto Sans JP", size=12))
-            desc_value.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            desc_value_font = QFont(Typography.FONT_FAMILY, 12)
+            desc_value.setFont(desc_value_font)
+            desc_value.setObjectName("valueLabel")
             desc_value.setWordWrap(True)
             self.content_layout.addWidget(desc_value)
+        
+        # 操作ボタンセクション
+        self.content_layout.addSpacing(12)
+        actions_label = QLabel("操作:")
+        actions_font = QFont(Typography.FONT_FAMILY, 13)
+        actions_font.setBold(True)
+        actions_label.setFont(actions_font)
+        actions_label.setObjectName("sectionLabel")
+        self.content_layout.addWidget(actions_label)
+        
+        # ボタンレイアウト
+        button_layout = QVBoxLayout()
+        button_layout.setSpacing(6)
+        
+        # 編集ボタン
+        edit_btn = QPushButton("✎ 編集")
+        edit_btn.setObjectName("actionButton")
+        edit_btn.setMinimumHeight(32)
+        edit_btn.clicked.connect(lambda: self.edit_requested.emit(node))
+        button_layout.addWidget(edit_btn)
+        
+        # URLコピーボタン
+        if node.url:
+            copy_btn = QPushButton("📋 URLをコピー")
+            copy_btn.setObjectName("actionButton")
+            copy_btn.setMinimumHeight(32)
+            copy_btn.clicked.connect(lambda: self.copy_url_requested.emit(node.url))
+            button_layout.addWidget(copy_btn)
+        
+        # 移動ボタン
+        move_btn = QPushButton("➜ 移動")
+        move_btn.setObjectName("actionButton")
+        move_btn.setMinimumHeight(32)
+        move_btn.clicked.connect(lambda: self.move_requested.emit(node))
+        button_layout.addWidget(move_btn)
+        
+        # 削除ボタン
+        delete_btn = QPushButton("🗑 削除")
+        delete_btn.setObjectName("dangerButton")
+        delete_btn.setMinimumHeight(32)
+        delete_btn.clicked.connect(lambda: self.delete_requested.emit(node))
+        button_layout.addWidget(delete_btn)
+        
+        self.content_layout.addLayout(button_layout)
         
         self.content_layout.addStretch()
     
@@ -483,921 +520,7 @@ class DetailPanel(QScrollArea):
         """詳細パネルをクリア"""
         self.current_node = None
         while self.content_layout.count():
-            self.content_layout.takeAt(0).widget().deleteLater()
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self.content_layout.addStretch()
-
-from core.model import Node
-import base64
-from io import BytesIO
-try:
-    from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-
-from gui.theme import Colors, Fonts, Dims
-from gui.ui_kit import StyledCard
-
-
-# グローバルファビコンキャッシュ（パフォーマンス向上のため）
-_favicon_cache: Dict[str, Optional[ctk.CTkImage]] = {}
-
-
-def get_favicon_image(icon_data: str, size: int = 14) -> Optional[ctk.CTkImage]:
-    """ファビコンデータからCTkImageを取得（キャッシュ付き）"""
-    if not PIL_AVAILABLE or not icon_data:
-        return None
-    
-    cache_key = f"{hash(icon_data)}_{size}"
-    if cache_key in _favicon_cache:
-        return _favicon_cache[cache_key]
-    
-    try:
-        if icon_data.startswith('data:image'):
-            header, encoded = icon_data.split(',', 1)
-            img_data = base64.b64decode(encoded)
-            img = Image.open(BytesIO(img_data))
-            img = img.resize((size, size), Image.Resampling.LANCZOS)
-            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
-            _favicon_cache[cache_key] = ctk_img
-            return ctk_img
-    except Exception:
-        pass
-    
-    _favicon_cache[cache_key] = None
-    return None
-
-
-class BookmarkCard(StyledCard):
-    """個別ブックマークを表示するカードコンポーネント - Compact Design"""
-    
-    def __init__(self, parent, node: Node, on_click: Optional[Callable] = None, 
-                 on_double_click: Optional[Callable] = None,
-                 **kwargs):
-        super().__init__(parent, **kwargs)
-        self.node = node
-        self.on_click = on_click
-        self.on_double_click = on_double_click
-        self.is_selected = False
-        self.favicon_image = None
-        
-        self._build_card()
-        self._bind_events()
-    
-    def _build_card(self):
-        """カードのUIを構築 - Compact Style"""
-        # カードはやや高めのサーフェスで強調
-        self.configure(fg_color=Colors.SURFACE_3)
-        
-        # ヘッダー（ファビコン + タイトル）
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=Dims.SPACING_L, pady=(Dims.SPACING_S, 4))
-        
-        # ファビコン
-        self.favicon_image = get_favicon_image(self.node.icon, 16)
-        if self.favicon_image:
-            icon_lbl = ctk.CTkLabel(header, image=self.favicon_image, text="")
-            icon_lbl.pack(side="left", padx=(0, 6))
-        else:
-            icon_lbl = ctk.CTkLabel(header, text="🔗", font=ctk.CTkFont(size=12))
-            icon_lbl.pack(side="left", padx=(0, 6))
-        
-        # タイトル
-        title_text = self.node.title or "(Untitled)"
-        if len(title_text) > 28:
-            title_text = title_text[:25] + "..."
-        
-        self.title_label = ctk.CTkLabel(
-            header,
-            text=title_text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=12, weight="bold"),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
-        self.title_label.pack(side="left", fill="x", expand=True)
-        
-        # URL/ドメイン表示
-        if self.node.url:
-            from urllib.parse import urlparse
-            try:
-                domain = urlparse(self.node.url).netloc
-                domain_text = domain.replace("www.", "") if domain else self.node.url[:30]
-            except:
-                domain_text = self.node.url[:30]
-        else:
-            domain_text = "(No URL)"
-        
-        self.url_label = ctk.CTkLabel(
-            self,
-            text=domain_text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        )
-        self.url_label.pack(pady=(0, 8), padx=Dims.SPACING_L, fill="x")
-        
-        # デフォルト背景色を保存
-        self.default_fg_color = Colors.SURFACE_3
-    
-    def _bind_events(self):
-        """イベントバインディング"""
-        # Base interaction (Click/Hover)
-        self.bind("<ButtonRelease-1>", self._on_click_handler)
-        self.bind("<Double-Button-1>", self._on_double_click_handler)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        
-        for widget in [self.title_label, self.url_label]:
-            widget.bind("<ButtonRelease-1>", self._on_click_handler)
-            widget.bind("<Double-Button-1>", self._on_double_click_handler)
-            widget.bind("<Enter>", self._on_enter)
-            widget.bind("<Leave>", self._on_leave)
-
-    def _on_click_handler(self, event):
-        """Click event propagation"""
-        if self.on_click:
-            self.on_click(self.node, event)
-    
-    def _on_double_click_handler(self, event):
-        if self.on_double_click:
-            self.on_double_click(self.node)
-    
-    def _on_enter(self, event):
-        if not self.is_selected:
-            self.configure(fg_color=Colors.HOVER_BG)
-    
-    def _on_leave(self, event):
-        if not self.is_selected:
-            self.configure(fg_color=self.default_fg_color)
-    
-    def set_selected(self, selected: bool):
-        self.is_selected = selected
-        if selected:
-            self.configure(border_width=2, border_color=Colors.PRIMARY, fg_color=Colors.SELECTED_BG)
-        else:
-            self.configure(border_width=1, border_color=Colors.BORDER, fg_color=self.default_fg_color)
-
-
-class BookmarkRow(ctk.CTkFrame):
-    """リスト表示用の行コンポーネント - Compact Design"""
-    
-    def __init__(self, parent, node: Node, on_click: Optional[Callable] = None, 
-                 on_double_click: Optional[Callable] = None,
-                 **kwargs):
-        super().__init__(parent, **kwargs)
-        self.node = node
-        self.on_click = on_click
-        self.on_double_click = on_double_click
-        self.is_selected = False
-        self.favicon_image = None
-        self.default_fg_color = Colors.SURFACE_2
-        
-        self._build_row()
-        self._bind_events()
-    
-    def _build_row(self):
-        """行のUIを構築 - Compact Style"""
-        self.configure(
-            corner_radius=Dims.RADIUS_S,
-            border_width=0,
-            fg_color=Colors.SURFACE_2,
-            height=32
-        )
-        self.pack_propagate(False)
-        
-        # ファビコン
-        self.favicon_image = get_favicon_image(self.node.icon, 14)
-        if self.favicon_image:
-            icon_label = ctk.CTkLabel(self, image=self.favicon_image, text="")
-            icon_label.pack(side="left", padx=(Dims.SPACING_L, 6))
-        else:
-            icon_label = ctk.CTkLabel(self, text="🔗", font=ctk.CTkFont(size=11))
-            icon_label.pack(side="left", padx=(Dims.SPACING_L, 6))
-        
-        # タイトル
-        title_text = self.node.title or "(Untitled)"
-        if len(title_text) > 50:
-            title_text = title_text[:47] + "..."
-        self.title_label = ctk.CTkLabel(
-            self,
-            text=title_text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=12),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w"
-        )
-        self.title_label.pack(side="left", fill="x", expand=True, padx=4)
-        
-        # URL/ドメイン (右寄せ)
-        if self.node.url:
-            from urllib.parse import urlparse
-            try:
-                domain = urlparse(self.node.url).netloc
-                domain_text = domain.replace("www.", "")
-                if len(domain_text) > 25:
-                    domain_text = domain_text[:22] + "..."
-            except:
-                domain_text = "..."
-        else:
-            domain_text = ""
-        
-        self.url_label = ctk.CTkLabel(
-            self,
-            text=domain_text,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="e",
-            width=150
-        )
-        self.url_label.pack(side="right", padx=(4, Dims.SPACING_L))
-        
-        self.default_fg_color = Colors.SURFACE_2
-
-        # 目に見えるが控えめな区切り線を追加
-        try:
-            divider = ctk.CTkFrame(self, height=1, fg_color=Colors.DIVIDER)
-            divider.pack(fill="x", side="bottom", padx=(Dims.SPACING_L, 0))
-        except Exception:
-            pass
-
-    def _bind_events(self):
-        """イベントバインディング"""
-        self.bind("<ButtonRelease-1>", self._on_click_handler)
-        self.bind("<Double-Button-1>", self._on_double_click_handler)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        
-        for widget in [self.title_label, self.url_label]:
-            widget.bind("<ButtonRelease-1>", self._on_click_handler)
-            widget.bind("<Double-Button-1>", self._on_double_click_handler)
-            widget.bind("<Enter>", self._on_enter)
-            widget.bind("<Leave>", self._on_leave)
-    
-    def _on_click_handler(self, event):
-        if self.on_click:
-            self.on_click(self.node, event)
-    
-    def _on_double_click_handler(self, event):
-        if self.on_double_click:
-            self.on_double_click(self.node)
-    
-    def _on_enter(self, event):
-        if not self.is_selected:
-            self.configure(fg_color=Colors.HOVER_BG)
-    
-    def _on_leave(self, event):
-        if not self.is_selected:
-            self.configure(fg_color=self.default_fg_color)
-    
-    def set_selected(self, selected: bool):
-        self.is_selected = selected
-        if selected:
-            # 紫のアウトライン + 高いサーフェス背景
-            self.configure(border_width=2, border_color=Colors.PRIMARY, fg_color=Colors.SURFACE_3)
-        else:
-            self.configure(border_width=0, border_color=Colors.BORDER, fg_color=self.default_fg_color)
-
-
-class FolderTree(ctk.CTkFrame):
-    """高速なツリービュー - ttk.Treeview使用"""
-    
-    def __init__(self, parent, root_node: Node, 
-                 on_folder_select: Optional[Callable] = None,
-                 on_bookmark_click: Optional[Callable] = None,
-                 on_bookmark_double_click: Optional[Callable] = None,
-                 **kwargs):
-        # CTkFrameの初期化（fg_colorなどのCustomTkinter固有引数を処理）
-        super().__init__(parent, **kwargs)
-        
-        self.root_node = root_node
-        self.on_folder_select = on_folder_select
-        self.on_bookmark_click = on_bookmark_click
-        self.on_bookmark_double_click = on_bookmark_double_click
-        self.selected_folder = None
-        self.node_map = {}  # tree_id -> Node
-        self.id_map = {}    # id(Node) -> tree_id
-        self.other_tree = None  # 他のツリービューへの参照（2画面モード用）
-        
-        self._build_tree()
-    
-    def _build_tree(self):
-        """ツリーを構築"""
-        import tkinter as tk
-        from tkinter import ttk
-        
-        # スタイル設定
-        style = ttk.Style()
-        style.configure("Treeview", 
-                       font=(Fonts.FAMILY, 11),
-                       rowheight=22)
-        style.configure("Treeview.Heading", 
-                       font=(Fonts.FAMILY, 10, "bold"))
-        # スクロールバーの細身スタイル（幅を指定）
-        try:
-            style.configure("Thin.Vertical.TScrollbar", troughcolor=Colors.SURFACE, background=Colors.SURFACE_3)
-        except Exception:
-            pass
-        
-        # Treeview作成（タイトルとURL列）
-        self.tree = ttk.Treeview(
-            self, 
-            columns=("url",),
-            show="tree headings",
-            selectmode="browse"
-        )
-        
-        # 列設定
-        self.tree.heading("#0", text="タイトル", anchor="w")
-        self.tree.heading("url", text="URL", anchor="w")
-        self.tree.column("#0", width=350, minwidth=200)
-        self.tree.column("url", width=250, minwidth=100)
-        
-        # スクロールバー（幅を細めに設定） - ttkで幅指定が利用できない環境があるためtk.Scrollbarを使用
-        scrollbar_y = tk.Scrollbar(self, orient="vertical", command=self.tree.yview, width=8)
-        scrollbar_x = tk.Scrollbar(self, orient="horizontal", command=self.tree.xview, width=8)
-        self.tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-        
-        # レイアウト
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar_y.grid(row=0, column=1, sticky="ns")
-        scrollbar_x.grid(row=1, column=0, sticky="ew")
-        
-        # ノードを追加
-        self._add_nodes(self.root_node, "")
-        
-        # イベントバインド
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>", self._on_double_click)
-        
-        # ドラッグ&ドロップ用のイベント
-        self.tree.bind("<Button-1>", self._on_tree_button1)
-        self.tree.bind("<B1-Motion>", self._on_tree_motion)
-        self.tree.bind("<ButtonRelease-1>", self._on_tree_release)
-        
-        # グローバルなマウス位置検出（他のツリービュー上でのドラッグ検出用）
-        root = self.winfo_toplevel()
-        root.bind_all("<B1-Motion>", self._on_global_motion)
-        root.bind_all("<ButtonRelease-1>", self._on_global_release)
-        
-        # ドラッグ状態
-        self.drag_start_item = None
-        self.drag_start_y = 0
-        self.drag_threshold = 5
-        self.drag_source_tree = None  # ドラッグ元のツリービュー
-    
-    def _add_nodes(self, node: Node, parent_id: str):
-        """ノードを再帰的に追加"""
-        # アイコンとタイトル
-        if node.type == "folder":
-            icon = "📁 "
-            title = icon + (node.title or "Untitled")
-        else:
-            # ファビコンがある場合は別のアイコンで区別
-            if node.icon:
-                icon = "🌐 "  # ファビコンあり
-            else:
-                icon = "🔗 "  # ファビコンなし
-            title = icon + (node.title or "(Untitled)")
-        
-        # URL（ドメインのみ）
-        url_display = ""
-        if node.url:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(node.url)
-                url_display = parsed.netloc or node.url[:40]
-            except:
-                url_display = node.url[:40]
-        
-        # ノード追加
-        tree_id = self.tree.insert(
-            parent_id, 
-            "end", 
-            text=title,
-            values=(url_display,),
-            open=(node.type == "folder" and node == self.root_node)  # ルートのみ展開
-        )
-        
-        self.node_map[tree_id] = node
-        self.id_map[id(node)] = tree_id
-        
-        # 子ノードを追加
-        if node.type == "folder":
-            for child in node.children:
-                self._add_nodes(child, tree_id)
-    
-    def _on_select(self, event):
-        """選択時のイベント"""
-        selection = self.tree.selection()
-        if not selection:
-            return
-        
-        tree_id = selection[0]
-        node = self.node_map.get(tree_id)
-        if not node:
-            return
-        
-        if node.type == "folder":
-            self.selected_folder = node
-            if self.on_folder_select:
-                self.on_folder_select(node)
-        else:
-            if self.on_bookmark_click:
-                self.on_bookmark_click(node, event)
-    
-    def _on_double_click(self, event):
-        """ダブルクリック時のイベント"""
-        selection = self.tree.selection()
-        if not selection:
-            return
-        
-        tree_id = selection[0]
-        node = self.node_map.get(tree_id)
-        if not node:
-            return
-        
-        if node.type == "bookmark" and self.on_bookmark_double_click:
-            self.on_bookmark_double_click(node)
-    
-    def _on_tree_button1(self, event):
-        """ツリービューのButton-1イベント（ドラッグ開始の準備）"""
-        item = self.tree.identify_row(event.y)
-        if item:
-            self.drag_start_item = item
-            self.drag_start_y = event.y
-            self.drag_source_tree = self  # このツリービューがドラッグ元
-        else:
-            self.drag_start_item = None
-            self.drag_source_tree = None
-    
-    def _on_tree_motion(self, event):
-        """ツリービューのB1-Motionイベント（ドラッグ中）"""
-        if not self.drag_start_item or not self.drag_source_tree:
-            return
-        
-        # 閾値を超えた場合のみドラッグ開始
-        if abs(event.y - self.drag_start_y) < self.drag_threshold:
-            return
-        
-        # このツリービュー上の場合
-        if event.widget == self.tree:
-            item = self.tree.identify_row(event.y)
-            if item and item != self.drag_start_item:
-                # ドラッグ先のアイテムをハイライト（視覚的フィードバック）
-                self.tree.selection_set(item)
-    
-    def _on_global_motion(self, event):
-        """グローバルなB1-Motionイベント（他のツリービュー上でのドラッグ検出）"""
-        if not self.drag_start_item or not self.drag_source_tree:
-            return
-        
-        # 他のツリービュー上にマウスがある場合
-        if hasattr(self.drag_source_tree, 'other_tree') and self.drag_source_tree.other_tree:
-            other_tree = self.drag_source_tree.other_tree
-            try:
-                # グローバル座標からローカル座標に変換
-                local_y = event.y_root - other_tree.tree.winfo_rooty()
-                item = other_tree.tree.identify_row(local_y)
-                if item:
-                    other_tree.tree.selection_set(item)
-            except:
-                pass
-    
-    def _on_tree_release(self, event):
-        """ツリービューのButtonRelease-1イベント（ドロップ処理）"""
-        if not self.drag_start_item or not self.drag_source_tree:
-            self.drag_start_item = None
-            self.drag_source_tree = None
-            return
-        
-        # このツリービュー上でドロップされた場合
-        if event.widget == self.tree:
-            self._process_drop(event, self)
-    
-    def _on_global_release(self, event):
-        """グローバルなButtonRelease-1イベント（他のツリービュー上でのドロップ検出）"""
-        if not self.drag_start_item or not self.drag_source_tree:
-            return
-        
-        # 他のツリービュー上でドロップされた場合
-        if hasattr(self.drag_source_tree, 'other_tree') and self.drag_source_tree.other_tree:
-            other_tree = self.drag_source_tree.other_tree
-            try:
-                # マウス位置が他のツリービュー上にあるか確認
-                other_tree_x = other_tree.tree.winfo_rootx()
-                other_tree_y = other_tree.tree.winfo_rooty()
-                other_tree_w = other_tree.tree.winfo_width()
-                other_tree_h = other_tree.tree.winfo_height()
-                
-                if (other_tree_x <= event.x_root <= other_tree_x + other_tree_w and
-                    other_tree_y <= event.y_root <= other_tree_y + other_tree_h):
-                    self._process_drop(event, other_tree)
-            except:
-                pass
-    
-    def _process_drop(self, event, target_tree):
-        """ドロップ処理の共通ロジック"""
-        if not self.drag_start_item or not self.drag_source_tree:
-            return
-        
-        # ローカル座標に変換
-        try:
-            if event.widget == target_tree.tree:
-                local_y = event.y
-            else:
-                local_y = event.y_root - target_tree.tree.winfo_rooty()
-            item = target_tree.tree.identify_row(local_y)
-        except:
-            item = None
-        
-        if not item:
-            self.drag_start_item = None
-            self.drag_source_tree = None
-            return
-        
-        # ドロップ処理
-        source_node = self.drag_source_tree.node_map.get(self.drag_start_item)
-        target_node = target_tree.node_map.get(item)
-        
-        if not source_node or not target_node:
-            self.drag_start_item = None
-            self.drag_source_tree = None
-            return
-        
-        # 自分自身を子に移動することはできない
-        if source_node == target_node:
-            self.drag_start_item = None
-            self.drag_source_tree = None
-            return
-        
-        # ターゲットがフォルダの場合、そのフォルダに移動
-        if target_node.type == "folder":
-            # 元の親から削除
-            if source_node.parent:
-                source_node.parent.children.remove(source_node)
-            
-            # 新しい親に追加
-            target_node.append(source_node)
-            
-            # 両方のツリービューを更新
-            self.drag_source_tree.refresh(self.drag_source_tree.root_node)
-            if target_tree != self.drag_source_tree:
-                target_tree.refresh(target_tree.root_node)
-        else:
-            # ターゲットがブックマークの場合、同じ親フォルダ内で並び替え
-            if source_node.parent == target_node.parent and source_node.parent:
-                parent = source_node.parent
-                old_idx = parent.children.index(source_node)
-                new_idx = parent.children.index(target_node)
-                
-                parent.children.remove(source_node)
-                parent.children.insert(new_idx, source_node)
-                
-                # ツリービューを更新（順序のみ）
-                if target_tree == self.drag_source_tree:
-                    target_tree._reorder_tree_items(parent)
-                else:
-                    # 異なるツリービュー間の場合は両方更新
-                    self.drag_source_tree.refresh(self.drag_source_tree.root_node)
-                    target_tree.refresh(target_tree.root_node)
-        
-        self.drag_start_item = None
-        self.drag_source_tree = None
-    
-    def _reorder_tree_items(self, folder_node: Node):
-        """フォルダ内のアイテム順序をツリービューに反映"""
-        folder_tree_id = self.id_map.get(id(folder_node))
-        if not folder_tree_id:
-            return
-        
-        # 現在の子アイテムを取得
-        current_children = list(self.tree.get_children(folder_tree_id))
-        
-        # 新しい順序に並び替え
-        new_order = []
-        for child_node in folder_node.children:
-            child_tree_id = self.id_map.get(id(child_node))
-            if child_tree_id in current_children:
-                new_order.append(child_tree_id)
-        
-        # 順序が変わっていない場合は何もしない
-        if new_order == current_children:
-            return
-        
-        # アイテムを削除して新しい順序で再挿入
-        # まず、各アイテムの情報を保存
-        items_data = {}
-        for child_id in current_children:
-            node = self.node_map.get(child_id)
-            if node:
-                # アイコンとタイトル
-                if node.type == "folder":
-                    icon = "📁 "
-                    title = icon + (node.title or "Untitled")
-                else:
-                    if node.icon:
-                        icon = "🌐 "
-                    else:
-                        icon = "🔗 "
-                    title = icon + (node.title or "(Untitled)")
-                
-                # URL
-                url_display = ""
-                if node.url:
-                    try:
-                        from urllib.parse import urlparse
-                        parsed = urlparse(node.url)
-                        url_display = parsed.netloc or node.url[:40]
-                    except:
-                        url_display = node.url[:40]
-                
-                # 展開状態
-                is_open = self.tree.item(child_id, "open")
-                
-                items_data[child_id] = {
-                    "text": title,
-                    "values": (url_display,),
-                    "open": is_open,
-                    "node": node
-                }
-        
-        # 全ての子アイテムを削除
-        for child_id in current_children:
-            self.tree.delete(child_id)
-        
-        # 新しい順序で再挿入
-        for child_id in new_order:
-            data = items_data[child_id]
-            new_id = self.tree.insert(
-                folder_tree_id,
-                "end",
-                text=data["text"],
-                values=data["values"],
-                open=data["open"]
-            )
-            # マッピングを更新
-            node = data["node"]
-            self.node_map[new_id] = node
-            self.id_map[id(node)] = new_id
-            
-            # 子ノードも再帰的に追加
-            if node.type == "folder":
-                for grandchild in node.children:
-                    self._add_nodes(grandchild, new_id)
-    
-    def refresh(self, new_root_node: Node):
-        """ツリーを更新"""
-        self.root_node = new_root_node
-        self.node_map.clear()
-        self.id_map.clear()
-        self.selected_folder = None
-        
-        # 全アイテム削除
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        # 再構築
-        self._add_nodes(new_root_node, "")
-        
-        # 2画面モードの場合、もう一方のツリービューも更新
-        if hasattr(self, 'other_tree') and self.other_tree:
-            self.other_tree.root_node = new_root_node
-            self.other_tree.node_map.clear()
-            self.other_tree.id_map.clear()
-            self.other_tree.selected_folder = None
-            for item in self.other_tree.tree.get_children():
-                self.other_tree.tree.delete(item)
-            self.other_tree._add_nodes(new_root_node, "")
-    
-    def expand_all(self):
-        """すべてのフォルダを展開"""
-        if not hasattr(self, 'tree'):
-            return
-        
-        def expand_recursive(item_id):
-            # このアイテムを展開
-            self.tree.item(item_id, open=True)
-            # 子アイテムも再帰的に展開
-            for child_id in self.tree.get_children(item_id):
-                expand_recursive(child_id)
-        
-        # ルートレベルから開始
-        for item_id in self.tree.get_children(""):
-            expand_recursive(item_id)
-    
-    def collapse_all(self):
-        """すべてのフォルダを縮小"""
-        if not hasattr(self, 'tree'):
-            return
-        
-        def collapse_recursive(item_id):
-            # 子アイテムを先に縮小
-            for child_id in self.tree.get_children(item_id):
-                collapse_recursive(child_id)
-            # このアイテムを縮小
-            self.tree.item(item_id, open=False)
-        
-        # ルートレベルから開始（ルート自体は縮小しない）
-        for item_id in self.tree.get_children(""):
-            # ルートは開いたままにする
-            for child_id in self.tree.get_children(item_id):
-                collapse_recursive(child_id)
-    
-    def expand_selected(self):
-        """選択されたフォルダを展開"""
-        if not hasattr(self, 'tree'):
-            return
-        selection = self.tree.selection()
-        if selection:
-            # 選択アイテムとその子を展開
-            def expand_with_children(item_id):
-                self.tree.item(item_id, open=True)
-                for child_id in self.tree.get_children(item_id):
-                    if self.node_map.get(child_id, {}).type == "folder" if hasattr(self.node_map.get(child_id), 'type') else False:
-                        self.tree.item(child_id, open=True)
-            expand_with_children(selection[0])
-    
-    def collapse_selected(self):
-        """選択されたフォルダを縮小"""
-        if not hasattr(self, 'tree'):
-            return
-        selection = self.tree.selection()
-        if selection:
-            self.tree.item(selection[0], open=False)
-    
-    def set_favicon(self, url: str, favicon_data: str):
-        """ファビコンデータを設定（互換性のため残す）"""
-        pass
-    
-    def select_node(self, node: Node):
-        """指定したノードを選択"""
-        tree_id = self.id_map.get(id(node))
-        if tree_id:
-            self.tree.selection_set(tree_id)
-            self.tree.see(tree_id)
-
-
-class SearchBar(ctk.CTkFrame):
-    """検索バーコンポーネント"""
-    
-    def __init__(self, parent, on_search: Optional[Callable[[str], None]] = None, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.on_search = on_search
-        self.search_after_id = None
-        
-        self._build_search_bar()
-    
-    def _build_search_bar(self):
-        """検索バーを構築"""
-        # 検索アイコンとラベル
-        search_label = ctk.CTkLabel(
-            self,
-            text="🔍",
-            font=ctk.CTkFont(size=16)
-        )
-        search_label.pack(side="left", padx=(10, 5))
-        
-        # 検索入力フィールド
-        self.search_entry = ctk.CTkEntry(
-            self,
-            placeholder_text="ブックマークを検索...",
-            font=ctk.CTkFont(size=12),
-            width=300
-        )
-        self.search_entry.pack(side="left", padx=5, fill="x", expand=True)
-        self.search_entry.bind("<KeyRelease>", self._on_search_changed)
-        
-        # クリアボタン
-        clear_btn = ctk.CTkButton(
-            self,
-            text="✕",
-            width=30,
-            height=30,
-            command=self._clear_search,
-            fg_color="transparent",
-            hover_color=("gray80", "gray30")
-        )
-        clear_btn.pack(side="left", padx=5)
-    
-    def _on_search_changed(self, event):
-        """検索文字列が変更されたとき（デバウンス付き）"""
-        if self.search_after_id:
-            self.after_cancel(self.search_after_id)
-        
-        def do_search():
-            query = self.search_entry.get().strip()
-            if self.on_search:
-                self.on_search(query)
-        
-        self.search_after_id = self.after(300, do_search)
-    
-    def _clear_search(self):
-        """検索をクリア"""
-        self.search_entry.delete(0, "end")
-        if self.on_search:
-            self.on_search("")
-    
-    def get_query(self) -> str:
-        """現在の検索クエリを取得"""
-        return self.search_entry.get().strip()
-
-
-class DetailPanel(ctk.CTkScrollableFrame):
-    """選択したブックマークの詳細情報を表示するパネル"""
-    
-    def __init__(self, parent, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.current_node = None
-        
-        self._build_panel()
-    
-    def _build_panel(self):
-        """パネルを構築"""
-        # タイトル
-        self.title_label = ctk.CTkLabel(
-            self,
-            text="—",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=14, weight="bold"),
-            anchor="w",
-            wraplength=280
-        )
-        self.title_label.pack(pady=(8, 4), padx=10, fill="x")
-        
-        # セパレータ
-        separator = ctk.CTkFrame(self, height=1, fg_color=Colors.BORDER)
-        separator.pack(fill="x", padx=10, pady=4)
-        
-        # URL表示
-        url_label_text = ctk.CTkLabel(
-            self,
-            text="URL:",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight="bold"),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        )
-        url_label_text.pack(pady=(6, 2), padx=10, fill="x")
-        
-        self.url_text = ctk.CTkTextbox(
-            self,
-            height=50,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10),
-            wrap="word"
-        )
-        self.url_text.pack(pady=(0, 6), padx=10, fill="x")
-        
-        # プレビューセクション
-        preview_label = ctk.CTkLabel(
-            self,
-            text="Preview:",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight="bold"),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w"
-        )
-        preview_label.pack(pady=(6, 2), padx=10, fill="x")
-        
-        self.preview_title = ctk.CTkLabel(
-            self,
-            text="",
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=11, weight="bold"),
-            text_color=Colors.TEXT_PRIMARY,
-            anchor="w",
-            wraplength=280
-        )
-        self.preview_title.pack(pady=(0, 3), padx=10, fill="x")
-        
-        self.preview_desc = ctk.CTkTextbox(
-            self,
-            height=80,
-            font=ctk.CTkFont(family=Fonts.FAMILY, size=10),
-            wrap="word"
-        )
-        self.preview_desc.pack(pady=(0, 8), padx=10, fill="x")
-    
-    def update_node(self, node: Optional[Node], preview_data: Optional[Dict[str, Any]] = None):
-        """表示するノードを更新"""
-        self.current_node = node
-        
-        if node:
-            # タイトル
-            title = node.title or "(Untitled)"
-            self.title_label.configure(text=title)
-            
-            # URL
-            self.url_text.delete("1.0", "end")
-            self.url_text.insert("1.0", node.url or "(No URL)")
-            
-            # プレビュー
-            if preview_data:
-                self.preview_title.configure(text=preview_data.get("title", ""))
-                self.preview_desc.delete("1.0", "end")
-                self.preview_desc.insert("1.0", preview_data.get("description", ""))
-            else:
-                self.preview_title.configure(text="")
-                self.preview_desc.delete("1.0", "end")
-        else:
-            self.title_label.configure(text="—")
-            self.url_text.delete("1.0", "end")
-            self.url_text.insert("1.0", "")
-            self.preview_title.configure(text="")
-            self.preview_desc.delete("1.0", "end")

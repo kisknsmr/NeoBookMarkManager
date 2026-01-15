@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # ===== フォント初期化 =====
 from core.font_loader import FontLoader
 
-# フォントローダーを初期化（カスタムフォント登録）
-FontLoader.initialize()
+# フォントローダー初期化（※QApplication作成後に実行するためここではスキップ）
+# FontLoader.initialize()
 
 # アプリケーション終了時にフォントをクリーンアップ
 def cleanup_on_exit():
@@ -46,9 +46,9 @@ def main():
     """
     
     try:
-        from PySide6.QtWidgets import QApplication, QMainWindow
+        from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import Qt
-        from gui.theme import get_stylesheet
+        from PySide6.QtGui import QFontDatabase, QFont
     except ImportError as e:
         print("=" * 60)
         print("エラー: PySide6 がインストールされていません")
@@ -68,24 +68,44 @@ def main():
     # ===== アプリケーション設定 =====
     app.setApplicationName("NeoBookMarkManager")
     app.setApplicationVersion("2.0.0")
+
+    # ===== フォントローダー初期化 =====
+    # QApplication作成後に実行する必要がある
+    FontLoader.initialize()
+
+    # ===== フォント登録（Qt側） =====
+    # QFontDatabase にフォントを登録してからアプリ全体のフォントを設定
+    noto_family = "Noto Sans JP"
+    if noto_family not in QFontDatabase.families():
+        noto_path = Path(__file__).parent / "fonts" / "NotoSansJP-VariableFont_wght.ttf"
+        if noto_path.exists():
+            QFontDatabase.addApplicationFont(str(noto_path))
+
+    if noto_family in QFontDatabase.families():
+        app.setFont(QFont(noto_family, 13))
     
     # ===== グローバルスタイルシート適用 =====
     # Material Design 3 ダークテーマをすべてのウィジェットに適用
-    stylesheet = get_stylesheet()
-    app.setStyleSheet(stylesheet)
+    style_path = Path(__file__).parent / "gui" / "style.qss"
+    if style_path.exists():
+        with open(style_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
     
     # ===== メインウィンドウ作成 =====
-    # gui.main_window.MainWindow クラスをインスタンス化
-    # （TODO: gui/main_window.py で MainWindow クラスを実装）
-    # from gui.main_window import MainWindow
-    # main_window = MainWindow()
-    # main_window.show()
-    
-    # 暫定：簡単なテストウィンドウを表示
-    test_window = QMainWindow()
-    test_window.setWindowTitle("NeoBookMarkManager - PySide6 Preview")
-    test_window.resize(800, 600)
-    test_window.show()
+    from gui.main_window import MainWindow
+    try:
+        main_window = MainWindow()
+        main_window.show()
+        print("[INFO] MainWindow created and shown, entering event loop...")
+    except Exception as e:
+        import traceback
+        print("="*60)
+        print("[FATAL] Failed to initialize MainWindow:")
+        print(e)
+        print("-" * 60)
+        traceback.print_exc()
+        print("="*60)
+        sys.exit(1)
     
     # ===== イベントループ実行 =====
     sys.exit(app.exec())
