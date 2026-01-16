@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Set
 from PySide6.QtCore import QObject, Signal
 
-from core.model import Node
+from core.ModelBookmark import Node
 
 
 class AppStateSignals(QObject):

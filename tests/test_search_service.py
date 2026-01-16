@@ -3,8 +3,8 @@ Test SearchService bookmark search logic.
 """
 
 import pytest
-from core.model import Node
-from services.search import SearchService
+from core.ModelBookmark import Node
+from services.ServiceSearch import SearchService
 
 
 class TestSearchService:

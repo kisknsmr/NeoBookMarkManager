@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any
-from .logger import logger
+from .UtilLogger import logger
 
 """
 ストレージ／設定モジュール。
@@ -197,7 +197,7 @@ class ConfigManager:
             return False
 
 
-from .model import NetscapeBookmarkParser, export_netscape_html, Node
+from .ModelBookmark import NetscapeBookmarkParser, export_netscape_html, Node
 
 
 def load_bookmarks(path: str) -> tuple[Node, dict, Optional[str]]:

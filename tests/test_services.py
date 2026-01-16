@@ -1,7 +1,7 @@
 import queue
 import pytest
 from unittest.mock import MagicMock, patch
-from services.workers import _extract_title_and_description, fetch_preview
+from services.WorkerNetwork import _extract_title_and_description, fetch_preview
 
 class TestWorkers:
     def test_extract_info_normal(self):
@@ -33,7 +33,7 @@ class TestWorkers:
         assert res["title"] == "OG Title"
         assert res["description"] == "OG Description"
 
-    @patch('services.workers.requests.get')
+    @patch('services.WorkerNetwork.requests.get')
     def test_fetch_preview_success(self, mock_get):
         # Mock successful response
         mock_response = MagicMock()
@@ -51,7 +51,7 @@ class TestWorkers:
         assert url == "http://example.com"
         assert info["title"] == "Success"
 
-    @patch('services.workers.requests.get')
+    @patch('services.WorkerNetwork.requests.get')
     def test_fetch_preview_404(self, mock_get):
         # Mock 404 response
         mock_response = MagicMock()

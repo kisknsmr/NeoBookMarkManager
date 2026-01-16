@@ -7,7 +7,7 @@ Worker Events - Type-safe event definitions for async operations.
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from core.model import Node
+from core.ModelBookmark import Node
 
 
 @dataclass

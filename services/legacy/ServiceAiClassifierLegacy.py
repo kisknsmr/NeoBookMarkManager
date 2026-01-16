@@ -8,8 +8,8 @@ import datetime
 from urllib.parse import urlparse
 from typing import List, Dict, Optional, Callable
 import google.generativeai as genai
-from core.storage import ConfigManager
-from core.logger import logger
+from core.ServiceStorage import ConfigManager
+from core.UtilLogger import logger
 
 
 class BookmarkNode:
@@ -143,7 +143,7 @@ class AIBookmarkClassifier:
 
         self.traffic_sent += len(final_prompt.encode('utf-8')) + len(data_json.encode('utf-8'))
 
-        from core.utils import AppConstants
+        from core.UtilCoreUtils import AppConstants
 
         try:
             resp = model.generate_content(

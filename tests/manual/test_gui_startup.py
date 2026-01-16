@@ -10,8 +10,8 @@ project_dir = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_dir))
 
 from PySide6.QtWidgets import QApplication
-from gui.main_window import MainWindow
-from core.storage import load_bookmarks
+from gui.controllers.ControllerMainWindow import MainWindow
+from core.ServiceStorage import load_bookmarks
 
 def main():
     """Test GUI startup"""
@@ -36,9 +36,12 @@ def main():
         
         # Load bookmarks into GUI
         if root:
+            main_window.set_root_node_state(root)
             main_window.current_folder = root
-            main_window._refresh_content()
-            main_window._build_search_index()
+            main_window.search_service.rebuild(root)
+            main_window.refresh_tree(select_node=root)
+            main_window.refresh_list()
+            main_window.refresh_counts()
             print("[OK] Bookmarks loaded into GUI")
             print(f"[INFO] Root folder has {len(root.children)} children")
         

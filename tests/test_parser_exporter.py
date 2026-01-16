@@ -3,7 +3,7 @@ Test core model parsing and exporting (Netscape bookmark format).
 """
 
 import pytest
-from core.model import Node, NetscapeBookmarkParser, export_netscape_html
+from core.ModelBookmark import Node, NetscapeBookmarkParser, export_netscape_html
 
 
 class TestNetscapeParser:

@@ -1,7 +1,7 @@
 import os
 import pytest
-from core.storage import ConfigManager, load_bookmarks, save_bookmarks
-from core.logger import logger
+from core.ServiceStorage import ConfigManager, load_bookmarks, save_bookmarks
+from core.UtilLogger import logger
 
 class TestConfigManager:
     def test_load_config(self, mock_config_ini):

@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 
-from gui.theme import ColorTokens, Typography, create_qfont
-from core.model import Node
+from gui.UtilTheme import ColorTokens, Typography, create_qfont
+from core.ModelBookmark import Node
 # from discard.ui_kit import StyledButton # Removed unused import
 
 

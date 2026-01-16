@@ -3,8 +3,8 @@ Test BookmarkService bookmark business logic.
 """
 
 import pytest
-from core.model import Node
-from services.bookmark import BookmarkService
+from core.ModelBookmark import Node
+from services.ServiceBookmark import BookmarkService
 
 
 class TestBookmarkService:

@@ -31,3 +31,8 @@ def create_qfont(size: int = 12, bold: bool = False) -> QFont:
     font.setBold(bold)
     return font
 
+
+# Backward-compatible aliases (used by older code/tests)
+Colors = ColorTokens
+Fonts = Typography
+

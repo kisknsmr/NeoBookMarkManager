@@ -436,7 +436,7 @@ config_manager.set(section, option, value)
 ```
 main.py
   ↓
-gui/main_window.py (App シム)
+gui/ControllerMainWindow.py (MainWindow)
   ├─ gui/worker_manager.py (ThreadPoolExecutor ラッパー)
   ├─ gui/ui_state.py (状態管理 - self.ui_state)
   ├─ gui/command_handlers.py (メニューコマンド)
@@ -453,7 +453,7 @@ gui/main_window.py (App シム)
 ```python
 # In gui/command_handlers.py
 app.worker.submit(
-    services.workers.fetch_preview,
+   services.WorkerNetwork.fetch_preview,
     url,
     callback=lambda res: app.apply_preview_to_node(node_id, res)
 )
@@ -465,7 +465,7 @@ app.after(100, app.worker.poll_results)
 #### 画像キャッシュ
 
 ```python
-# In gui/components.py
+# In gui/LayoutComponents.py
 photo = core.image_utils.bytes_to_tkphoto(img_bytes, max_width=256)
 app.cache_image(node_id, photo)  # GC 対策
 component.config(image=photo)

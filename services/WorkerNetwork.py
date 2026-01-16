@@ -12,9 +12,9 @@ try:
 except ImportError:
     BeautifulSoup = None
 
-from core.utils import AppConstants
-from core.model import Node
-from core.logger import logger
+from core.UtilCoreUtils import AppConstants
+from core.ModelBookmark import Node
+from core.UtilLogger import logger
 from urllib.parse import urlparse, urljoin
 import base64
 

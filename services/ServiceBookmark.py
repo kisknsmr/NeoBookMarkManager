@@ -9,8 +9,8 @@ from typing import Optional, List, Set, Tuple
 from datetime import datetime
 import time
 
-from core.model import Node
-from core.logger import logger
+from core.ModelBookmark import Node
+from core.UtilLogger import logger
 
 
 class BookmarkService:
@@ -49,6 +49,13 @@ class BookmarkService:
         folder = Node("folder", title=title.strip() or "Untitled")
         parent.append(folder)
         return folder
+
+    def find_or_create_folder(self, parent: Node, name: str) -> Node:
+        """Find or create a folder with the given name under parent."""
+        for child in parent.children:
+            if child.type == "folder" and child.title == name:
+                return child
+        return self.create_folder(parent, name)
 
     def create_bookmark(self, parent: Node, url: str, title: Optional[str] = None) -> Node:
         """
@@ -169,6 +176,11 @@ class BookmarkService:
             raise ValueError("Already at bottom")
 
         parent.move_child(node, idx + 1)
+
+    # ==================== Read helpers ====================
+    def iter_bookmarks(self, node: Node) -> List[Node]:
+        """Public wrapper to list bookmarks in subtree."""
+        return self._iter_bookmarks(node)
 
     # ==================== Delete ====================
     def delete(self, node: Node) -> None:

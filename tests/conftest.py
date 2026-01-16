@@ -5,9 +5,9 @@ import pytest
 # Ensure the project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core.model import Node
-from services.search import SearchService
-from services.bookmark import BookmarkService
+from core.ModelBookmark import Node
+from services.ServiceSearch import SearchService
+from services.ServiceBookmark import BookmarkService
 
 
 @pytest.fixture

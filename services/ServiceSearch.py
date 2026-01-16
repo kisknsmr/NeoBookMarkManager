@@ -7,7 +7,7 @@ UI が検索ロジックに依存しない設計。
 
 import re
 from typing import Dict, List, Set
-from core.model import Node
+from core.ModelBookmark import Node
 
 
 class SearchService:
@@ -81,6 +81,82 @@ class SearchService:
             List of nodes with this URL
         """
         return self.url_lookup.get(url, [])
+
+    def add_node(self, node: Node) -> None:
+        """
+        Add a new bookmark node to the search index.
+        
+        Call this when a new bookmark is created (instead of rebuild).
+        
+        Args:
+            node: Bookmark node to add
+        """
+        if node.type != "bookmark":
+            return
+        
+        # Add to search index
+        text = f"{node.title} {node.url}".lower()
+        self.search_index[node] = text
+        
+        # Add to URL lookup
+        if node.url:
+            self.url_lookup.setdefault(node.url, []).append(node)
+
+    def update_node(self, node: Node) -> None:
+        """
+        Update an existing bookmark node in the search index.
+        
+        Call this when a bookmark's title or URL changes (rename/edit_url).
+        
+        Args:
+            node: Bookmark node to update
+        """
+        if node.type != "bookmark":
+            return
+        
+        # Remove old URL lookup entry if URL changed
+        old_text = self.search_index.get(node, "")
+        old_url = None
+        for url, nodes in list(self.url_lookup.items()):
+            if node in nodes:
+                old_url = url
+                break
+        
+        # Update search index with new title/URL
+        text = f"{node.title} {node.url}".lower()
+        self.search_index[node] = text
+        
+        # Update URL lookup if URL changed
+        if old_url and old_url != node.url:
+            self.url_lookup[old_url].remove(node)
+            if not self.url_lookup[old_url]:
+                del self.url_lookup[old_url]
+            
+            if node.url:
+                self.url_lookup.setdefault(node.url, []).append(node)
+
+    def remove_node(self, node: Node) -> None:
+        """
+        Remove a bookmark node from the search index.
+        
+        Call this when a bookmark is deleted.
+        
+        Args:
+            node: Bookmark node to remove
+        """
+        if node.type != "bookmark":
+            return
+        
+        # Remove from search index
+        if node in self.search_index:
+            del self.search_index[node]
+        
+        # Remove from URL lookup
+        if node.url and node.url in self.url_lookup:
+            if node in self.url_lookup[node.url]:
+                self.url_lookup[node.url].remove(node)
+                if not self.url_lookup[node.url]:
+                    del self.url_lookup[node.url]
 
     def _iter_bookmarks(self, node: Node) -> List[Node]:
         """
