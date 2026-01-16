@@ -37,7 +37,11 @@ from core.utils import LRUCache, is_valid_url
 from gui.components import BookmarkCard, BookmarkRow, DetailPanel, FolderTree, SearchBar
 from gui.dialogs import CustomPromptDialog, FolderSelectDialog
 from gui.resources import Typography, WindowSize
+from gui.state import AppState
 from services.legacy.ai_classifier import AIBookmarkClassifier, BookmarkNode
+from services.bookmark import BookmarkService
+from services.search import SearchService
+from services.events import WorkerEvent, PreviewFetchedEvent, TitleFixDoneEvent, event_from_tuple
 from services.workers import fetch_preview, fix_titles
 
 
@@ -52,47 +56,78 @@ class MainWindow(QMainWindow):
         self._setup_logging()
         self.config_manager = ConfigManager()
 
-        # optional worker stack (kept for future integration)
-        self.worker = None
-        self._image_cache = None
-        self._new_app_available = False
-        try:
-            from gui.worker_manager import WorkerManager  # type: ignore
-            from core.image_utils import ImageCache  # type: ignore
+        # ==================== Service Layer ====================
+        self.app_state = AppState()
+        self.bookmark_service = BookmarkService()
+        self.search_service = SearchService()
 
-            self.worker = WorkerManager(max_workers=2)
-            self._image_cache = ImageCache(max_size=128)
-            self._new_app_available = True
-        except Exception as exc:  # pragma: no cover - optional path
-            self.logger.warning("New app architecture not available: %s", exc)
-
-        # data model
-        self.root_node = Node("folder", "Bookmarks")
-        self.current_file: Optional[str] = None
-        self.rules = self._default_rules()
-        self.rules_path: Optional[str] = None
-        self.current_folder = self.root_node
-        self.selected_node: Optional[Node] = None
-        self._startup_complete = False
-
-        # ui state
+        # ==================== Legacy UI State (gradual migration) ====================
         self.card_to_node: Dict[Any, Node] = {}
         self.selected_cards: Set[Any] = set()
         self.preview_cache = LRUCache(maxsize=50)
         self.ui_queue: "queue.Queue[Any]" = queue.Queue()
-        self.search_index: Dict[Node, str] = {}
-        self._url_lookup: Dict[str, List[Node]] = {}
-        self.search_query: str = ""
-        self.search_hits: Set[Node] = set()
         self.max_smart_items = 300
         self.progress_history: List[Any] = []
-        self.use_proxy = True
-        self.view_mode = "card"  # "card" | "list" | "tree"
-        self.dual_tree_mode = False
-        self.network_updates_enabled = False
+        self._startup_complete = False
         self._building_tree = False
 
-        # async related
+        # ==================== Shortcuts to app state ====================
+        # (For backward compatibility during migration)
+        @property
+        def root_node(self):
+            return self.app_state.root_node
+
+        @property
+        def current_file(self):
+            return self.app_state.current_file
+
+        @property
+        def rules(self):
+            return self.app_state.rules
+
+        @property
+        def rules_path(self):
+            return self.app_state.rules_path
+
+        @property
+        def current_folder(self):
+            return self.app_state.current_folder
+
+        @property
+        def selected_node(self):
+            return self.app_state.selected_node
+
+        @property
+        def search_query(self):
+            return self.app_state.search_query
+
+        @property
+        def search_hits(self):
+            return self.app_state.search_hits
+
+        @property
+        def use_proxy(self):
+            return self.app_state.use_proxy
+
+        @property
+        def view_mode(self):
+            return self.app_state.view_mode
+
+        @property
+        def dual_tree_mode(self):
+            return self.app_state.dual_tree_mode
+
+        # Setters
+        def set_root_node_state(self, node: Node):
+            self.app_state.set_root_node(node)
+
+        def set_current_file_state(self, path: Optional[str]):
+            self.app_state.set_current_file(path)
+
+        def set_rules_state(self, rules: list, path: Optional[str] = None):
+            self.app_state.set_rules(rules, path)
+
+        # ==================== Async related ====================
         self._smart_dialog = None
         self._smart_cancelled = False
         self._titlefix_dialog = None
@@ -717,8 +752,7 @@ class MainWindow(QMainWindow):
             self.current_folder = self.root_node
             self.selected_node = None
             
-            self._refresh_content()
-            self._build_search_index()
+            self._after_model_changed(select_node=self.root_node, refresh_parts="all")
             
             self.statusBar().showMessage(f"Loaded: {os.path.basename(file_path)}", 5000)
             self.logger.info(f"Auto-loaded bookmarks: {file_path}")
@@ -733,8 +767,6 @@ class MainWindow(QMainWindow):
 
     def _poll_worker_results(self) -> None:
         try:
-            if self.worker is not None:
-                self.worker.poll_results()
             self._process_ui_queue_once()
         except Exception as exc:  # pragma: no cover
             self.logger.error("Worker polling failed: %s", exc, exc_info=True)
@@ -746,31 +778,45 @@ class MainWindow(QMainWindow):
                 if callable(item):
                     item()
                     continue
-                if isinstance(item, tuple) and len(item) == 2:
+                if isinstance(item, WorkerEvent):
+                    self._handle_worker_event_typed(item)
+                elif isinstance(item, tuple) and len(item) == 2:
+                    # Backward compatibility: convert legacy tuple to typed event
                     kind, payload = item
-                    self._handle_worker_event(kind, payload)
+                    event = event_from_tuple(kind, payload)
+                    self._handle_worker_event_typed(event)
         except queue.Empty:
             pass
         except Exception as exc:  # pragma: no cover
             self.logger.error("UI queue processing failed: %s", exc, exc_info=True)
 
-    def _handle_worker_event(self, kind: str, payload: Any) -> None:
-        if kind == "preview":
-            url, data = payload
-            nodes = self._url_lookup.get(url, [])
+    def _handle_worker_event_typed(self, event: WorkerEvent) -> None:
+        """Handle typed worker events."""
+        if isinstance(event, PreviewFetchedEvent):
+            nodes = self.search_service.find_by_url(event.url)
             for node in nodes:
-                if data.get("title") and not node.title:
-                    node.title = data.get("title")
-                if data.get("description"):
-                    setattr(node, "description", data.get("description"))
-            self._refresh_content()
-        elif kind == "titlefix_progress":
-            processed, total = payload
-            self.statusBar().showMessage(f"Fixing titles... {processed}/{total}")
-        elif kind == "titlefix_done":
+                if event.title and not node.title:
+                    node.title = event.title
+                if event.description:
+                    node.description = event.description
+            self._after_model_changed(refresh_parts="list")
+
+        elif isinstance(event, TitleFixDoneEvent):
             self.statusBar().showMessage("Title fix complete", 4000)
-            self._build_search_index()
-            self._refresh_content()
+            self._after_model_changed(refresh_parts="list")
+
+        else:
+            # Generic progress events
+            if hasattr(event, "percentage"):
+                pct = event.percentage if isinstance(event.percentage, (int, float)) else 0
+                self.statusBar().showMessage(f"{event.__class__.__name__}: {pct:.0f}%")
+            elif hasattr(event, "processed") and hasattr(event, "total"):
+                self.statusBar().showMessage(f"Progress: {event.processed}/{event.total}")
+
+    def _handle_worker_event(self, kind: str, payload: Any) -> None:
+        """Legacy handler for backward compatibility."""
+        event = event_from_tuple(kind, payload)
+        self._handle_worker_event_typed(event)
 
     # --------------------------- event handlers ---------------------------
     def _on_folder_selected(self, node: Node, source_tree: Optional[FolderTree] = None) -> None:
@@ -806,17 +852,29 @@ class MainWindow(QMainWindow):
 
     # ---------------------------- core actions ----------------------------
     def _refresh_content(self) -> None:
+        """Monolithic refresh. Call _after_model_changed() instead."""
         if not hasattr(self, "cards_layout") or self.cards_layout is None:
             return
+        self._refresh_layout_visibility()
+        self._refresh_trees()
+        self._refresh_list()
+        self._update_bookmark_count()
+
+    def _refresh_layout_visibility(self) -> None:
+        """Update layout visibility based on dual_tree_mode."""
         if hasattr(self, "tree_scroll"):
             self.tree_scroll.setVisible(not self.dual_tree_mode)
         if hasattr(self, "dual_tree_splitter"):
             self.dual_tree_splitter.setVisible(self.dual_tree_mode)
 
-        select_node = self.current_folder if self.current_folder else self.root_node
+    def _refresh_trees(self, select_node: Optional[Node] = None) -> None:
+        """Refresh folder trees. Use when folder structure changes."""
+        if select_node is None:
+            select_node = self.current_folder if self.current_folder else self.root_node
         self._refresh_folder_trees(select_node)
-        self._update_bookmark_count()
 
+    def _refresh_list(self) -> None:
+        """Refresh bookmark cards/rows in the list. Use when current folder or search changes."""
         self._clear_cards()
         nodes = self._get_display_nodes()
 
@@ -843,7 +901,6 @@ class MainWindow(QMainWindow):
                 self._enqueue_preview_fetch(node)
 
         self.cards_layout.addStretch()
-        self._update_bookmark_count()
 
     def _clear_cards(self) -> None:
         for i in reversed(range(self.cards_layout.count())):
@@ -881,27 +938,37 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(text)
             self.statusBar().showMessage("URLをコピーしました", 2000)
 
+    def _after_model_changed(self, select_node: Optional[Node] = None, refresh_parts: str = "all") -> None:
+        """
+        Unified handler for model changes. Call this INSTEAD of manually calling _build_search_index + _refresh_*.
+        
+        Args:
+            select_node: Node to focus on after refresh (for tree selection)
+            refresh_parts: "all" | "trees" | "list"
+                - "all": Full rebuild (model structure changed)
+                - "trees": Tree structure changed
+                - "list": Only list/search results changed
+        """
+        # Rebuild search index via service
+        self.search_service.rebuild(self.app_state.root_node)
+        
+        if refresh_parts in ("all", "trees"):
+            self._refresh_trees(select_node=select_node)
+        
+        if refresh_parts in ("all", "list"):
+            self._refresh_list()
+        
+        self._update_bookmark_count()
+
     def _apply_search(self, query: str) -> None:
-        self.search_query = query.strip()
-        if not self.search_query:
-            self.search_hits = set()
+        """Execute search via SearchService."""
+        self.app_state.set_search_query(query)
+        if not query.strip():
+            self.app_state.search_hits.clear()
             return
-
-        tokens = [t for t in re.split(r"\s+", self.search_query.lower()) if t]
-        hits: Set[Node] = set()
-        for node, text in self.search_index.items():
-            if all(tok in text for tok in tokens):
-                hits.add(node)
-        self.search_hits = hits
-
-    def _build_search_index(self) -> None:
-        self.search_index = {}
-        self._url_lookup = {}
-        for node in self._iter_bookmarks(self.root_node):
-            text = f"{node.title} {node.url}".lower()
-            self.search_index[node] = text
-            if node.url:
-                self._url_lookup.setdefault(node.url, []).append(node)
+        
+        hits = self.search_service.query(query)
+        self.app_state.search_hits = hits
 
     def _get_display_nodes(self) -> List[Node]:
         if not self.current_folder:
@@ -1044,18 +1111,11 @@ class MainWindow(QMainWindow):
             self._refresh_folder_trees(select_node=node)
             return
 
-        if old_parent and node in old_parent.children:
-            old_parent.children.remove(node)
+        # Use Node API instead of direct manipulation
+        old_parent.remove_child(node)
+        new_parent.insert_child(index, node)
 
-        if index < 0 or index > len(new_parent.children):
-            new_parent.children.append(node)
-        else:
-            new_parent.children.insert(index, node)
-
-        node.parent = new_parent
-        self._build_search_index()
-        self._refresh_content()
-        self._refresh_folder_trees(select_node=node)
+        self._after_model_changed(select_node=node, refresh_parts="trees")
 
     def _default_rules(self) -> list:
         return []
@@ -1117,9 +1177,7 @@ class MainWindow(QMainWindow):
             return
         new_node = Node("folder", name.strip())
         self.current_folder.append(new_node)
-        self._refresh_folder_trees(select_node=new_node)
-        self._build_search_index()
-        self._refresh_content()
+        self._after_model_changed(select_node=new_node, refresh_parts="all")
 
     def cmd_new_bookmark(self) -> None:
         if not self.current_folder or self.current_folder.type != "folder":
@@ -1134,8 +1192,7 @@ class MainWindow(QMainWindow):
         title, _ = QInputDialog.getText(self, "New Bookmark", "Title (optional):")
         node = Node("bookmark", title=title.strip() or url.strip(), url=url.strip())
         self.current_folder.append(node)
-        self._build_search_index()
-        self._refresh_content()
+        self._after_model_changed(select_node=node, refresh_parts="all")
         self._enqueue_preview_fetch(node)
 
     def cmd_rename(self) -> None:
@@ -1146,9 +1203,7 @@ class MainWindow(QMainWindow):
         if not ok or not name.strip():
             return
         self.selected_node.title = name.strip()
-        self._refresh_folder_trees(select_node=self.selected_node if self.selected_node.type == "folder" else None)
-        self._build_search_index()
-        self._refresh_content()
+        self._after_model_changed(select_node=self.selected_node if self.selected_node.type == "folder" else None, refresh_parts="all")
 
     def cmd_edit_url(self) -> None:
         if not self.selected_node or self.selected_node.type != "bookmark":
@@ -1161,8 +1216,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Enter a valid URL.")
             return
         self.selected_node.url = url.strip()
-        self._build_search_index()
-        self._refresh_content()
+        self._after_model_changed(refresh_parts="list")
 
     def cmd_move_to_folder(self) -> None:
         if not self.selected_node or not self.root_node:
@@ -1176,35 +1230,33 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Target must be a folder.")
             return
         parent = self.selected_node.parent
-        if parent and self.selected_node in parent.children:
-            parent.children.remove(self.selected_node)
+        if parent:
+            parent.remove_child(self.selected_node)
         target_folder.append(self.selected_node)
         self.current_folder = target_folder
-        self._refresh_folder_trees(select_node=target_folder)
-        self._build_search_index()
-        self._refresh_content()
+        self._after_model_changed(select_node=target_folder, refresh_parts="all")
 
     def cmd_move_up(self) -> None:
         if not self.selected_node or not self.selected_node.parent:
             return
-        siblings = self.selected_node.parent.children
+        parent = self.selected_node.parent
+        siblings = parent.children
         idx = siblings.index(self.selected_node)
         if idx <= 0:
             return
-        siblings[idx - 1], siblings[idx] = siblings[idx], siblings[idx - 1]
-        self._refresh_content()
-        self._refresh_folder_trees(select_node=self.selected_node.parent)
+        # Use Node API: move to idx-1
+        parent.move_child(self.selected_node, idx - 1)
+        self._after_model_changed(select_node=self.selected_node, refresh_parts="trees")
 
     def _delete_node(self, node: Node) -> None:
         if not node.parent:
             QMessageBox.warning(self, "Warning", "Cannot delete root.")
             return
-        node.parent.children = [ch for ch in node.parent.children if ch is not node]
+        parent = node.parent
+        parent.remove_child(node)
         if self.selected_node is node:
             self.selected_node = None
-        self._build_search_index()
-        self._refresh_content()
-        self._refresh_folder_trees(select_node=node.parent)
+        self._after_model_changed(select_node=parent, refresh_parts="all")
 
     def cmd_delete(self) -> None:
         if not self.selected_node:

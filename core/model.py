@@ -31,6 +31,38 @@ class Node:
         child.parent = self
         self.children.append(child)
 
+    def remove_child(self, child) -> bool:
+        """Remove child safely. Returns True if removed, False if not found."""
+        if child in self.children:
+            self.children.remove(child)
+            if child.parent is self:
+                child.parent = None
+            return True
+        return False
+
+    def insert_child(self, index: int, child):
+        """Insert child at index. Clamps index to valid range."""
+        if child.parent is not self and child in (getattr(child.parent, 'children', []) or []):
+            child.parent.remove_child(child)
+        
+        child.parent = self
+        if index < 0 or index > len(self.children):
+            self.children.append(child)
+        else:
+            self.children.insert(index, child)
+
+    def move_child(self, child, index: int) -> None:
+        """Move child to new index within same parent."""
+        if child.parent is not self:
+            raise ValueError("Child must be in this node's children")
+        
+        if child in self.children:
+            self.children.remove(child)
+            if index < 0 or index > len(self.children):
+                self.children.append(child)
+            else:
+                self.children.insert(index, child)
+
     def __repr__(self):
         return f"Node(type='{self.type}', title='{self.title}')"
 
