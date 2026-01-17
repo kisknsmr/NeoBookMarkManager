@@ -1334,7 +1334,6 @@ class LeftPanel(QFrame):
         tree_scroll.setWidgetResizable(True)
         tree_scroll.setObjectName("treeScroll")
         tree_scroll.setWidget(self.folder_tree)
-        tree_scroll.setVisible(False)
         self.tree_scroll = tree_scroll
         
         # 2画面モード用のスプリッター
@@ -1354,8 +1353,17 @@ class LeftPanel(QFrame):
         dual_tree_splitter.setSizes([400, 400])
         dual_tree_splitter.setStretchFactor(0, 1)
         dual_tree_splitter.setStretchFactor(1, 1)
-        dual_tree_splitter.setVisible(False)
         self.dual_tree_splitter = dual_tree_splitter
+
+        # 初期表示は現在のモードに合わせる（起動直後にツリーが「空」に見えるのを防ぐ）
+        dual_mode = False
+        if "get_dual_tree_mode" in self.callbacks:
+            try:
+                dual_mode = bool(self.callbacks["get_dual_tree_mode"]())
+            except Exception:
+                dual_mode = False
+        tree_scroll.setVisible(not dual_mode)
+        dual_tree_splitter.setVisible(dual_mode)
 
         # ブックマーク表示エリア
         cards_scroll = QScrollArea()
