@@ -6,7 +6,7 @@ Collects user interaction entrypoints and delegates to window refresh/commands.
 from typing import Optional
 
 from core.ModelBookmark import Node
-from gui.layout.LayoutComponents import FolderTree
+from gui.components import FolderTree
 
 
 class UIEventController:
@@ -47,7 +47,7 @@ class UIEventController:
         self.window.cmd_move_to_folder()
 
     def on_detail_delete(self, node: Node) -> None:
-        self.window.commands.bookmark.delete_node(node)
+        self.window._delete_node(node)
 
     def on_tree_node_moved(self, node: Node, old_parent: Node, new_parent: Node, index: int) -> None:
         if not node or not old_parent or not new_parent:

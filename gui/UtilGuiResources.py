@@ -5,6 +5,7 @@ NeoBookMarkManager - GUI Resources
 
 from pathlib import Path
 from typing import Final
+from PySide6.QtGui import QFont
 
 # ============ ファイルパス ============
 PROJECT_ROOT: Final[Path] = Path(__file__).parent.parent
@@ -44,7 +45,10 @@ class Theme:
     TEXT_HINT: Final[str] = "#9E9E9E"
     
     BORDER: Final[str] = "#2C2C2C"
+    BORDER_DEFAULT: Final[str] = "#2C2C2C"  # Alias for BORDER
+    BORDER_FOCUSED: Final[str] = "#BB86FC"  # Same as PRIMARY
     DIVIDER: Final[str] = "#1F1F1F"
+    HOVER_OVERLAY: Final[str] = "#FFFFFF1A"  # 10% white overlay
 
 
 # ============ Typography ============
@@ -73,7 +77,6 @@ class Typography:
     @staticmethod
     def get_title_font():
         """タイトル用QFontを取得"""
-        from PySide6.QtGui import QFont
         font = QFont(Typography.FONT_FAMILY, Typography.SIZE_TITLE)
         font.setWeight(QFont.Weight.Bold)
         return font
@@ -207,3 +210,45 @@ class Strings:
     ERROR: Final[str] = "エラー"
     WARNING: Final[str] = "警告"
     INFO: Final[str] = "情報"
+
+
+# ============ ColorTokens (for backward compatibility) ============
+class ColorTokens:
+    """
+    色トークンクラス（後方互換性のため）
+    Theme クラスのエイリアスとして機能
+    """
+    PRIMARY = Theme.PRIMARY
+    SECONDARY = Theme.SECONDARY
+    TEXT_PRIMARY = Theme.TEXT_PRIMARY
+    TEXT_SECONDARY = Theme.TEXT_SECONDARY
+    BORDER_DEFAULT = Theme.BORDER_DEFAULT
+    BORDER_FOCUSED = Theme.BORDER_FOCUSED
+    SURFACE_1 = Theme.SURFACE_1
+    SURFACE_2 = Theme.SURFACE_2
+    SURFACE_3 = Theme.SURFACE_3
+    HOVER_OVERLAY = Theme.HOVER_OVERLAY
+
+
+# ============ Utility Functions ============
+def create_qfont(size: int = 12, bold: bool = False) -> QFont:
+    """
+    QFont を作成するヘルパー関数
+    
+    Args:
+        size: フォントサイズ（デフォルト: 12）
+        bold: 太字にするか（デフォルト: False）
+    
+    Returns:
+        QFont オブジェクト
+    """
+    font = QFont(Typography.FONT_FAMILY, size)
+    if bold:
+        font.setWeight(QFont.Weight.Bold)
+    return font
+
+
+# ============ Backward-compatible aliases ============
+# UtilTheme.py との後方互換性のため
+Colors = ColorTokens
+Fonts = Typography

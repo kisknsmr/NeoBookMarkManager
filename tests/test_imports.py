@@ -19,9 +19,8 @@ TEST_CASES = [
     ("core.ModelBookmark", "from core.ModelBookmark import Node, NetscapeBookmarkParser"),
     ("core.UtilCoreUtils", "from core.UtilCoreUtils import is_valid_url, LRUCache"),
     ("services.WorkerNetwork", "from services.WorkerNetwork import fetch_preview, fix_titles"),
-    ("gui.layout.LayoutDialogs", "from gui.layout.LayoutDialogs import CustomPromptDialog"),
-    ("gui.layout.LayoutComponents", "from gui.layout.LayoutComponents import BookmarkCard"),
-    ("gui.UtilTheme", "from gui.UtilTheme import Colors, Fonts"),
+    ("gui.components", "from gui.components import CustomPromptDialog, BookmarkCard"),
+    ("gui.UtilGuiResources", "from gui.UtilGuiResources import Colors, Fonts"),
 ]
 
 @pytest.mark.parametrize("module_name,import_statement", TEST_CASES)

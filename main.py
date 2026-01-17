@@ -8,6 +8,11 @@ import os
 import sys
 from pathlib import Path
 
+# Prevent __pycache__ directory creation (集約設定)
+# この設定により、どの方法で実行しても __pycache__ が生成されません
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+
 # Ensure the core/gui/services modules are importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

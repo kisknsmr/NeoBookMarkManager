@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QDesktopServices, QFont, QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,30 +21,37 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QWidget,
+    QFileDialog,
+    QInputDialog,
 )
 
 from core.UtilLogger import logger
 from core.ModelBookmark import Node
 from core.ServiceStorage import ConfigManager, load_bookmarks, save_bookmarks
 from core.UtilCoreUtils import LRUCache, is_valid_url
-from gui.layout.LayoutBookmarkListView import BookmarkListView
-from gui.commands import CommandRegistry
-from gui.layout.LayoutComponents import BookmarkCard, BookmarkRow, FolderTree, SearchBar
-from gui.layout.LayoutDialogs import CustomPromptDialog, FolderSelectDialog
-from gui.layout.LayoutPanelLeft import LeftPanel
-from gui.layout.LayoutMainLayout import install_main_layout
-from gui.layout.LayoutTopBar import TopBar
-from gui.layout.LayoutMenus import MenuBuilder
-from gui.presenters.PresenterBookmark import BookmarkPresenter
+from gui.components import (
+    BookmarkListView,
+    BookmarkCard,
+    BookmarkRow,
+    FolderTree,
+    SearchBar,
+    CustomPromptDialog,
+    FolderSelectDialog,
+    LeftPanel,
+    TopBar,
+    RightPanel,
+    DetailPanel,
+)
+from services.WorkerNetwork import fetch_preview, fix_titles
+from services.legacy.ServiceAiClassifierLegacy import AIBookmarkClassifier, BookmarkNode
+from services.ServicePlans import build_rules_plan
 from gui.UtilGuiResources import Typography, WindowSize
-from gui.layout.LayoutPanelRight import RightPanel, DetailPanel
 from gui.ModelAppState import AppState
 from gui.controllers.ControllerTree import TreeController
 from gui.controllers.ControllerSearch import SearchController
 from gui.controllers.ControllerSession import SessionController
 from gui.controllers.ControllerTreeUi import TreeUIController
 from gui.controllers.ControllerUiEvent import UIEventController
-from services.legacy.ServiceAiClassifierLegacy import AIBookmarkClassifier, BookmarkNode
 from services.ServiceBookmark import BookmarkService
 from services.ServiceSearch import SearchService
 from services.BusWorker import WorkerBus, WorkerEventHandler
@@ -165,11 +172,7 @@ class MainWindow(QMainWindow):
         # ==================== Tree Controller ====================
         self.tree_controller = TreeController()
 
-        # ==================== Presenter ====================
-        self.presenter = BookmarkPresenter()
-
         # ==================== Commands ====================
-        self.commands = CommandRegistry(self)
 
         # ==================== Controllers ====================
         self.session_controller = SessionController(
@@ -238,7 +241,9 @@ class MainWindow(QMainWindow):
                 return
 
         log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        log_path = Path(__file__).resolve().parent.parent / "logs" / "bookmark_editor.log"
+        # Use project root logs/ directory (not gui/logs/)
+        project_root = Path(__file__).resolve().parent.parent.parent
+        log_path = project_root / "logs" / "bookmark_editor.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
             str(log_path),
@@ -252,34 +257,136 @@ class MainWindow(QMainWindow):
         self.logger.setLevel(logging.WARNING)
 
     def _create_menu_bar(self) -> None:
-        """Create application menu bar using MenuBuilder."""
-        callbacks = {
-            "cmd_open": self.cmd_open,
-            "cmd_save": self.cmd_save,
-            "cmd_save_as": self.cmd_save_as,
-            "cmd_new_folder": self.cmd_new_folder,
-            "cmd_new_bookmark": self.cmd_new_bookmark,
-            "cmd_rename": self.cmd_rename,
-            "cmd_edit_url": self.cmd_edit_url,
-            "cmd_move_to_folder": self.cmd_move_to_folder,
-            "cmd_move_up": self.cmd_move_up,
-            "cmd_delete": self.cmd_delete,
-            "set_proxy_flag": lambda checked: self.feature_flags.set_flag("proxy_enabled", checked),
-            "cmd_check_proxy": self.cmd_check_proxy,
-            "cmd_show_classify_preview": self.cmd_show_classify_preview,
-            "cmd_smart_classify": self.cmd_smart_classify,
-            "cmd_fix_titles_from_url": self.cmd_fix_titles_from_url,
-            "cmd_set_view_mode": self.cmd_set_view_mode,
-            "_set_dual_tree_mode": self._set_dual_tree_mode,
-        }
+        """Create application menu bar."""
+        self._create_file_menu()
+        self._create_edit_menu()
+        self._create_tools_menu()
+        self._create_view_menu()
+    
+    def _create_file_menu(self) -> None:
+        """Create File menu."""
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("&File")
         
-        builder = MenuBuilder(self)
-        builder.build_menus(callbacks)
+        open_action = QAction("&Open HTML...", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self.cmd_open)
+        file_menu.addAction(open_action)
+
+        save_action = QAction("&Save", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.cmd_save)
+        file_menu.addAction(save_action)
+
+        save_as_action = QAction("Save &As...", self)
+        save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_action.triggered.connect(self.cmd_save_as)
+        file_menu.addAction(save_as_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+    
+    def _create_edit_menu(self) -> None:
+        """Create Edit menu."""
+        menubar = self.menuBar()
+        edit_menu = menubar.addMenu("&Edit")
         
-        # Store action references from builder
-        self.card_mode_action = builder.card_mode_action
-        self.list_mode_action = builder.list_mode_action
-        self.dual_tree_action = builder.dual_tree_action
+        new_folder_action = QAction("New &Folder", self)
+        new_folder_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        new_folder_action.triggered.connect(self.cmd_new_folder)
+        edit_menu.addAction(new_folder_action)
+
+        new_bookmark_action = QAction("New &Bookmark", self)
+        new_bookmark_action.setShortcut(QKeySequence.StandardKey.New)
+        new_bookmark_action.triggered.connect(self.cmd_new_bookmark)
+        edit_menu.addAction(new_bookmark_action)
+
+        rename_action = QAction("&Rename", self)
+        rename_action.setShortcut(QKeySequence("F2"))
+        rename_action.triggered.connect(self.cmd_rename)
+        edit_menu.addAction(rename_action)
+
+        edit_url_action = QAction("Edit &URL", self)
+        edit_url_action.triggered.connect(self.cmd_edit_url)
+        edit_menu.addAction(edit_url_action)
+
+        edit_menu.addSeparator()
+
+        move_action = QAction("&Move to Folder...", self)
+        move_action.triggered.connect(self.cmd_move_to_folder)
+        edit_menu.addAction(move_action)
+
+        move_up_action = QAction("Move &Up", self)
+        move_up_action.setShortcut(QKeySequence("Ctrl+Up"))
+        move_up_action.triggered.connect(self.cmd_move_up)
+        edit_menu.addAction(move_up_action)
+
+        delete_action = QAction("&Delete", self)
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.triggered.connect(self.cmd_delete)
+        edit_menu.addAction(delete_action)
+    
+    def _create_tools_menu(self) -> None:
+        """Create Tools menu."""
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu("&Tools")
+        
+        proxy_action = QAction("Use Proxy", self, checkable=True)
+        proxy_action.setChecked(self.use_proxy)
+        proxy_action.triggered.connect(
+            lambda checked: self.feature_flags.set_flag("proxy_enabled", checked)
+        )
+        tools_menu.addAction(proxy_action)
+
+        test_proxy_action = QAction("Test Proxy Connection", self)
+        test_proxy_action.triggered.connect(self.cmd_check_proxy)
+        tools_menu.addAction(test_proxy_action)
+
+        tools_menu.addSeparator()
+
+        classify_action = QAction("Rule-based Classification...", self)
+        classify_action.triggered.connect(self.cmd_show_classify_preview)
+        tools_menu.addAction(classify_action)
+
+        smart_classify_action = QAction("AI Smart Classification...", self)
+        smart_classify_action.triggered.connect(self.cmd_smart_classify)
+        tools_menu.addAction(smart_classify_action)
+
+        tools_menu.addSeparator()
+
+        fix_titles_action = QAction("Fix Titles from URL", self)
+        fix_titles_action.triggered.connect(self.cmd_fix_titles_from_url)
+        tools_menu.addAction(fix_titles_action)
+    
+    def _create_view_menu(self) -> None:
+        """Create View menu."""
+        menubar = self.menuBar()
+        view_menu = menubar.addMenu("&View")
+        
+        self.card_mode_action = QAction("&Card Mode", self, checkable=True)
+        self.card_mode_action.setChecked(self.view_mode == "card")
+        self.card_mode_action.triggered.connect(
+            lambda: self.cmd_set_view_mode("card")
+        )
+        view_menu.addAction(self.card_mode_action)
+
+        self.list_mode_action = QAction("&List Mode", self, checkable=True)
+        self.list_mode_action.setChecked(self.view_mode == "list")
+        self.list_mode_action.triggered.connect(
+            lambda: self.cmd_set_view_mode("list")
+        )
+        view_menu.addAction(self.list_mode_action)
+
+        view_menu.addSeparator()
+        
+        self.dual_tree_action = QAction("Two-Pane Tree Mode", self, checkable=True)
+        self.dual_tree_action.setChecked(self.dual_tree_mode)
+        self.dual_tree_action.triggered.connect(self._set_dual_tree_mode)
+        view_menu.addAction(self.dual_tree_action)
 
     def _build_ui(self) -> None:
         """Build main layout with TopBar + splitter panels (delegated)."""
@@ -297,7 +404,7 @@ class MainWindow(QMainWindow):
         self.left_panel = self._create_left_panel()
         self.right_panel = self._create_right_panel()
 
-        install_main_layout(window=self, topbar=self.topbar, left_panel=self.left_panel, right_panel=self.right_panel)
+        self._install_main_layout()
 
         self._post_ui_built()
 
@@ -331,8 +438,8 @@ class MainWindow(QMainWindow):
         self.bookmark_list_view = left_panel.get_bookmark_list_view()
         self.bookmark_list_view.node_selected.connect(self.ui_events.on_bookmark_node_selected)
         self.bookmark_list_view.open_requested.connect(self._open_url)
-        self.bookmark_list_view.delete_requested.connect(self.commands.bookmark.delete_node)
-        self.bookmark_list_view.preview_fetch_requested.connect(self.commands.network.enqueue_preview_fetch)
+        self.bookmark_list_view.delete_requested.connect(self._delete_node)
+        self.bookmark_list_view.preview_fetch_requested.connect(self._enqueue_preview_fetch)
         
         return left_panel
 
@@ -443,12 +550,12 @@ class MainWindow(QMainWindow):
 
     def refresh_list(self) -> None:
         """Update only the bookmark list display."""
-        nodes = self.presenter.get_display_nodes(
+        nodes = self._get_display_nodes(
             current_folder=self.current_folder,
             search_query=self.search_query,
             search_hits=set(self.search_hits or set()),
         )
-        self.presenter.refresh_list(
+        self._refresh_list_internal(
             bookmark_list_view=self.bookmark_list_view,
             detail_panel=self.detail_panel,
             preview_cache=self.preview_cache,
@@ -459,8 +566,8 @@ class MainWindow(QMainWindow):
 
     def refresh_counts(self) -> None:
         """Update only the bookmark count labels."""
-        total = self.presenter.count_bookmarks(self.root_node)
-        self.presenter.update_counts(
+        total = self._count_bookmarks(self.root_node)
+        self._update_counts(
             bookmarks_count_label=getattr(self, "bookmarks_count_label", None),
             workspace_count_label=getattr(self, "workspace_count_label", None),
             total=total,
@@ -488,44 +595,278 @@ class MainWindow(QMainWindow):
     def _default_rules(self) -> list:
         return []
 
-    # ----------------------------- commands ------------------------------
+    # ----------------------------- File Commands ------------------------------
     def cmd_open(self) -> None:
-        self.commands.file.open()
+        """Open bookmark HTML file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open HTML", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            root, rules, rules_path = load_bookmarks(file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to open file:\n{exc}")
+            return
+
+        self.set_root_node_state(root)
+        self.set_rules_state(rules, rules_path)
+        self.set_current_file_state(file_path)
+        self.current_folder = root
+        self.selected_node = None
+
+        # search index build is done only on open
+        self.search_service.rebuild(root)
+        self.refresh_tree(select_node=root)
+        self.refresh_list()
+        self.refresh_counts()
+
+        # Remember last file
+        self.config_manager.set("Session", "last_bookmarks_file", file_path)
+        self.statusBar().showMessage(f"Loaded {file_path}", 4000)
 
     def cmd_save(self) -> None:
-        self.commands.file.save()
+        """Save bookmark HTML file."""
+        if not self.current_file:
+            self.cmd_save_as()
+            return
+
+        try:
+            save_bookmarks(self.current_file, self.root_node, self.rules)
+            self.statusBar().showMessage(f"Saved to {self.current_file}", 4000)
+            self.config_manager.set(
+                "Session", "last_bookmarks_file", self.current_file
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to save:\n{exc}")
 
     def cmd_save_as(self) -> None:
-        self.commands.file.save_as()
+        """Save bookmark HTML file with new name."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save As", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not file_path:
+            return
 
-    # ----------------------------- command delegation ----------------------------
+        self.current_file = file_path
+        self.cmd_save()
+        self.config_manager.set("Session", "last_bookmarks_file", file_path)
+
+    # ----------------------------- Bookmark Commands ------------------------------
     def cmd_new_folder(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.new_folder()
+        """Create new folder with user input."""
+        if not self.current_folder or self.current_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
+            return
+        
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if not ok or not name.strip():
+            return
+        
+        new_node = Node("folder", name.strip())
+        self.current_folder.append(new_node)
+        
+        # Folders don't need search index update, just refresh tree and counts
+        self.refresh_tree(select_node=new_node)
+        self.refresh_counts()
 
     def cmd_new_bookmark(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.new_bookmark()
+        """Create new bookmark with user input."""
+        if not self.current_folder or self.current_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
+            return
+        
+        url, ok = QInputDialog.getText(self, "New Bookmark", "URL:")
+        if not ok or not url.strip():
+            return
+        
+        if not is_valid_url(url.strip()):
+            QMessageBox.warning(self, "Warning", "Enter a valid URL (http/https).")
+            return
+        
+        title, _ = QInputDialog.getText(self, "New Bookmark", "Title (optional):")
+        node = Node("bookmark", title=title.strip() or url.strip(), url=url.strip())
+        self.current_folder.append(node)
+        
+        # Add to search index and refresh
+        self.search_service.add_node(node)
+        self.refresh_list()
+        self.refresh_counts()
+
+        self._enqueue_preview_fetch(node)
 
     def cmd_rename(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.rename()
+        """Rename selected bookmark or folder."""
+        if not self.selected_node:
+            QMessageBox.information(self, "Info", "Select an item to rename.")
+            return
+        
+        name, ok = QInputDialog.getText(
+            self,
+            "Rename",
+            "New name:",
+            text=self.selected_node.title
+        )
+        if not ok or not name.strip():
+            return
+        
+        self.selected_node.title = name.strip()
+        
+        # Update search index and refresh
+        self.search_service.update_node(self.selected_node)
+        self.refresh_list()
+        self.refresh_counts()
+        
+        # If renaming folder, update tree
+        if self.selected_node.type == "folder":
+            self.refresh_tree(select_node=self.selected_node)
 
     def cmd_edit_url(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.edit_url()
+        """Edit URL of selected bookmark."""
+        if not self.selected_node or self.selected_node.type != "bookmark":
+            QMessageBox.information(self, "Info", "Select a bookmark to edit.")
+            return
+        
+        url, ok = QInputDialog.getText(
+            self,
+            "Edit URL",
+            "URL:",
+            text=self.selected_node.url
+        )
+        if not ok or not url.strip():
+            return
+        
+        if not is_valid_url(url.strip()):
+            QMessageBox.warning(self, "Warning", "Enter a valid URL.")
+            return
+        
+        self.selected_node.url = url.strip()
+        
+        # Update search index and refresh list only
+        self.search_service.update_node(self.selected_node)
+        self.refresh_list()
+        self.refresh_counts()
 
     def cmd_move_to_folder(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.move_to_folder()
+        """Move selected bookmark/folder to target folder."""
+        if not self.selected_node or not self.root_node:
+            QMessageBox.information(self, "Info", "Select an item to move.")
+            return
+        
+        dialog = FolderSelectDialog(
+            self,
+            root_node=self.root_node,
+            exclude_nodes=[self.selected_node]
+        )
+        if dialog.exec() != dialog.Accepted or not dialog.result:
+            return
+        
+        target_folder = dialog.result
+        if target_folder.type != "folder":
+            QMessageBox.warning(self, "Warning", "Target must be a folder.")
+            return
+        
+        parent = self.selected_node.parent
+        if parent:
+            parent.remove_child(self.selected_node)
+        target_folder.append(self.selected_node)
+        self.current_folder = target_folder
+        
+        # Move doesn't change search index (title/url unchanged), just refresh tree and list
+        self.refresh_tree(select_node=target_folder)
+        self.refresh_list()
+        self.refresh_counts()
 
     def cmd_move_up(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.move_up()
+        """Move selected item up in siblings."""
+        if not self.selected_node or not self.selected_node.parent:
+            return
+        
+        parent = self.selected_node.parent
+        siblings = parent.children
+        idx = siblings.index(self.selected_node)
+        if idx <= 0:
+            return
+        
+        parent.move_child(self.selected_node, idx - 1)
+        
+        # Move doesn't change search, just refresh tree
+        self.refresh_tree(select_node=self.selected_node)
 
     def cmd_delete(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.delete()
+        """Delete selected bookmark/folder."""
+        if not self.selected_node:
+            QMessageBox.information(self, "Info", "Select an item to delete.")
+            return
+
+        self._delete_node(self.selected_node)
+
+    def _delete_node(self, node: Node) -> None:
+        """Delete a bookmark or folder node."""
+        if not node or not node.parent:
+            return
+
+        res = QMessageBox.question(
+            self,
+            "Delete",
+            f"Delete '{node.title}'?",
+        )
+        if res != QMessageBox.StandardButton.Yes:
+            return
+
+        parent = node.parent
+
+        # Update search index (bookmarks only)
+        if node.type == "bookmark":
+            self.search_service.remove_node(node)
+        elif node.type == "folder":
+            # Remove all bookmarks in subtree from search index
+            for bm in self._iter_bookmarks(node):
+                self.search_service.remove_node(bm)
+
+        parent.remove_child(node)
+
+        self.refresh_tree(select_node=parent)
+        self.refresh_list()
+        self.refresh_counts()
+        self.statusBar().showMessage(f"Deleted: {node.title}", 2000)
+
+    def _iter_bookmarks(self, node: Node):
+        """Iterate over all bookmarks in a node subtree."""
+        for child in getattr(node, "children", []) or []:
+            if child.type == "bookmark":
+                yield child
+            elif child.type == "folder":
+                yield from self._iter_bookmarks(child)
+
+    def cmd_delete_duplicates(self) -> None:
+        """Delete duplicate bookmarks in current folder."""
+        if not self.current_folder:
+            return
+        
+        removed = self.bookmark_service.delete_duplicates(self.current_folder)
+        
+        # Rebuild search since multiple nodes were deleted
+        self.search_service.rebuild(self.root_node)
+        self.refresh_list()
+        self.refresh_tree(select_node=self.current_folder)
+        self.refresh_counts()
+        self.statusBar().showMessage(f"Removed {removed} duplicate bookmarks", 3000)
+
+    def cmd_merge_duplicate_folders(self) -> None:
+        """Merge duplicate folders in current folder."""
+        if not self.current_folder:
+            return
+        
+        removed = self.bookmark_service.merge_duplicate_folders(self.current_folder)
+        
+        # Rebuild search since structure changed
+        self.search_service.rebuild(self.root_node)
+        self.refresh_tree(select_node=self.current_folder)
+        self.refresh_list()
+        self.refresh_counts()
+        self.statusBar().showMessage(f"Merged {removed} duplicate folders", 3000)
 
     def cmd_expand_all(self) -> None:
         """Expand all folders (placeholder)."""
@@ -535,38 +876,215 @@ class MainWindow(QMainWindow):
         """Collapse all folders (placeholder)."""
         QMessageBox.information(self, "Collapse", "Collapse all folders functionality.")
 
-    def cmd_check_proxy(self) -> None:
-        """Delegate to network commands."""
-        self.commands.network.check_proxy()
-
-    def _delete_node(self, node: Node) -> None:
-        # Backward compatibility shim; prefer BookmarkCommands.delete_node
-        self.commands.bookmark.delete_node(node)
-
-
+    # ----------------------------- Classification Commands ------------------------------
     def cmd_show_classify_preview(self) -> None:
-        """Delegate to classify commands."""
-        self.commands.classify.rule_classify()
+        """Classify bookmarks using predefined rules."""
+        base = self.current_folder if self.current_folder else self.root_node
+        plan = build_rules_plan(base, self.rules or {})
+        if not plan:
+            QMessageBox.information(self, "Classify", "No rules or matching bookmarks.")
+            return
+        
+        lines = [f"{folder}: {len(nodes)}" for folder, nodes in plan.items()]
+        preview = "\n".join(lines)
+        res = QMessageBox.question(
+            self,
+            "Rule-based Classification",
+            preview + "\n\nApply this plan?"
+        )
+        if res != QMessageBox.StandardButton.Yes:
+            return
+        
+        for folder_name, nodes in plan.items():
+            target = self.bookmark_service.find_or_create_folder(base, folder_name)
+            for node in nodes:
+                try:
+                    self.bookmark_service.move_to_folder(node, target)
+                except ValueError as e:
+                    self.logger.warning(f"Failed to move {node.title}: {e}")
+        
+        # Structure changed, rebuild search and refresh
+        self.search_service.rebuild(self.root_node)
+        self.refresh_tree(select_node=base)
+        self.refresh_list()
+        self.refresh_counts()
+        self.statusBar().showMessage("Rule-based classification applied", 4000)
 
     def cmd_smart_classify(self) -> None:
-        """Delegate to classify commands."""
-        self.commands.classify.ai_classify()
+        """Classify bookmarks using AI."""
+        base = self.current_folder if self.current_folder else self.root_node
+        nodes = list(self.bookmark_service.iter_bookmarks(base))
+        if not nodes:
+            QMessageBox.information(self, "Classify", "No bookmarks to classify.")
+            return
 
-    def cmd_delete_duplicates(self) -> None:
-        """Delegate to bookmark commands."""
-        self.commands.bookmark.delete_duplicates()
+        # Get additional prompt from user
+        dialog = CustomPromptDialog(self, title="追加指示（任意）", previous_prompts=[])
+        if dialog.exec() != dialog.Accepted:
+            additional_prompt = None
+        else:
+            additional_prompt = dialog.result or None
 
-    def cmd_merge_duplicate_folders(self) -> None:
-        """Delegate to bookmark commands."""
-        removed = self.commands.bookmark.merge_duplicate_folders()
-        if removed > 0:
-            self.statusBar().showMessage(f"Merged {removed} duplicate folders", 3000)
+        try:
+            classifier = AIBookmarkClassifier(
+                config_path=str(self.config_manager.config_path)
+            )
+            priority_terms = self.config_manager.get_priority_terms()
+            node_map: Dict[BookmarkNode, Node] = {}
+            items: List[BookmarkNode] = []
+            
+            for node in nodes:
+                bn = BookmarkNode(title=node.title or "", url=node.url or "")
+                items.append(bn)
+                node_map[bn] = node
+            
+            result = classifier.classify_bookmarks(
+                items,
+                priority_terms=priority_terms,
+                max_items=self.max_smart_items,
+                additional_prompt=additional_prompt,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "AI Classify", f"AI分類に失敗しました:\n{exc}")
+            return
 
+        if not result.plan:
+            QMessageBox.information(self, "AI Classify", "分類結果が空でした。")
+            return
 
+        # Apply classification
+        for folder_name, items in result.plan.items():
+            target = self.bookmark_service.find_or_create_folder(base, folder_name)
+            for item in items:
+                node = node_map.get(item)
+                if not node:
+                    continue
+                try:
+                    self.bookmark_service.move_to_folder(node, target)
+                except ValueError as e:
+                    self.logger.warning(f"Failed to move {node.title}: {e}")
+
+        # Structure changed, rebuild search and refresh
+        self.search_service.rebuild(self.root_node)
+        self.refresh_tree(select_node=base)
+        self.refresh_list()
+        self.refresh_counts()
+        self.statusBar().showMessage("AI classification completed", 4000)
+
+    # ----------------------------- Network Commands ------------------------------
+    def cmd_check_proxy(self) -> None:
+        """Check proxy settings."""
+        settings = self.config_manager.get_proxy_settings()
+        if not settings:
+            QMessageBox.information(
+                self,
+                "Proxy",
+                "Proxy is disabled or not configured."
+            )
+            return
+        
+        summary = settings.get("url", "")
+        QMessageBox.information(self, "Proxy", f"Using proxy: {summary}")
+
+    def cmd_fix_titles_from_url(self) -> None:
+        """Fix bookmark titles by fetching from URLs."""
+        self._enable_network_updates("タイトル取得")
+        
+        nodes = list(self.bookmark_service.iter_bookmarks(self.current_folder)) \
+            if self.current_folder else []
+        if not nodes:
+            QMessageBox.information(self, "Info", "No bookmarks to update.")
+            return
+
+        # keep for search index update on completion
+        self._titlefix_nodes = nodes
+        
+        proxy_info = self.config_manager.get_proxies_for_requests(
+            use_proxy=self.use_proxy
+        )
+        self.statusBar().showMessage("Starting title fix...", 2000)
+        self.worker_bus.submit(
+            fix_titles,
+            nodes,
+            self.worker_bus.ui_queue,
+            proxy_info,
+            self.fetch_timeout,
+            None,
+            None
+        )
+
+    def cmd_fetch_preview(self) -> None:
+        """Fetch preview for selected bookmark (on demand)."""
+        if not self.selected_node or \
+           self.selected_node.type != "bookmark":
+            QMessageBox.information(
+                self,
+                "Info",
+                "プレビュー取得はブックマークを選択してください。"
+            )
+            return
+        
+        self._enable_network_updates("プレビュー取得")
+        self._enqueue_preview_fetch(self.selected_node)
+
+    def _enable_network_updates(self, reason: str) -> None:
+        """Enable network updates if disabled."""
+        if not self.network_updates_enabled:
+            self.network_updates_enabled = True
+            self.statusBar().showMessage(f"ネットワーク更新を有効化: {reason}", 3000)
+
+    def _enqueue_preview_fetch(self, node) -> None:
+        """Enqueue preview fetch for a bookmark node."""
+        if not node or not getattr(node, "url", None):
+            return
+        if not self.network_updates_enabled:
+            return
+
+        proxy_info = self.config_manager.get_proxies_for_requests(use_proxy=self.use_proxy)
+        self.worker_bus.submit(
+            fetch_preview,
+            node.url,
+            self.worker_bus.ui_queue,
+            proxy_info,
+            self.fetch_timeout,
+        )
+
+    # ----------------------------- View Commands ------------------------------
     def cmd_set_view_mode(self, mode: str) -> None:
-        self.commands.view.set_view_mode(mode)
+        """Set view mode (card or list)."""
+        if mode not in ("card", "list"):
+            return
+
+        self.view_mode = mode
+
+        # Update checkboxes
+        if hasattr(self, "card_mode_action"):
+            self.card_mode_action.setChecked(mode == "card")
+        if hasattr(self, "list_mode_action"):
+            self.list_mode_action.setChecked(mode == "list")
+
+        # Update top bar chip
+        if hasattr(self, "topbar") and self.topbar is not None:
+            self.topbar.set_view_mode(mode)
+        elif hasattr(self, "mode_chip"):
+            display_text = "Card" if mode == "card" else "List"
+            self.mode_chip.setText(f"表示: {display_text}")
+
+        # Update view toggle button styles
+        if hasattr(self, "view_buttons"):
+            for key, btn in self.view_buttons.items():
+                btn.setObjectName("tonalButton" if key == mode else "ghostButton")
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+                btn.update()
+
+        # Refresh only list/counts (tree doesn't depend on view_mode)
+        self.refresh_list()
+        self.refresh_counts()
+        self.statusBar().showMessage(f"Switched to {mode.title()} Mode", 2000)
 
     def _set_dual_tree_mode(self, enabled: bool) -> None:
+        """Set dual tree mode (two-pane view)."""
         self.dual_tree_mode = bool(enabled)
         if hasattr(self, "dual_tree_action"):
             self.dual_tree_action.setChecked(self.dual_tree_mode)
@@ -575,15 +1093,21 @@ class MainWindow(QMainWindow):
         self.refresh_tree(select_node=self.current_folder or self.root_node)
 
     def _apply_sort(self, sort_by: str) -> None:
-        self.commands.view.sort(sort_by)
+        """Apply sorting to current folder."""
+        if not self.current_folder:
+            return
 
-    def cmd_fix_titles_from_url(self) -> None:
-        """Delegate to network commands."""
-        self.commands.network.fix_titles_from_url()
+        if sort_by == "title":
+            self.bookmark_service.sort_children(self.current_folder, "title")
+            self.statusBar().showMessage("Sorted by title", 2000)
+        elif sort_by == "domain":
+            self.bookmark_service.sort_children(self.current_folder, "url")
+            self.statusBar().showMessage("Sorted by domain", 2000)
+        else:
+            return
 
-    def cmd_fetch_preview(self) -> None:
-        """Delegate to network commands."""
-        self.commands.network.fetch_preview()
+        self.refresh_tree(select_node=self.current_folder)
+        self.refresh_list()
 
     def _post_ui_built(self) -> None:
         """Initialize controllers that need widget references."""
@@ -606,6 +1130,109 @@ class MainWindow(QMainWindow):
 
     def _get_all_trees(self):
         return [self.folder_tree, self.folder_tree_left, self.folder_tree_right]
+
+    def _install_main_layout(self) -> None:
+        """Install the main layout (topbar + left/right splitter) into this QMainWindow."""
+        from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+        from PySide6.QtCore import Qt
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        main_layout.addWidget(self.topbar)
+
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(8)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        content_layout.addWidget(splitter)
+
+        splitter.addWidget(self.left_panel)
+        splitter.addWidget(self.right_panel)
+
+        splitter.setSizes([600, 300])
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(content_widget, 1)
+
+    def _get_display_nodes(
+        self,
+        *,
+        current_folder: Optional[Node],
+        search_query: str,
+        search_hits: Set[Node],
+    ) -> List[Node]:
+        """Get nodes to display in the bookmark list view."""
+        if not current_folder:
+            return []
+
+        base_nodes = [ch for ch in current_folder.children if ch.type == "bookmark"]
+        if not search_query:
+            return base_nodes
+
+        filtered: List[Node] = []
+        for node in search_hits:
+            if self._is_descendant_of(node, current_folder):
+                filtered.append(node)
+        return filtered
+
+    def _is_descendant_of(self, node: Node, folder: Node) -> bool:
+        """Check if node is a descendant of folder."""
+        cur = node.parent
+        while cur:
+            if cur is folder:
+                return True
+            cur = cur.parent
+        return False
+
+    def _iter_bookmarks(self, node: Node) -> Iterable[Node]:
+        """Iterate over all bookmarks in the subtree."""
+        for child in getattr(node, "children", []) or []:
+            if child.type == "bookmark":
+                yield child
+            elif child.type == "folder":
+                yield from self._iter_bookmarks(child)
+
+    def _count_bookmarks(self, root_node: Optional[Node]) -> int:
+        """Count total bookmarks in the tree."""
+        if not root_node:
+            return 0
+        return sum(1 for _ in self._iter_bookmarks(root_node))
+
+    def _refresh_list_internal(
+        self,
+        *,
+        bookmark_list_view,
+        detail_panel,
+        preview_cache,
+        nodes: List[Node],
+        view_mode: str,
+        preview_requester,
+    ) -> None:
+        """Internal method to refresh the bookmark list view."""
+        bookmark_list_view.set_items(nodes, view_mode=view_mode)
+
+        for node in nodes:
+            if node.url and node.url not in preview_cache:
+                preview_cache[node.url] = True
+                preview_requester(node)
+
+        if not nodes:
+            detail_panel.clear()
+
+    def _update_counts(self, *, bookmarks_count_label, workspace_count_label, total: int) -> None:
+        """Update bookmark count labels."""
+        if bookmarks_count_label is not None:
+            bookmarks_count_label.setText(f"{total:,}")
+        if workspace_count_label is not None:
+            workspace_count_label.setText(f"{total:,}")
 
 
 # Backward compatibility alias

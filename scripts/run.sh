@@ -26,7 +26,7 @@ if [ ! -f "$VENV_DIR/.installed" ]; then
     echo "✅ 依存関係のインストールが完了しました"
 fi
 
-# プログラムを実行
+# プログラムを実行（main.py で __pycache__ 生成防止が設定済み）
 echo "プログラムを起動します..."
 python3 "$PROJECT_ROOT/main.py"
 

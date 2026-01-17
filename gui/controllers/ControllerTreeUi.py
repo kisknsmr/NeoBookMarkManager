@@ -6,7 +6,7 @@ Bridges MainWindow UI widgets and TreeController (tree generation logic).
 from typing import Optional, Set
 
 from core.ModelBookmark import Node
-from gui.layout.LayoutComponents import FolderTree
+from gui.components import FolderTree
 
 
 class TreeUIController:

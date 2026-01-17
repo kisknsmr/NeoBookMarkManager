@@ -33,7 +33,7 @@ QMainWindow {
 QFrame#topbar {
     background-color: #161616;
     border-bottom: 1px solid #2C2C2C;
-    height: 44px;
+    height: 40px;
     padding: 0px 12px;
 }
 
@@ -46,16 +46,17 @@ QLabel#chip {
     background-color: rgba(255, 255, 255, 0.02);
 }
 
-/* ============ Buttons ============ */
+/* ============ Buttons (Global Policy: Height 22px) ============ */
 QPushButton {
     background-color: #BB86FC;
-    color: #FFFFFF;
+    color: #1b1026; /* 背景が明るい紫なので文字は暗い色にして視認性を確保 */
     border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
-    min-height: 36px;
+    border-radius: 4px;
+    padding: 0px 8px;   /* 上下パディングを0にし、文字を中央に配置 */
+    min-height: 22px;
+    max-height: 22px;   /* 高さを22pxに完全固定 */
     font-weight: bold;
-    font-size: 14px;
+    font-size: 12px;    /* 22pxの高さに収まる適切なサイズ */
 }
 
 QPushButton:hover {
@@ -67,152 +68,113 @@ QPushButton:pressed {
 }
 
 /* ============ Button Variants ============ */
+
+/* 2画面モード切り替えや表示モードなどの補助的なボタン */
 QPushButton#ghostButton {
     background-color: transparent;
     color: #E0E0E0;
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    min-height: 36px;
-    padding: 0 14px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0 10px;
     font-weight: 600;
-    font-size: 13px;
+    font-size: 11px;
 }
 
 QPushButton#ghostButton:hover {
     background-color: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.12);
 }
 
+/* 枠線のみのボタン */
 QPushButton#outlineButton {
     background-color: transparent;
     color: #BB86FC;
-    border: 1px solid rgba(187, 134, 252, 0.35);
-    border-radius: 16px;
-    min-height: 30px;
-    padding: 0 12px;
-    font-weight: 600;
-    font-size: 13px;
+    border: 1px solid rgba(187, 134, 252, 0.4);
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0 10px;
 }
 
-QPushButton#outlineButton:hover {
-    background-color: rgba(187, 134, 252, 0.08);
-}
-
+/* 選択状態などを示すトーンボタン */
 QPushButton#tonalButton {
-    background-color: rgba(187, 134, 252, 0.12);
+    background-color: rgba(187, 134, 252, 0.15);
     color: #FFFFFF;
-    border: 1px solid rgba(187, 134, 252, 0.28);
-    border-radius: 10px;
-    min-height: 34px;
-    padding: 0 14px;
-    font-weight: 650;
-    font-size: 13px;
+    border: 1px solid rgba(187, 134, 252, 0.3);
+    min-height: 22px;
+    max-height: 22px;
 }
 
-QPushButton#tonalButton:hover {
-    background-color: rgba(187, 134, 252, 0.16);
-}
-
+/* ダイアログのOKボタンなど、最も重要なボタン */
 QPushButton#primaryButton {
-    background-color: rgba(187, 134, 252, 0.95);
+    background-color: #BB86FC;
     color: #1b1026;
-    border: 1px solid rgba(187, 134, 252, 0.65);
-    border-radius: 12px;
-    min-height: 44px;
-    padding: 0 14px;
-    font-weight: 650;
-    font-size: 13px;
+    border: 1px solid rgba(187, 134, 252, 0.6);
+    min-height: 22px;
+    max-height: 22px;
 }
 
-QPushButton#primaryButton:hover {
-    background-color: rgba(187, 134, 252, 1);
-}
-
-QPushButton:disabled {
-    background-color: #5A4371;
-    color: #757575;
-}
-
-/* Secondary Button Style */
+/* キャンセルボタンなどのサブボタン */
 QPushButton#secondaryButton {
     background-color: transparent;
     color: #BB86FC;
     border: 1px solid #BB86FC;
-    border-radius: 6px;
-    padding: 7px 15px;
-    min-height: 36px;
+    min-height: 22px;
+    max-height: 22px;
 }
 
-QPushButton#secondaryButton:hover {
-    background-color: #282828;
-    border-color: #C89DFF;
-}
-
-QPushButton#secondaryButton:pressed {
-    background-color: #232323;
-    border-color: #A66FEB;
-}
-
-/* Text Button Style */
+/* リスト内の小さな削除やクリアボタン */
 QPushButton#textButton {
     background-color: transparent;
     color: #BB86FC;
     border: none;
-    border-radius: 6px;
-    padding: 8px 16px;
+    min-height: 20px;
+    max-height: 20px;
+    padding: 0 4px;
 }
 
 QPushButton#textButton:hover {
-    background-color: #FFFFFF1A;
+    background-color: rgba(255, 255, 255, 0.1);
 }
 
-QPushButton#textButton:pressed {
-    background-color: #FFFFFF33;
+/* 無効化状態 */
+QPushButton:disabled {
+    background-color: #333333;
+    color: #757575;
 }
 
 /* ============ Action Buttons (Right Panel) ============ */
+/* 右側のメニューに並ぶボタン群 */
 QPushButton#actionButton {
-    background-color: transparent;
+    background-color: rgba(255, 255, 255, 0.03);
     color: #E0E0E0;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    padding: 12px 14px;
-    min-height: 44px;
-    font-weight: 650;
-    font-size: 13px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 0 4px;
+    min-height: 22px;
+    max-height: 22px;
+    font-weight: 500;
+    font-size: 11px;
 }
 
 QPushButton#actionButton:hover {
-    background-color: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.12);
-}
-
-QPushButton#actionButton:pressed {
     background-color: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* Danger Button Style */
+/* 右側の「削除」ボタン */
 QPushButton#dangerButton {
-    background-color: rgba(239, 106, 122, 0.90);
-    color: #2a0b10;
-    border: 1px solid rgba(239, 106, 122, 0.60);
-    border-radius: 12px;
-    padding: 12px 14px;
-    min-height: 44px;
-    font-weight: 650;
-    font-size: 13px;
+    background-color: rgba(239, 106, 122, 0.2);
+    color: #EF6A7A;
+    border: 1px solid rgba(239, 106, 122, 0.4);
+    border-radius: 4px;
+    min-height: 22px;
+    max-height: 22px;
+    font-weight: bold;
+    font-size: 11px;
 }
 
 QPushButton#dangerButton:hover {
-    background-color: rgba(239, 106, 122, 1);
-}
-
-QPushButton#dangerButton:hover {
-    background-color: #E07585;
-}
-
-QPushButton#dangerButton:pressed {
-    background-color: #B8525F;
+    background-color: rgba(239, 106, 122, 0.3);
 }
 
 /* ============ Input Fields ============ */
@@ -271,14 +233,19 @@ QFrame#actionSection {
     background-color: #1E1E1E;
     border: 1px solid #2C2C2C;
     border-radius: 10px;
-    padding: 12px;
+    padding: 8px; /* 12pxから少し詰めるとよりコンパクトになります */
+    
+    /* 高さを固定する指定（heightなど）は絶対に書かない */
+    min-height: 10px; /* 最小値を極小にすることで中身に合わせやすくします */
 }
 
+/* タイトルなどの高さも「固定」ではなく「文字サイズ」に任せる */
 QLabel#sectionTitle {
     color: #B3B3B3;
     font-weight: 700;
-    font-size: 12px;
+    font-size: 11px; /* 少し下げてゆとりを持たせる */
     letter-spacing: 0.8px;
+    min-height: 16px;
 }
 
 QLabel#sectionNote {
