@@ -678,35 +678,60 @@ class BookmarkView(QFrame):
             QApplication.restoreOverrideCursor()
 
     def _reset_layout_only(self) -> None:
-        """レイアウト（枠組み）だけを破棄し、ウィジェットはプールに回収する"""
-        if self.container.layout():
-            old_layout = self.container.layout()
-            # レイアウトからウィジェットを「取り出す」だけで削除はしない
-            while old_layout.count():
-                item = old_layout.takeAt(0)
-                if item.widget():
-                    item.widget().setParent(None) # 親子関係を切ってプールに保持
-                elif item.layout():
-                    self._delete_sub_layout(item.layout())
-            
-            import sip
-            sip.delete(old_layout)
-        
+        """
+        レイアウト（枠組み）だけを破棄し、ウィジェットはプールに回収する。
+        - sip 依存を排除（PySide6環境でsipが無い）
+        - setParent(None) はトップレベル化の原因になるため使わない
+        """
+        old_layout = self.container.layout()
+        if old_layout:
+            self._clear_layout_keep_widgets(old_layout)
+            # 重要: deleteLater() だけだと、この直後も container.layout() が旧レイアウトを返すことがある。
+            # 即座にコンテナからレイアウトを外すため、ダミーウィジェットへ付け替える。
+            dummy = QWidget()
+            try:
+                dummy.setLayout(old_layout)
+            except Exception:
+                # 付け替えに失敗しても、deleteLaterだけはしておく
+                pass
+            dummy.deleteLater()
+            old_layout.deleteLater()
         self.selected_widgets.clear()
 
-    def _delete_sub_layout(self, layout):
+    def _clear_layout_keep_widgets(self, layout: QLayout) -> None:
+        """レイアウトからアイテムを外し、ウィジェットは hide() で回収する（deleteしない）"""
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-            elif item.layout():
-                self._delete_sub_layout(item.layout())
-        import sip
-        sip.delete(layout)
+            if not item:
+                continue
+            w = item.widget()
+            if w is not None:
+                # placeholderは積み上がるので破棄
+                if getattr(w, "objectName", lambda: "")() == "placeholder":
+                    w.deleteLater()
+                else:
+                    w.hide()
+                continue
+            sub = item.layout()
+            if sub is not None:
+                self._clear_layout_keep_widgets(sub)
+                try:
+                    sub.setParent(None)
+                except Exception:
+                    pass
+                sub.deleteLater()
 
     def _refresh_ui_optimized(self) -> None:
         """既存ウィジェットの並び替えのみを行う高速ロジック"""
         layout = self.container.layout()
+        want_grid = self.view_mode == "card"
+        # モードに対してレイアウト型が違う場合は作り直す（古いlayoutが残るケース対策）
+        if layout and want_grid and not isinstance(layout, QGridLayout):
+            self._reset_layout_only()
+            layout = None
+        if layout and (not want_grid) and not isinstance(layout, QVBoxLayout):
+            self._reset_layout_only()
+            layout = None
         
         # 適切なレイアウトがなければ作成
         if not layout:
@@ -718,6 +743,9 @@ class BookmarkView(QFrame):
                 layout = QVBoxLayout(self.container)
                 layout.setSpacing(4)
                 layout.setContentsMargins(5, 5, 5, 5)
+        else:
+            # 現行レイアウトをクリア（ウィジェットは回収して再利用）
+            self._clear_layout_keep_widgets(layout)
 
         if not self._nodes:
             self._set_placeholder()
@@ -732,30 +760,24 @@ class BookmarkView(QFrame):
                 if not isinstance(self._widgets[i], target_class):
                     old_w = self._widgets[i]
                     old_w.deleteLater()
-                    self._widgets[i] = target_class(self._nodes[i])
+                    new_w = target_class(self._nodes[i], parent=self.container)
+                    self._connect_view_widget_signals(new_w)
+                    self._widgets[i] = new_w
             else:
                 # 不足分を新規作成
-                self._widgets.append(target_class(self._nodes[i]))
+                new_w = target_class(self._nodes[i], parent=self.container)
+                self._connect_view_widget_signals(new_w)
+                self._widgets.append(new_w)
 
         # 3. データの更新とレイアウトへの追加
         for i, node in enumerate(self._nodes):
             widget = self._widgets[i]
             widget.node = node
-            
-            # シグナル再接続（BookmarkCard/Rowの既存設計に合わせる）
-            try: widget.clicked.disconnect()
-            except: pass
-            widget.clicked.connect(lambda n=node, w=widget: self._on_node_selected(n, w))
+            widget.setParent(self.container)
 
             if self.view_mode == "card":
-                try: widget.double_clicked.disconnect()
-                except: pass
-                widget.double_clicked.connect(lambda n=node: self.open_requested.emit(n.url))
                 layout.addWidget(widget, i // column_count, i % column_count)
             else:
-                try: widget.delete_requested.disconnect()
-                except: pass
-                widget.delete_requested.connect(lambda n=node: self.delete_requested.emit(n))
                 layout.addWidget(widget)
             
             widget.show()
@@ -766,11 +788,27 @@ class BookmarkView(QFrame):
 
         # ストレッチ（余白調整）
         if self.view_mode == "card":
-            layout.setRowStretch(layout.rowCount(), 1)
-            layout.setColumnStretch(column_count, 1)
+            if isinstance(layout, QGridLayout):
+                layout.setRowStretch(layout.rowCount(), 1)
+                layout.setColumnStretch(column_count, 1)
         else:
-            # 前のストレッチを消してから追加
-            layout.addStretch()
+            if isinstance(layout, QVBoxLayout):
+                layout.addStretch()
+
+    def _connect_view_widget_signals(self, widget: QWidget) -> None:
+        """BookmarkCard/BookmarkRow のシグナルを生成時に一度だけ接続する（disconnectしない）"""
+        if hasattr(widget, "clicked"):
+            widget.clicked.connect(lambda w=widget: self._on_node_selected(getattr(w, "node", None), w))
+        if isinstance(widget, BookmarkCard):
+            widget.double_clicked.connect(
+                lambda w=widget: self.open_requested.emit(getattr(getattr(w, "node", None), "url", "") or "")
+            )
+        if isinstance(widget, BookmarkRow):
+            widget.delete_requested.connect(
+                lambda w=widget: self.delete_requested.emit(getattr(w, "node", None))
+                if getattr(w, "node", None)
+                else None
+            )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -888,6 +926,7 @@ class LeftPanel(QFrame):
     collapse_all = Signal()
     expand_current = Signal()
     collapse_current = Signal()
+    toggle_dual_tree = Signal(bool)
 
     def __init__(self, callbacks: Optional[Dict[str, Callable]] = None):
         super().__init__()
@@ -918,7 +957,6 @@ class LeftPanel(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(self._create_header())
-        layout.addWidget(self._create_workspace_header())
         layout.addWidget(self._create_content_area(), 1)
 
     def _create_header(self) -> QWidget:
@@ -937,18 +975,21 @@ class LeftPanel(QFrame):
         header_layout.addStretch()
         return header_widget
 
-    def _create_workspace_header(self) -> QWidget:
-        workspace_header = QWidget()
-        layout = QHBoxLayout(workspace_header)
+    def _create_bookmarks_header(self) -> QWidget:
+        """下側（リスト/カード表示エリア）のヘッダー：List/Card切替をここに置く"""
+        header = QWidget()
+        layout = QHBoxLayout(header)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        workspace_title = QLabel("Workspace")
-        workspace_title.setObjectName("panelHeader")
-        layout.addWidget(workspace_title)
-        
+        title = QLabel("Workspace")
+        title.setObjectName("panelHeader")
+        layout.addWidget(title)
+
         self.workspace_count_label = QLabel("0")
         self.workspace_count_label.setObjectName("chip")
         layout.addWidget(self.workspace_count_label)
+
         layout.addStretch()
 
         for mode in ["list", "card"]:
@@ -960,7 +1001,35 @@ class LeftPanel(QFrame):
             layout.addWidget(btn)
             self.view_buttons[mode] = btn
 
-        return workspace_header
+        return header
+
+    def _create_tree_header(self) -> QWidget:
+        """ツリービューのヘッダー：2画面モードボタンをここに置く"""
+        header = QWidget()
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        title = QLabel("Tree")
+        title.setObjectName("panelHeader")
+        layout.addWidget(title)
+        layout.addStretch()
+
+        dual_btn = QPushButton("2画面モード")
+        dual_btn.setCheckable(True)
+        if "get_dual_tree_mode" in self.callbacks:
+            try:
+                dual_btn.setChecked(bool(self.callbacks["get_dual_tree_mode"]()))
+            except Exception:
+                dual_btn.setChecked(False)
+        dual_btn.setObjectName("ghostButton")
+        dual_btn.toggled.connect(self.toggle_dual_tree.emit)
+        if "set_dual_tree_mode" in self.callbacks:
+            dual_btn.toggled.connect(self.callbacks["set_dual_tree_mode"])
+        self.dual_tree_button = dual_btn
+        layout.addWidget(dual_btn)
+
+        return header
 
     def _create_content_area(self) -> QWidget:
         """コンテンツエリアの生成（ツリーとブックマーク表示の分割エリア）"""
@@ -1061,14 +1130,23 @@ class LeftPanel(QFrame):
         tree_layout = QVBoxLayout(tree_container)
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.setSpacing(8)
+        tree_layout.addWidget(self._create_tree_header())
         tree_layout.addWidget(tree_controls)
         tree_layout.addWidget(tree_scroll)
         tree_layout.addWidget(dual_tree_splitter)
 
+        # 下側（ブックマーク表示）コンテナ：ヘッダー + スクロール
+        bookmarks_container = QWidget()
+        bookmarks_layout = QVBoxLayout(bookmarks_container)
+        bookmarks_layout.setContentsMargins(0, 0, 0, 0)
+        bookmarks_layout.setSpacing(8)
+        bookmarks_layout.addWidget(self._create_bookmarks_header())
+        bookmarks_layout.addWidget(cards_scroll, 1)
+
         # メインスプリッター（上下分割）
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(tree_container)
-        left_splitter.addWidget(cards_scroll)
+        left_splitter.addWidget(bookmarks_container)
         left_splitter.setStretchFactor(0, 1)
         left_splitter.setStretchFactor(1, 1)
         left_splitter.setSizes([350, 350])

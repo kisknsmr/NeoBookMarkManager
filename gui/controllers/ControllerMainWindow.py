@@ -402,6 +402,18 @@ class MainWindow(QMainWindow):
         self.left_panel = self._create_left_panel()
         self.right_panel = self._create_right_panel()
 
+        # 2画面モードボタンはLeftPanel（ツリーヘッダー）を正とする
+        if hasattr(self.left_panel, "dual_tree_button") and getattr(self.left_panel, "dual_tree_button", None) is not None:
+            try:
+                self.topbar.dual_tree_button.setVisible(False)
+            except Exception:
+                pass
+            self.dual_tree_button = self.left_panel.dual_tree_button
+            try:
+                self.dual_tree_button.setChecked(bool(self.dual_tree_mode))
+            except Exception:
+                pass
+
         self._install_main_layout()
 
         self._post_ui_built()
