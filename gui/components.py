@@ -1015,7 +1015,7 @@ class LeftPanel(QFrame):
         layout.addWidget(title)
         layout.addStretch()
 
-        dual_btn = QPushButton("2画面モード")
+        dual_btn = QPushButton("2画面")
         dual_btn.setCheckable(True)
         if "get_dual_tree_mode" in self.callbacks:
             try:
@@ -1023,6 +1023,8 @@ class LeftPanel(QFrame):
             except Exception:
                 dual_btn.setChecked(False)
         dual_btn.setObjectName("ghostButton")
+        # HTML読み込み完了まで非表示
+        dual_btn.setVisible(False)
         dual_btn.toggled.connect(self.toggle_dual_tree.emit)
         if "set_dual_tree_mode" in self.callbacks:
             dual_btn.toggled.connect(self.callbacks["set_dual_tree_mode"])
@@ -1132,8 +1134,9 @@ class LeftPanel(QFrame):
         tree_layout.setSpacing(8)
         tree_layout.addWidget(self._create_tree_header())
         tree_layout.addWidget(tree_controls)
-        tree_layout.addWidget(tree_scroll)
-        tree_layout.addWidget(dual_tree_splitter)
+        # ツリー領域が縦方向に最大まで広がるようにする（余白削減）
+        tree_layout.addWidget(tree_scroll, 1)
+        tree_layout.addWidget(dual_tree_splitter, 1)
 
         # 下側（ブックマーク表示）コンテナ：ヘッダー + スクロール
         bookmarks_container = QWidget()
@@ -1147,8 +1150,10 @@ class LeftPanel(QFrame):
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(tree_container)
         left_splitter.addWidget(bookmarks_container)
-        left_splitter.setStretchFactor(0, 1)
-        left_splitter.setStretchFactor(1, 1)
+        # ツリー(0)を優先して縮みすぎを防ぐ
+        left_splitter.setStretchFactor(0, 3)
+        left_splitter.setStretchFactor(1, 2)
+        left_splitter.setCollapsible(0, False)
         left_splitter.setSizes([350, 350])
         self.left_splitter = left_splitter
 
@@ -1314,7 +1319,7 @@ class RightPanel(QFrame):
         layout.addWidget(scroll, stretch=1)
     
     def _initialize_sections(self) -> None:
-        """Initialize all action sections with callbacks."""
+        """アクションセクションの初期化（不要な重複ボタンを削除）"""
         file_callbacks = self.callbacks.get("file", {})
         if file_callbacks:
             self.add_action_section(
@@ -1331,7 +1336,7 @@ class RightPanel(QFrame):
             filtered_edit = edit_callbacks
             # ControllerMainWindowからは List[tuple] が来る。dict形式にも一応対応する。
             if isinstance(edit_callbacks, dict):
-                filtered_edit = {k: v for k, v in edit_callbacks.items() if k not in excluded}
+                filtered_edit = [(k, v) for k, v in edit_callbacks.items() if k not in excluded]
             elif isinstance(edit_callbacks, list):
                 filtered_edit = [t for t in edit_callbacks if t and t[0] not in excluded]
             if filtered_edit:

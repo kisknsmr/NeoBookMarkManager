@@ -645,6 +645,12 @@ class MainWindow(QMainWindow):
         # HTML読み込み完了後に拡大縮小ボタンを表示
         if hasattr(self, 'left_panel') and hasattr(self.left_panel, 'tree_controls'):
             self.left_panel.tree_controls.setVisible(True)
+        # HTML読み込み完了後に2画面モードボタンを表示
+        if hasattr(self, "left_panel") and hasattr(self.left_panel, "dual_tree_button"):
+            try:
+                self.left_panel.dual_tree_button.setVisible(True)
+            except Exception:
+                pass
 
         # Remember last file
         self.config_manager.set("Session", "last_bookmarks_file", file_path)
@@ -1317,6 +1323,11 @@ class MainWindow(QMainWindow):
             self.dual_tree_action.setChecked(self.dual_tree_mode)
         if hasattr(self, "dual_tree_button"):
             self.dual_tree_button.setChecked(self.dual_tree_mode)
+            # テキストを「1画面 / 2画面」でトグル（現在が2画面なら次は1画面に戻す意図）
+            try:
+                self.dual_tree_button.setText("1画面" if self.dual_tree_mode else "2画面")
+            except Exception:
+                pass
         self.refresh_tree(select_node=self.current_folder or self.root_node)
 
     def _apply_sort(self, sort_by: str) -> None:
