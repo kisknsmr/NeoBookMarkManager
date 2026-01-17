@@ -1,18 +1,7 @@
 /* ============================================================
    NeoBookMarkManager - Material Design 3 Dark Theme QSS
    ============================================================
-   ダークテーマの統一的なスタイル定義
-*/
-
-/* ============ Color Variables (for reference) ============
-   Primary:        #BB86FC (Material Purple 200)
-   Secondary:      #03DAC6 (Material Teal 200)
-   Background:     #121212 (Surface 0)
-   Surface:        #1D1D1D (Surface 1)
-   Error:          #CF6679 (Material Pink 200)
-   Text Primary:   #FFFFFF
-   Text Secondary: #E0E0E0
-   Border:         #2C2C2C
+   ボタンの高さ方針: 22px 統一（コンパクト設計）
 */
 
 /* ============ Global Styles ============ */
@@ -39,24 +28,24 @@ QFrame#topbar {
 
 QLabel#chip {
     color: #B3B3B3;
-    font-size: 12px;
-    padding: 4px 10px;
+    font-size: 11px;
+    padding: 2px 8px;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
+    border-radius: 10px;
     background-color: rgba(255, 255, 255, 0.02);
 }
 
-/* ============ Buttons (Global Policy: Height 22px) ============ */
+/* ============ Buttons (Policy: Height 22px) ============ */
 QPushButton {
     background-color: #BB86FC;
-    color: #1b1026; /* 背景が明るい紫なので文字は暗い色にして視認性を確保 */
+    color: #1b1026;
     border: none;
     border-radius: 4px;
-    padding: 0px 8px;   /* 上下パディングを0にし、文字を中央に配置 */
+    padding: 0px 8px;
     min-height: 22px;
-    max-height: 22px;   /* 高さを22pxに完全固定 */
+    max-height: 22px;
     font-weight: bold;
-    font-size: 12px;    /* 22pxの高さに収まる適切なサイズ */
+    font-size: 11px;
 }
 
 QPushButton:hover {
@@ -67,53 +56,39 @@ QPushButton:pressed {
     background-color: #A66FEB;
 }
 
+QPushButton:disabled {
+    background-color: #333333;
+    color: #757575;
+}
+
 /* ============ Button Variants ============ */
 
-/* 2画面モード切り替えや表示モードなどの補助的なボタン */
-QPushButton#ghostButton {
-    background-color: transparent;
-    color: #E0E0E0;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    min-height: 22px;
-    max-height: 22px;
-    padding: 0 10px;
-    font-weight: 600;
-    font-size: 11px;
-}
-
-QPushButton#ghostButton:hover {
-    background-color: rgba(255, 255, 255, 0.05);
-}
-
-/* 枠線のみのボタン */
-QPushButton#outlineButton {
+/* 2画面モード、List/Card切替、展開/縮小用 */
+QPushButton#ghostButton,
+QPushButton#outlineButton,
+QPushButton#tonalButton {
     background-color: transparent;
     color: #BB86FC;
     border: 1px solid rgba(187, 134, 252, 0.4);
     min-height: 22px;
     max-height: 22px;
-    padding: 0 10px;
+    padding: 0 8px;
+    font-size: 11px;
 }
 
-/* 選択状態などを示すトーンボタン */
 QPushButton#tonalButton {
     background-color: rgba(187, 134, 252, 0.15);
-    color: #FFFFFF;
-    border: 1px solid rgba(187, 134, 252, 0.3);
-    min-height: 22px;
-    max-height: 22px;
 }
 
-/* ダイアログのOKボタンなど、最も重要なボタン */
+/* ダイアログや重要な決定ボタン */
 QPushButton#primaryButton {
     background-color: #BB86FC;
     color: #1b1026;
-    border: 1px solid rgba(187, 134, 252, 0.6);
     min-height: 22px;
     max-height: 22px;
 }
 
-/* キャンセルボタンなどのサブボタン */
+/* キャンセルなどの補助ボタン */
 QPushButton#secondaryButton {
     background-color: transparent;
     color: #BB86FC;
@@ -122,11 +97,10 @@ QPushButton#secondaryButton {
     max-height: 22px;
 }
 
-/* リスト内の小さな削除やクリアボタン */
+/* リスト内や検索バーのクリアボタン */
 QPushButton#textButton {
     background-color: transparent;
     color: #BB86FC;
-    border: none;
     min-height: 20px;
     max-height: 20px;
     padding: 0 4px;
@@ -136,40 +110,28 @@ QPushButton#textButton:hover {
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* 無効化状態 */
-QPushButton:disabled {
-    background-color: #333333;
-    color: #757575;
-}
-
 /* ============ Action Buttons (Right Panel) ============ */
-/* 右側のメニューに並ぶボタン群 */
+/* セクション内に並ぶ3列グリッド用のボタン */
 QPushButton#actionButton {
     background-color: rgba(255, 255, 255, 0.03);
     color: #E0E0E0;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 4px;
-    padding: 0 4px;
     min-height: 22px;
     max-height: 22px;
-    font-weight: 500;
     font-size: 11px;
 }
 
 QPushButton#actionButton:hover {
     background-color: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.2);
 }
 
-/* 右側の「削除」ボタン */
 QPushButton#dangerButton {
-    background-color: rgba(239, 106, 122, 0.2);
+    background-color: rgba(239, 106, 122, 0.15);
     color: #EF6A7A;
     border: 1px solid rgba(239, 106, 122, 0.4);
-    border-radius: 4px;
     min-height: 22px;
     max-height: 22px;
-    font-weight: bold;
     font-size: 11px;
 }
 
@@ -185,8 +147,8 @@ QPlainTextEdit {
     color: #FFFFFF;
     border: 1px solid #2C2C2C;
     border-radius: 4px;
-    padding: 6px 10px;
-    min-height: 32px;
+    padding: 2px 8px;
+    min-height: 24px;
     selection-background-color: #BB86FC;
     selection-color: #FFFFFF;
 }
@@ -195,7 +157,7 @@ QLineEdit:focus,
 QTextEdit:focus,
 QPlainTextEdit:focus {
     border: 2px solid #BB86FC;
-    padding: 5px 9px;
+    padding: 1px 7px;
     background-color: #1D1D1D;
 }
 
@@ -203,7 +165,7 @@ QLineEdit::placeholder {
     color: #9E9E9E;
 }
 
-/* ============ Frames & Panels ============ */
+/* ============ Frames & Action Sections ============ */
 QFrame {
     background-color: #1D1D1D;
     border-radius: 4px;
@@ -228,30 +190,24 @@ QFrame#sidebarSection {
     padding: 8px 0px;
 }
 
-/* Action Section (right panel) */
 QFrame#actionSection {
     background-color: #1E1E1E;
     border: 1px solid #2C2C2C;
-    border-radius: 10px;
-    padding: 8px; /* 12pxから少し詰めるとよりコンパクトになります */
-    
-    /* 高さを固定する指定（heightなど）は絶対に書かない */
-    min-height: 10px; /* 最小値を極小にすることで中身に合わせやすくします */
+    border-radius: 8px;
+    padding: 8px;
+    /* 高さを固定せず、中身のボタン(22px)の数に合わせて可変にする */
 }
 
-/* タイトルなどの高さも「固定」ではなく「文字サイズ」に任せる */
 QLabel#sectionTitle {
     color: #B3B3B3;
-    font-weight: 700;
-    font-size: 11px; /* 少し下げてゆとりを持たせる */
-    letter-spacing: 0.8px;
-    min-height: 16px;
+    font-weight: bold;
+    font-size: 11px;
+    margin-bottom: 2px;
 }
 
 QLabel#sectionNote {
     color: #808080;
-    font-size: 12px;
-    font-weight: normal;
+    font-size: 10px;
 }
 
 /* ============ Details Panel ============ */
@@ -262,12 +218,28 @@ QFrame#detailsSection {
     padding: 12px;
 }
 
+QFrame#detailPanel {
+    background-color: #1D1D1D;
+    border: 1px solid #2C2C2C;
+}
+
 QLabel#detailLabel {
     color: #B3B3B3;
     font-weight: 650;
     font-size: 12px;
     margin-top: 8px;
     margin-bottom: 4px;
+}
+
+QLabel#sectionLabel {
+    color: #BB86FC;
+    font-weight: bold;
+    font-size: 11px;
+}
+
+QLabel#valueLabel {
+    color: #FFFFFF;
+    font-size: 12px;
 }
 
 QLineEdit#textbox {
@@ -326,13 +298,12 @@ QScrollArea {
 /* ============ Scroll Bars ============ */
 QScrollBar:vertical {
     background-color: #1D1D1D;
-    width: 12px;
-    border-radius: 6px;
+    width: 8px;
 }
 
 QScrollBar::handle:vertical {
-    background-color: #282828;
-    border-radius: 6px;
+    background-color: #333333;
+    border-radius: 4px;
     min-height: 20px;
 }
 
@@ -342,13 +313,12 @@ QScrollBar::handle:vertical:hover {
 
 QScrollBar:horizontal {
     background-color: #1D1D1D;
-    height: 12px;
-    border-radius: 6px;
+    height: 8px;
 }
 
 QScrollBar::handle:horizontal {
-    background-color: #282828;
-    border-radius: 6px;
+    background-color: #333333;
+    border-radius: 4px;
     min-width: 20px;
 }
 
@@ -409,12 +379,42 @@ QListView::item:hover {
     background-color: #FFFFFF0D;
 }
 
+/* ブランチアイコンを非表示（テキスト内のアイコンを使用） */
 QTreeView::branch:open {
-    image: url(none);
+    image: none;
 }
 
 QTreeView::branch:closed {
-    image: url(none);
+    image: none;
+}
+
+/* フォルダツリーの展開/縮小アイコンのスタイル */
+QTreeWidget#folderTree::item {
+    padding: 2px 0px;
+    font-size: 13px;
+}
+
+/* ブランチアイコンのスタイル（Unicode文字を使用） */
+QTreeView::branch:has-siblings:!adjoins-item {
+    border-image: none;
+}
+
+QTreeView::branch:has-siblings:adjoins-item {
+    border-image: none;
+}
+
+QTreeView::branch:!has-children:!has-siblings:adjoins-item {
+    border-image: none;
+}
+
+/* 展開状態のアイコン（▶） */
+QTreeView::branch:closed:has-children {
+    image: none;
+}
+
+/* 縮小状態のアイコン（▼） */
+QTreeView::branch:open:has-children {
+    image: none;
 }
 
 /* ============ Header View ============ */
@@ -604,7 +604,7 @@ QSplitter::handle:hover {
 
 /* ============ Bookmark Card ============ */
 QFrame#bookmarkCard {
-    background-color: #1E1E1E; /* Surface 2 */
+    background-color: #1E1E1E;
     border: 1px solid #2C2C2C;
     border-radius: 12px;
 }
@@ -653,9 +653,11 @@ QFrame#bookmarkRow[selected="true"] {
 QLabel#rowTitle {
     color: #FFFFFF;
     font-size: 14px;
+    text-align: left;
 }
 
 QLabel#rowUrl {
     color: #808080;
     font-size: 12px;
+    text-align: left;
 }

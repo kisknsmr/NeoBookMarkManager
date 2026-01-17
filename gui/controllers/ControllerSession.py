@@ -34,6 +34,10 @@ class SessionController:
         last_file = self.config.get("Session", "last_bookmarks_file", "")
         if last_file and os.path.exists(last_file):
             QTimer.singleShot(100, lambda: self.auto_load_bookmarks(last_file))
+        else:
+            # HTMLファイルが存在しない場合でも拡大縮小ボタンを表示
+            if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
+                self.window.left_panel.tree_controls.setVisible(True)
 
     def auto_load_bookmarks(self, file_path: str) -> None:
         try:
@@ -54,8 +58,15 @@ class SessionController:
             self.window.refresh_tree(select_node=root)
             self.window.refresh_list()
             self.window.refresh_counts()
+            
+            # HTML読み込み完了後に拡大縮小ボタンを表示
+            if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
+                self.window.left_panel.tree_controls.setVisible(True)
 
             self.window.statusBar().showMessage(f"Loaded: {os.path.basename(file_path)}", 5000)
             self.window.logger.info(f"Auto-loaded bookmarks: {file_path}")
         except Exception as exc:
             self.window.logger.error(f"Failed to auto-load bookmarks: {exc}")
+            # エラーが発生した場合でも拡大縮小ボタンを表示
+            if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
+                self.window.left_panel.tree_controls.setVisible(True)

@@ -6,6 +6,7 @@ NeoBookMarkManager - GUI Resources
 from pathlib import Path
 from typing import Final
 from PySide6.QtGui import QFont
+from core.FontManager import FontManager
 
 # ============ ファイルパス ============
 PROJECT_ROOT: Final[Path] = Path(__file__).parent.parent
@@ -76,10 +77,8 @@ class Typography:
     
     @staticmethod
     def get_title_font():
-        """タイトル用QFontを取得"""
-        font = QFont(Typography.FONT_FAMILY, Typography.SIZE_TITLE)
-        font.setWeight(QFont.Weight.Bold)
-        return font
+        """タイトル用QFontを取得（FontManager使用）"""
+        return FontManager.get_heading_font(Typography.SIZE_TITLE)
 
 
 # ============ Spacing ============
@@ -233,7 +232,7 @@ class ColorTokens:
 # ============ Utility Functions ============
 def create_qfont(size: int = 12, bold: bool = False) -> QFont:
     """
-    QFont を作成するヘルパー関数
+    QFont を作成するヘルパー関数（FontManager使用）
     
     Args:
         size: フォントサイズ（デフォルト: 12）
@@ -242,10 +241,10 @@ def create_qfont(size: int = 12, bold: bool = False) -> QFont:
     Returns:
         QFont オブジェクト
     """
-    font = QFont(Typography.FONT_FAMILY, size)
     if bold:
-        font.setWeight(QFont.Weight.Bold)
-    return font
+        return FontManager.get_bold_font(size)
+    else:
+        return FontManager.get_body_font(size)
 
 
 # ============ Backward-compatible aliases ============

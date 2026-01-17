@@ -8,6 +8,7 @@ MainWindow はダイアログ取得と UI 更新のみに専念。
 from typing import Optional, List, Set, Tuple
 from datetime import datetime
 import time
+from urllib.parse import urlparse
 
 from core.ModelBookmark import Node
 from core.UtilLogger import logger
@@ -206,13 +207,27 @@ class BookmarkService:
         
         Args:
             parent: Parent node
-            key: "title" | "url" | "type"
+            key: "title" | "url" | "domain" | "type"
             reverse: Reverse order?
         """
         if key == "title":
             parent.children.sort(key=lambda n: n.title.lower(), reverse=reverse)
         elif key == "url":
             parent.children.sort(key=lambda n: (n.url or "").lower(), reverse=reverse)
+        elif key == "domain":
+            def domain_key(n: Node) -> tuple:
+                if n.type == "folder":
+                    return (0, (n.title or "").lower())
+                raw = (n.url or "")
+                try:
+                    netloc = (urlparse(raw).netloc or "").lower()
+                except Exception:
+                    netloc = ""
+                if netloc.startswith("www."):
+                    netloc = netloc[4:]
+                return (1, netloc, (n.title or "").lower())
+
+            parent.children.sort(key=domain_key, reverse=reverse)
         elif key == "type":
             # Folders first, then bookmarks
             parent.children.sort(key=lambda n: (n.type != "folder", n.title.lower()), reverse=reverse)

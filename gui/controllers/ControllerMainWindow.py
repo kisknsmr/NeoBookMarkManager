@@ -394,15 +394,26 @@ class MainWindow(QMainWindow):
         self.topbar.search_text_changed.connect(self.search_controller.on_text_changed)
         self.topbar.search_triggered.connect(self.search_controller.on_triggered)
         self.topbar.toggle_dual_tree.connect(self._set_dual_tree_mode)
-        self.topbar.expand_all.connect(self.cmd_expand_all)
-        self.topbar.collapse_all.connect(self.cmd_collapse_all)
 
         # Backward compatibility: allow existing code to update chip/button
         self.mode_chip = self.topbar.mode_chip
+        # dual_tree_buttonはLeftPanel側のツリーヘッダーに移設するため、あとで差し替える
         self.dual_tree_button = self.topbar.dual_tree_button
+        try:
+            self.topbar.dual_tree_button.setVisible(False)
+        except Exception:
+            pass
 
         self.left_panel = self._create_left_panel()
         self.right_panel = self._create_right_panel()
+
+        # 2画面モードボタンはツリーヘッダー側を正とする（メニュー操作時の同期対象もこちら）
+        if hasattr(self.left_panel, "dual_tree_button") and self.left_panel.dual_tree_button is not None:
+            self.dual_tree_button = self.left_panel.dual_tree_button
+            try:
+                self.dual_tree_button.setChecked(bool(self.dual_tree_mode))
+            except Exception:
+                pass
 
         self._install_main_layout()
 
@@ -418,6 +429,8 @@ class MainWindow(QMainWindow):
             "on_tree_node_moved": self.ui_events.on_tree_node_moved,
             "set_view_mode_list": lambda: self.cmd_set_view_mode("list"),
             "set_view_mode_card": lambda: self.cmd_set_view_mode("card"),
+            "set_dual_tree_mode": self._set_dual_tree_mode,
+            "get_dual_tree_mode": lambda: self.dual_tree_mode,
         }
         
         left_panel = LeftPanel(callbacks=callbacks)
@@ -440,6 +453,12 @@ class MainWindow(QMainWindow):
         self.bookmark_list_view.open_requested.connect(self._open_url)
         self.bookmark_list_view.delete_requested.connect(self._delete_node)
         self.bookmark_list_view.preview_fetch_requested.connect(self._enqueue_preview_fetch)
+        
+        # Connect expand/collapse signals
+        left_panel.expand_all.connect(self.cmd_expand_all)
+        left_panel.collapse_all.connect(self.cmd_collapse_all)
+        left_panel.expand_current.connect(self.cmd_expand_current)
+        left_panel.collapse_current.connect(self.cmd_collapse_current)
         
         return left_panel
 
@@ -547,6 +566,8 @@ class MainWindow(QMainWindow):
             return
         self._apply_dual_tree_visibility()
         self.tree_ui.refresh(select_node=select_node)
+        # ツリー再構築後に展開状態を復元
+        self._restore_tree_expansion_state()
 
     def refresh_list(self) -> None:
         """Update only the bookmark list display."""
@@ -621,6 +642,10 @@ class MainWindow(QMainWindow):
         self.refresh_tree(select_node=root)
         self.refresh_list()
         self.refresh_counts()
+        
+        # HTML読み込み完了後に拡大縮小ボタンを表示
+        if hasattr(self, 'left_panel') and hasattr(self.left_panel, 'tree_controls'):
+            self.left_panel.tree_controls.setVisible(True)
 
         # Remember last file
         self.config_manager.set("Session", "last_bookmarks_file", file_path)
@@ -766,11 +791,14 @@ class MainWindow(QMainWindow):
         if target_folder.type != "folder":
             QMessageBox.warning(self, "Warning", "Target must be a folder.")
             return
-        
-        parent = self.selected_node.parent
-        if parent:
-            parent.remove_child(self.selected_node)
-        target_folder.append(self.selected_node)
+
+        # Serviceに集約（木構造の不変条件をService側で担保）
+        try:
+            self.bookmark_service.move(self.selected_node, target_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "Warning", f"Move failed: {exc}")
+            return
+
         self.current_folder = target_folder
         
         # Move doesn't change search index (title/url unchanged), just refresh tree and list
@@ -782,17 +810,15 @@ class MainWindow(QMainWindow):
         """Move selected item up in siblings."""
         if not self.selected_node or not self.selected_node.parent:
             return
-        
-        parent = self.selected_node.parent
-        siblings = parent.children
-        idx = siblings.index(self.selected_node)
-        if idx <= 0:
+
+        try:
+            self.bookmark_service.move_up(self.selected_node)
+        except Exception:
             return
-        
-        parent.move_child(self.selected_node, idx - 1)
-        
-        # Move doesn't change search, just refresh tree
+
+        # 並び替えはリスト表示にも影響するため両方更新
         self.refresh_tree(select_node=self.selected_node)
+        self.refresh_list()
 
     def cmd_delete(self) -> None:
         """Delete selected bookmark/folder."""
@@ -869,12 +895,214 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Merged {removed} duplicate folders", 3000)
 
     def cmd_expand_all(self) -> None:
-        """Expand all folders (placeholder)."""
-        QMessageBox.information(self, "Expand", "Expand all folders functionality.")
+        """Expand all folders in the tree view(s) and save the state."""
+        trees_to_update = []
+        if self.app_state.dual_tree_mode:
+            if hasattr(self, 'folder_tree_left') and self.folder_tree_left:
+                trees_to_update.append(self.folder_tree_left)
+            if hasattr(self, 'folder_tree_right') and self.folder_tree_right:
+                trees_to_update.append(self.folder_tree_right)
+        else:
+            if hasattr(self, 'folder_tree') and self.folder_tree:
+                trees_to_update.append(self.folder_tree)
+        
+        # すべてのツリーを展開
+        for tree in trees_to_update:
+            tree.expandAll()
+        
+        # 展開状態を保存（最初のツリーの状態を使用）
+        if trees_to_update:
+            self._save_tree_expansion_state(trees_to_update[0])
 
     def cmd_collapse_all(self) -> None:
-        """Collapse all folders (placeholder)."""
-        QMessageBox.information(self, "Collapse", "Collapse all folders functionality.")
+        """Collapse all folders in the tree view(s) and save the state."""
+        trees_to_update = []
+        if self.app_state.dual_tree_mode:
+            if hasattr(self, 'folder_tree_left') and self.folder_tree_left:
+                trees_to_update.append(self.folder_tree_left)
+            if hasattr(self, 'folder_tree_right') and self.folder_tree_right:
+                trees_to_update.append(self.folder_tree_right)
+        else:
+            if hasattr(self, 'folder_tree') and self.folder_tree:
+                trees_to_update.append(self.folder_tree)
+        
+        # すべてのツリーを縮小
+        for tree in trees_to_update:
+            tree.collapseAll()
+        
+        # 展開状態を保存（最初のツリーの状態を使用）
+        if trees_to_update:
+            self._save_tree_expansion_state(trees_to_update[0])
+
+    def cmd_expand_current(self) -> None:
+        """Expand the currently selected folder in the tree view(s)."""
+        current_folder = self.current_folder
+        if not current_folder or current_folder.type != "folder":
+            return
+        
+        # 現在のツリーを取得（2画面モードの場合は適切なツリーを選択）
+        trees_to_update = []
+        if self.app_state.dual_tree_mode:
+            # 2画面モードの場合、左右両方のツリーを更新
+            if hasattr(self, 'folder_tree_left') and self.folder_tree_left:
+                trees_to_update.append(self.folder_tree_left)
+            if hasattr(self, 'folder_tree_right') and self.folder_tree_right:
+                trees_to_update.append(self.folder_tree_right)
+        else:
+            # 通常モードの場合、単一のツリーを更新
+            if hasattr(self, 'folder_tree') and self.folder_tree:
+                trees_to_update.append(self.folder_tree)
+        
+        # 各ツリーで現在のフォルダに対応するアイテムを展開
+        for tree in trees_to_update:
+            item = self._find_tree_item_by_node(tree, current_folder)
+            if item:
+                tree.expandItem(item)
+
+    def cmd_collapse_current(self) -> None:
+        """Collapse the currently selected folder in the tree view(s)."""
+        current_folder = self.current_folder
+        if not current_folder or current_folder.type != "folder":
+            return
+        
+        # 現在のツリーを取得（2画面モードの場合は適切なツリーを選択）
+        trees_to_update = []
+        if self.app_state.dual_tree_mode:
+            # 2画面モードの場合、左右両方のツリーを更新
+            if hasattr(self, 'folder_tree_left') and self.folder_tree_left:
+                trees_to_update.append(self.folder_tree_left)
+            if hasattr(self, 'folder_tree_right') and self.folder_tree_right:
+                trees_to_update.append(self.folder_tree_right)
+        else:
+            # 通常モードの場合、単一のツリーを更新
+            if hasattr(self, 'folder_tree') and self.folder_tree:
+                trees_to_update.append(self.folder_tree)
+        
+        # 各ツリーで現在のフォルダに対応するアイテムを縮小
+        for tree in trees_to_update:
+            item = self._find_tree_item_by_node(tree, current_folder)
+            if item:
+                tree.collapseItem(item)
+
+    def _find_tree_item_by_node(self, tree: FolderTree, node: Node) -> Optional[Any]:
+        """Find QTreeWidgetItem by Node in the tree."""
+        from PySide6.QtWidgets import QTreeWidgetItem
+        
+        def walk(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+            item_node = item.data(0, Qt.ItemDataRole.UserRole)
+            if item_node is node:
+                return item
+            for i in range(item.childCount()):
+                found = walk(item.child(i))
+                if found:
+                    return found
+            return None
+        
+        for i in range(tree.topLevelItemCount()):
+            found = walk(tree.topLevelItem(i))
+            if found:
+                return found
+        return None
+
+    def _get_folder_path(self, node: Node) -> str:
+        """Get folder path from root to node (e.g., 'Root/Folder1/SubFolder')."""
+        path_parts = []
+        current = node
+        while current and current.parent:
+            path_parts.insert(0, current.title or "Untitled")
+            current = current.parent
+        # ルートは含めない
+        return "/".join(path_parts) if path_parts else ""
+
+    def _save_tree_expansion_state(self, tree: FolderTree) -> None:
+        """Save tree expansion state to config.ini."""
+        from PySide6.QtWidgets import QTreeWidgetItem
+        import json
+        
+        expanded_paths = []
+        
+        def collect_expanded(item: QTreeWidgetItem):
+            node = item.data(0, Qt.ItemDataRole.UserRole)
+            if node and node.type == "folder" and item.isExpanded():
+                path = self._get_folder_path(node)
+                if path:  # ルートは保存しない
+                    expanded_paths.append(path)
+            for i in range(item.childCount()):
+                collect_expanded(item.child(i))
+        
+        for i in range(tree.topLevelItemCount()):
+            collect_expanded(tree.topLevelItem(i))
+        
+        # config.iniに保存
+        expanded_json = json.dumps(expanded_paths, ensure_ascii=False)
+        self.config_manager.set("Session", "tree_expanded_paths", expanded_json)
+        self.logger.debug(f"Saved tree expansion state: {len(expanded_paths)} folders")
+
+    def _restore_tree_expansion_state(self) -> None:
+        """Restore tree expansion state from config.ini."""
+        import json
+        
+        # 展開状態を読み込む
+        expanded_json = self.config_manager.get("Session", "tree_expanded_paths", "")
+        if not expanded_json:
+            return
+        
+        try:
+            expanded_paths = json.loads(expanded_json)
+        except (json.JSONDecodeError, TypeError):
+            self.logger.warning("Failed to parse tree expansion state")
+            return
+        
+        if not expanded_paths:
+            return
+        
+        # 復元対象のツリーを取得
+        trees_to_restore = []
+        if self.app_state.dual_tree_mode:
+            if hasattr(self, 'folder_tree_left') and self.folder_tree_left:
+                trees_to_restore.append(self.folder_tree_left)
+            if hasattr(self, 'folder_tree_right') and self.folder_tree_right:
+                trees_to_restore.append(self.folder_tree_right)
+        else:
+            if hasattr(self, 'folder_tree') and self.folder_tree:
+                trees_to_restore.append(self.folder_tree)
+        
+        # 各ツリーで展開状態を復元
+        for tree in trees_to_restore:
+            self._apply_expansion_state_to_tree(tree, expanded_paths)
+
+    def _apply_expansion_state_to_tree(self, tree: FolderTree, expanded_paths: List[str]) -> None:
+        """Apply expansion state to a tree widget."""
+        from PySide6.QtWidgets import QTreeWidgetItem
+        
+        # パスからNodeへのマッピングを作成
+        path_to_node = {}
+        def build_path_map(node: Node, current_path: str = ""):
+            if node.type == "folder":
+                if current_path:
+                    path_to_node[current_path] = node
+                for child in node.children:
+                    if child.type == "folder":
+                        child_path = f"{current_path}/{child.title or 'Untitled'}" if current_path else (child.title or "Untitled")
+                        build_path_map(child, child_path)
+        
+        build_path_map(self.root_node)
+        
+        # 展開すべきパスのセットを作成
+        expanded_set = set(expanded_paths)
+        
+        # ツリー内のアイテムを走査して展開
+        def expand_items(item: QTreeWidgetItem):
+            node = item.data(0, Qt.ItemDataRole.UserRole)
+            if node and node.type == "folder":
+                path = self._get_folder_path(node)
+                if path in expanded_set:
+                    tree.expandItem(item)
+            for i in range(item.childCount()):
+                expand_items(item.child(i))
+        
+        for i in range(tree.topLevelItemCount()):
+            expand_items(tree.topLevelItem(i))
 
     # ----------------------------- Classification Commands ------------------------------
     def cmd_show_classify_preview(self) -> None:
@@ -1101,7 +1329,7 @@ class MainWindow(QMainWindow):
             self.bookmark_service.sort_children(self.current_folder, "title")
             self.statusBar().showMessage("Sorted by title", 2000)
         elif sort_by == "domain":
-            self.bookmark_service.sort_children(self.current_folder, "url")
+            self.bookmark_service.sort_children(self.current_folder, "domain")
             self.statusBar().showMessage("Sorted by domain", 2000)
         else:
             return

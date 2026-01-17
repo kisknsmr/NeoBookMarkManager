@@ -167,6 +167,23 @@ class TestBookmarkService:
         titles = [child.title for child in parent.children]
         assert titles == ["Apple", "Mango", "Zebra"]
 
+    def test_sort_by_domain(self, bookmark_service):
+        """Test sorting children by domain (folders first)."""
+        parent = Node("folder", "Parent")
+        parent.append(Node("bookmark", "B", url="https://b.example.com/path"))
+        parent.append(Node("bookmark", "A", url="https://www.a.example.com/"))
+        parent.append(Node("folder", "Z-Folder"))
+        parent.append(Node("bookmark", "NoUrl", url=""))
+
+        bookmark_service.sort_children(parent, key="domain")
+
+        # folders first, then by domain
+        assert parent.children[0].type == "folder"
+        assert parent.children[1].type == "bookmark"
+        # www stripped => a.example.com should come before b.example.com
+        assert parent.children[1].url.startswith("https://www.a.example.com")
+        assert parent.children[2].url.startswith("https://b.example.com")
+
     def test_delete_duplicates(self, bookmark_service):
         """Test deleting duplicate bookmarks."""
         parent = Node("folder", "Parent")
