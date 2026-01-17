@@ -14,7 +14,20 @@ BOOKMARK_HTML_FOOTER = """</DL><p>
 
 
 class Node:
-    __slots__ = ("type", "title", "url", "add_date", "last_modified", "icon", "description", "children", "parent")
+    # NOTE: `qt_pixmap_cache` is used by the GUI layer to cache decoded favicons per node.
+    # It intentionally lives here to allow "store QPixmap on Node" without __dict__ (Node uses __slots__).
+    __slots__ = (
+        "type",
+        "title",
+        "url",
+        "add_date",
+        "last_modified",
+        "icon",
+        "description",
+        "children",
+        "parent",
+        "qt_pixmap_cache",
+    )
 
     def __init__(self, type_, title="", url="", add_date="", last_modified="", icon="", description=""):
         self.type = type_
@@ -26,6 +39,7 @@ class Node:
         self.description = description
         self.children = []
         self.parent = None
+        self.qt_pixmap_cache = {}
 
     def append(self, child):
         child.parent = self

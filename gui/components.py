@@ -46,41 +46,70 @@ from gui.UtilGuiResources import Theme, Typography, Spacing, ColorTokens, create
 _favicon_cache: Dict[str, Optional[QPixmap]] = {}
 
 
+def _pixmap_from_data_image(icon_data: str, size: int) -> Optional[QPixmap]:
+    """
+    data:image/*;base64,... から QPixmap を生成。
+    PILを経由せずQtだけでデコード/リサイズする（高速化）。
+    """
+    if not icon_data or not icon_data.startswith("data:image"):
+        return None
+
+    try:
+        import base64
+
+        _, encoded = icon_data.split(",", 1)
+        raw = base64.b64decode(encoded)
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(raw):
+            return None
+        if size > 0:
+            pixmap = pixmap.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        return pixmap
+    except Exception:
+        return None
+
+
 def get_favicon_image(icon_data: str, size: int = 16) -> Optional[QPixmap]:
-    """ファビコンデータから QPixmap を取得（キャッシュ付き）"""
+    """（互換用）ファビコンデータから QPixmap を取得（キャッシュ付き）"""
     if not icon_data:
         return None
-    
-    try:
-        from PIL import Image
-        from io import BytesIO
-        import base64
-        
-        cache_key = f"{hash(icon_data)}_{size}"
-        if cache_key in _favicon_cache:
-            return _favicon_cache[cache_key]
-        
-        if icon_data.startswith('data:image'):
-            header, encoded = icon_data.split(',', 1)
-            img_data = base64.b64decode(encoded)
-            img = Image.open(BytesIO(img_data))
-            img = img.resize((size, size), Image.Resampling.LANCZOS)
-            
-            # PIL Image から QPixmap に変換
-            import io
-            with io.BytesIO() as buf:
-                img.save(buf, format='PNG')
-                buf.seek(0)
-                pixmap = QPixmap()
-                pixmap.loadFromData(buf.read())
-            
-            _favicon_cache[cache_key] = pixmap
-            return pixmap
-    except Exception:
-        pass
-    
-    _favicon_cache[cache_key] = None
-    return None
+
+    cache_key = f"{hash(icon_data)}_{size}"
+    if cache_key in _favicon_cache:
+        return _favicon_cache[cache_key]
+
+    pixmap = _pixmap_from_data_image(icon_data, size=size)
+    _favicon_cache[cache_key] = pixmap
+    return pixmap
+
+
+def get_node_favicon_pixmap(node: Optional[Node], size: int = 16) -> Optional[QPixmap]:
+    """
+    Nodeに紐づくfaviconを取得（Node自体にQPixmapキャッシュを持たせる最速パス）。
+    """
+    if not node:
+        return None
+    icon_data = getattr(node, "icon", "") or ""
+    if not icon_data:
+        return None
+
+    # Node側キャッシュ（要求どおり「Node自身が持つ」）
+    cache = getattr(node, "qt_pixmap_cache", None)
+    if isinstance(cache, dict):
+        key = (hash(icon_data), int(size))
+        if key in cache:
+            return cache[key]
+        pixmap = _pixmap_from_data_image(icon_data, size=size)
+        cache[key] = pixmap
+        return pixmap
+
+    # フォールバック（古いNode互換）
+    return get_favicon_image(icon_data, size=size)
 
 
 # ==================== Basic Components ====================
@@ -159,8 +188,8 @@ class BookmarkCard(QFrame):
             self._url_label.hide()
             return
 
-        # favicon
-        favicon = get_favicon_image(getattr(node, "icon", ""), 18) if getattr(node, "icon", "") else None
+        # favicon（Node内キャッシュで高速化）
+        favicon = get_node_favicon_pixmap(node, 18)
         if favicon:
             self._icon_label.setPixmap(favicon)
             self._icon_label.setText("")
@@ -293,8 +322,8 @@ class BookmarkRow(QFrame):
             self._url_label.hide()
             return
 
-        # favicon
-        favicon = get_favicon_image(getattr(node, "icon", ""), 16) if getattr(node, "icon", "") else None
+        # favicon（Node内キャッシュで高速化）
+        favicon = get_node_favicon_pixmap(node, 16)
         if favicon:
             self._icon_label.setPixmap(favicon)
             self._icon_label.setText("")
@@ -471,7 +500,7 @@ class FolderTree(QTreeWidget):
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
 
-        pixmap = get_favicon_image(node.icon) if getattr(node, "icon", "") else None
+        pixmap = get_node_favicon_pixmap(node, 16)
         if pixmap:
             item.setIcon(0, QIcon(pixmap))
         elif hasattr(QStyle.StandardPixmap, 'SP_FileIcon'):
@@ -1230,6 +1259,8 @@ class LeftPanel(QFrame):
             except Exception:
                 dual_btn.setChecked(False)
         dual_btn.setObjectName("ghostButton")
+        # 起動直後は非表示（読み込み完了後に表示する）
+        dual_btn.setVisible(False)
         # シグナル/コールバックを両対応（既存Controllerとの接続が楽）
         dual_btn.toggled.connect(self.toggle_dual_tree.emit)
         if "set_dual_tree_mode" in self.callbacks:
@@ -1340,8 +1371,9 @@ class LeftPanel(QFrame):
         tree_layout.setSpacing(8)
         tree_layout.addWidget(self._create_tree_header())
         tree_layout.addWidget(tree_controls)
-        tree_layout.addWidget(tree_scroll)
-        tree_layout.addWidget(dual_tree_splitter)
+        # ツリー本体が垂直方向に最大まで広がるようにストレッチを付与（余白解消）
+        tree_layout.addWidget(tree_scroll, 1)
+        tree_layout.addWidget(dual_tree_splitter, 1)
 
         # 下側（ブックマーク表示）コンテナ：ヘッダー + スクロール
         bookmarks_container = QWidget()
@@ -1355,8 +1387,10 @@ class LeftPanel(QFrame):
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(tree_container)
         left_splitter.addWidget(bookmarks_container)
-        left_splitter.setStretchFactor(0, 1)
-        left_splitter.setStretchFactor(1, 1)
+        # ツリー(0)とブックマーク(1)の比率。ツリーが縮みすぎないよう設定
+        left_splitter.setStretchFactor(0, 3)
+        left_splitter.setStretchFactor(1, 2)
+        left_splitter.setCollapsible(0, False)
         left_splitter.setSizes([350, 350])
         self.left_splitter = left_splitter
 
@@ -1521,7 +1555,11 @@ class RightPanel(QFrame):
         layout.addWidget(scroll, stretch=1)
     
     def _initialize_sections(self) -> None:
-        """Initialize all action sections with callbacks."""
+        """Initialize all action sections with callbacks.
+
+        NOTE: 編集系のうち「名前変更」「URL編集」「移動」はDetailPanel側に集約するため、
+        RightPanelの編集セクションからは除外する。
+        """
         file_callbacks = self.callbacks.get("file", {})
         if file_callbacks:
             self.add_action_section(
@@ -1533,6 +1571,12 @@ class RightPanel(QFrame):
         
         edit_callbacks = self.callbacks.get("edit", {})
         if edit_callbacks:
+            excluded = {"名前変更", "URL編集", "移動"}
+            try:
+                # ControllerMainWindowからは List[tuple] が渡される
+                edit_callbacks = [t for t in edit_callbacks if t and t[0] not in excluded]
+            except Exception:
+                pass
             self.add_action_section(
                 "edit",
                 "✏️ 編集",

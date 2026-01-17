@@ -14,7 +14,7 @@ class SearchController:
         window,
         app_state,
         search_service,
-        debounce_ms: int = 300,
+        debounce_ms: int = 200,
         parent=None,
     ) -> None:
         self.window = window
@@ -55,7 +55,7 @@ class SearchController:
         delay_ms = 80 if not query.strip() else self.debounce_ms
         self.schedule_tree_refresh(delay_ms=delay_ms)
 
-    def schedule_tree_refresh(self, *, delay_ms: int = 300) -> None:
+    def schedule_tree_refresh(self, *, delay_ms: int = 200) -> None:
         self._tree_timer.stop()
         self._tree_timer.start(max(0, int(delay_ms)))
 

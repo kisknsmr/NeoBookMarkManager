@@ -1,4 +1,4 @@
-﻿"""
+"""
 PySide6-based main window for NeoBookMarkManager.
 Material Design 3 layout with splitter-based 3-column structure.
 """
@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
             window=self,
             app_state=self.app_state,
             search_service=self.search_service,
-            debounce_ms=300,
+            debounce_ms=200,
             parent=self,
         )
         self.ui_events = UIEventController(window=self)
@@ -1318,6 +1318,12 @@ class MainWindow(QMainWindow):
             self.dual_tree_action.setChecked(self.dual_tree_mode)
         if hasattr(self, "dual_tree_button"):
             self.dual_tree_button.setChecked(self.dual_tree_mode)
+            # ラベルは「現在の状態」ではなく「次の切り替え先」を表示
+            # 2画面ON中は「1画面」、2画面OFF中は「2画面」
+            try:
+                self.dual_tree_button.setText("1画面" if self.dual_tree_mode else "2画面")
+            except Exception:
+                pass
         self.refresh_tree(select_node=self.current_folder or self.root_node)
 
     def _apply_sort(self, sort_by: str) -> None:

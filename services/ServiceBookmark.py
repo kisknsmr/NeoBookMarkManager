@@ -225,7 +225,9 @@ class BookmarkService:
                     netloc = ""
                 if netloc.startswith("www."):
                     netloc = netloc[4:]
-                return (1, netloc, (n.title or "").lower())
+                # 空URL/解析不能は最後に寄せる（テスト期待＆使い勝手）
+                empty = 1 if not netloc else 0
+                return (1, empty, netloc, (n.title or "").lower())
 
             parent.children.sort(key=domain_key, reverse=reverse)
         elif key == "type":
