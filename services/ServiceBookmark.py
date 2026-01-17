@@ -9,6 +9,8 @@ from typing import Optional, List, Set, Tuple
 from datetime import datetime
 import time
 from urllib.parse import urlparse
+from pathlib import Path
+import datetime
 
 from core.ModelBookmark import Node
 from core.UtilLogger import logger
@@ -103,6 +105,21 @@ class BookmarkService:
     def edit_description(self, node: Node, description: str) -> None:
         """Edit node description."""
         node.description = description.strip()
+
+    def update_node(self, node: Node, *, title: str, url: str) -> bool:
+        """タイトルとURLをまとめて更新する（bookmark編集用）。"""
+        try:
+            if not node:
+                return False
+            if title is not None:
+                node.title = title.strip()
+            if node.type == "bookmark" and url is not None:
+                node.url = url.strip()
+            logger.info(f"Updated node: {node}")
+            return True
+        except Exception as exc:
+            logger.error(f"Update Error: {exc}")
+            return False
 
     # ==================== Move & Reorder ====================
     def move_to_folder(self, node: Node, target_parent: Node, index: Optional[int] = None) -> None:
@@ -201,6 +218,21 @@ class BookmarkService:
         logger.info(f"Deleted {node.type} '{node.title}'")
 
     # ==================== Organize ====================
+    def sort_bookmarks(self, criteria: str, parent_node: Node | None = None) -> bool:
+        """
+        指定されたノード直下の子要素のみをソートする。
+        - parent_node が None の場合は何もしない（Controller側で current_folder を渡す想定）
+        """
+        target = parent_node
+        if not target or not getattr(target, "children", None):
+            return False
+        try:
+            self.sort_children(target, key=criteria)
+            return True
+        except Exception as exc:
+            logger.error(f"Sort Error ({criteria}): {exc}")
+            return False
+
     def sort_children(self, parent: Node, key: str = "title", reverse: bool = False) -> None:
         """
         Sort parent's children.
@@ -211,7 +243,8 @@ class BookmarkService:
             reverse: Reverse order?
         """
         if key == "title":
-            parent.children.sort(key=lambda n: n.title.lower(), reverse=reverse)
+            # Folders first, then by title
+            parent.children.sort(key=lambda n: (n.type != "folder", (n.title or "").lower()), reverse=reverse)
         elif key == "url":
             parent.children.sort(key=lambda n: (n.url or "").lower(), reverse=reverse)
         elif key == "domain":
@@ -263,6 +296,50 @@ class BookmarkService:
 
         logger.info(f"Deleted {len(to_delete)} duplicate bookmarks in {parent.title}")
         return len(to_delete)
+
+    def remove_duplicates(self, parent: Node, *, log_file_path: str | Path | None = None) -> tuple[int, list[str]]:
+        """
+        重複を削除し、(削除件数, 削除した情報のリスト) を返す。
+        - 対象は parent 直下のみ（既存挙動に合わせる）
+        - log_file_path が指定されていれば logs に追記する
+        """
+        if not parent or not getattr(parent, "children", None):
+            return (0, [])
+
+        seen_urls: set[str] = set()
+        to_delete: List[Node] = []
+        removed_info: List[str] = []
+
+        for child in list(parent.children):
+            if child.type != "bookmark":
+                continue
+            url = child.url or ""
+            if not url:
+                continue
+            if url in seen_urls:
+                to_delete.append(child)
+                removed_info.append(f"{child.title} ({url})")
+            else:
+                seen_urls.add(url)
+
+        for node in to_delete:
+            parent.remove_child(node)
+
+        removed_count = len(to_delete)
+        logger.info(f"Removed {removed_count} duplicate bookmarks in {getattr(parent, 'title', '')}")
+
+        if removed_count and log_file_path:
+            try:
+                path = Path(log_file_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n--- {datetime.datetime.now().isoformat(timespec='seconds')} ---\n")
+                    for line in removed_info:
+                        f.write(f"Removed: {line}\n")
+            except Exception as exc:
+                logger.error(f"Failed to write cleanup log: {exc}")
+
+        return (removed_count, removed_info)
 
     def merge_duplicate_folders(self, parent: Node) -> int:
         """

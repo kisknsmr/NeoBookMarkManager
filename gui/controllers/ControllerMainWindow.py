@@ -437,6 +437,7 @@ class MainWindow(QMainWindow):
         # Store references for backward compatibility
         self.bookmarks_count_label = left_panel.bookmarks_count_label
         self.workspace_count_label = left_panel.workspace_count_label
+        self.workspace_title_label = getattr(left_panel, "workspace_title_label", None)
         self.view_buttons = left_panel.view_buttons
         self.folder_tree = left_panel.folder_tree
         self.folder_tree_left = left_panel.folder_tree_left
@@ -499,7 +500,7 @@ class MainWindow(QMainWindow):
         self.detail_panel = panel.get_detail_panel()
         
         # Connect detail panel signals
-        self.detail_panel.edit_requested.connect(self.ui_events.on_detail_edit)
+        self.detail_panel.edit_requested.connect(self._on_edit_bookmark)
         self.detail_panel.copy_url_requested.connect(self._copy_to_clipboard)
         self.detail_panel.move_requested.connect(self.ui_events.on_detail_move)
         self.detail_panel.delete_requested.connect(self.ui_events.on_detail_delete)
@@ -570,6 +571,7 @@ class MainWindow(QMainWindow):
 
     def refresh_list(self) -> None:
         """Update only the bookmark list display."""
+        self._update_workspace_header()
         nodes = self._get_display_nodes(
             current_folder=self.current_folder,
             search_query=self.search_query,
@@ -586,12 +588,12 @@ class MainWindow(QMainWindow):
 
     def refresh_counts(self) -> None:
         """Update only the bookmark count labels."""
-        total = self._count_bookmarks(self.root_node)
-        self._update_counts(
-            bookmarks_count_label=getattr(self, "bookmarks_count_label", None),
-            workspace_count_label=getattr(self, "workspace_count_label", None),
-            total=total,
-        )
+        total_all = self._count_bookmarks(self.root_node)
+        total_current = self._count_bookmarks(self.current_folder) if self.current_folder else 0
+        if getattr(self, "bookmarks_count_label", None) is not None:
+            self.bookmarks_count_label.setText(f"{total_all:,}")
+        if getattr(self, "workspace_count_label", None) is not None:
+            self.workspace_count_label.setText(f"{total_current:,}")
 
     def _after_model_changed(self, select_node: Optional[Node] = None, refresh_parts: str = "all") -> None:
         """
@@ -778,6 +780,44 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.refresh_counts()
 
+    def _on_edit_bookmark(self, node: Node) -> None:
+        """詳細パネルからの編集リクエストを処理（タイトル+URLの統合ダイアログ）。"""
+        if not node:
+            return
+        if node.type != "bookmark":
+            # フォルダ等は従来通りリネームへ
+            self.selected_node = node
+            self.cmd_rename()
+            return
+
+        from PySide6.QtWidgets import QDialog
+        from gui.components import BookmarkEditDialog
+
+        dialog = BookmarkEditDialog(self, node)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_title, new_url = dialog.get_data()
+        ok = self.bookmark_service.update_node(node, title=new_title, url=new_url)
+        if not ok:
+            QMessageBox.warning(self, "Error", "更新に失敗しました。")
+            return
+
+        # URL/タイトル更新で検索インデックスに影響があるため再構築（安全側）
+        self.search_service.rebuild(self.root_node)
+        self.refresh_tree(select_node=node.parent or self.current_folder or self.root_node)
+        self.refresh_list()
+        self.refresh_counts()
+        # 選択維持
+        try:
+            self.bookmark_list_view.select_node(node)
+        except Exception:
+            pass
+        try:
+            self.detail_panel.set_node(node)
+        except Exception:
+            pass
+
     def cmd_move_to_folder(self) -> None:
         """Move selected bookmark/folder to target folder."""
         if not self.selected_node or not self.root_node:
@@ -875,10 +915,25 @@ class MainWindow(QMainWindow):
         """Delete duplicate bookmarks in current folder."""
         if not self.current_folder:
             return
-        
-        removed = self.bookmark_service.delete_duplicates(self.current_folder)
-        
-        # Rebuild search since multiple nodes were deleted
+
+        project_root = Path(__file__).resolve().parent.parent.parent
+        log_path = project_root / "logs" / "cleanup_history.log"
+
+        removed, _details = self.bookmark_service.remove_duplicates(
+            self.current_folder,
+            log_file_path=log_path,
+        )
+
+        if removed > 0:
+            QMessageBox.information(
+                self,
+                "重複削除完了",
+                f"{removed} 件の重複ブックマークを削除しました。\n詳細はログ（{log_path}）を確認してください。",
+            )
+        else:
+            QMessageBox.information(self, "完了", "重複したブックマークは見つかりませんでした。")
+
+        # Rebuild search since multiple nodes may have been deleted
         self.search_service.rebuild(self.root_node)
         self.refresh_list()
         self.refresh_tree(select_node=self.current_folder)
@@ -1335,14 +1390,10 @@ class MainWindow(QMainWindow):
         if not self.current_folder:
             return
 
-        if sort_by == "title":
-            self.bookmark_service.sort_children(self.current_folder, "title")
-            self.statusBar().showMessage("Sorted by title", 2000)
-        elif sort_by == "domain":
-            self.bookmark_service.sort_children(self.current_folder, "domain")
-            self.statusBar().showMessage("Sorted by domain", 2000)
-        else:
+        ok = self.bookmark_service.sort_bookmarks(sort_by, parent_node=self.current_folder)
+        if not ok:
             return
+        self.statusBar().showMessage(f"Sorted by {sort_by}", 2000)
 
         self.refresh_tree(select_node=self.current_folder)
         self.refresh_list()
@@ -1465,12 +1516,23 @@ class MainWindow(QMainWindow):
         if not nodes:
             detail_panel.clear()
 
-    def _update_counts(self, *, bookmarks_count_label, workspace_count_label, total: int) -> None:
-        """Update bookmark count labels."""
-        if bookmarks_count_label is not None:
-            bookmarks_count_label.setText(f"{total:,}")
-        if workspace_count_label is not None:
-            workspace_count_label.setText(f"{total:,}")
+    def _update_workspace_header(self) -> None:
+        """下側ヘッダーに現在表示中フォルダを表示する（ソート範囲の可視化）。"""
+        label = getattr(self, "workspace_title_label", None)
+        if label is None:
+            return
+        folder = self.current_folder or self.root_node
+        label.setText(self._format_folder_path(folder))
+
+    def _format_folder_path(self, folder: Node) -> str:
+        parts = []
+        cur = folder
+        while cur is not None:
+            if getattr(cur, "type", "") == "folder":
+                parts.append(cur.title or "Untitled")
+            cur = getattr(cur, "parent", None)
+        parts = list(reversed(parts)) if parts else ["Workspace"]
+        return " / ".join(parts)
 
 
 # Backward compatibility alias

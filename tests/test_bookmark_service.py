@@ -198,6 +198,19 @@ class TestBookmarkService:
         urls = [child.url for child in parent.children]
         assert urls.count("https://python.org") == 1
 
+    def test_remove_duplicates_report(self, bookmark_service):
+        """Test duplicate removal returns (count, details) and keeps behavior scope (direct children only)."""
+        parent = Node("folder", "Parent")
+        parent.append(Node("bookmark", "A", url="https://example.com"))
+        parent.append(Node("bookmark", "B", url="https://example.com"))
+        parent.append(Node("bookmark", "C", url="https://unique.com"))
+
+        count, details = bookmark_service.remove_duplicates(parent, log_file_path=None)
+
+        assert count == 1
+        assert len(details) == 1
+        assert "https://example.com" in details[0]
+
     def test_merge_duplicate_folders(self, bookmark_service):
         """Test merging folders with same name."""
         parent = Node("folder", "Root")

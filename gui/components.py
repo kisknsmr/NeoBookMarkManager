@@ -948,6 +948,7 @@ class LeftPanel(QFrame):
         self.tree_controls: Optional[QWidget] = None
         self.bookmarks_count_label: Optional[QLabel] = None
         self.workspace_count_label: Optional[QLabel] = None
+        self.workspace_title_label: Optional[QLabel] = None
         self.view_buttons: Dict[str, QPushButton] = {}
 
         self._init_ui()
@@ -984,6 +985,7 @@ class LeftPanel(QFrame):
 
         title = QLabel("Workspace")
         title.setObjectName("panelHeader")
+        self.workspace_title_label = title
         layout.addWidget(title)
 
         self.workspace_count_label = QLabel("0")
@@ -1763,3 +1765,64 @@ class FolderSelectDialog(QDialog):
         """キャンセルが押されたとき"""
         self.result = None
         self.reject()
+
+
+class BookmarkEditDialog(QDialog):
+    """
+    ブックマークのタイトルとURLを編集するための統合ダイアログ。
+    """
+
+    def __init__(self, parent=None, node: Node | None = None):
+        super().__init__(parent)
+        self.node = node
+        self.setWindowTitle("ブックマークの編集")
+        self.setMinimumWidth(600)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # タイトル入力
+        title_layout = QVBoxLayout()
+        title_label = QLabel("タイトル:")
+        title_label.setFont(create_qfont(size=10, bold=True))
+        self.title_input = QLineEdit()
+        self.title_input.setText(getattr(self.node, "title", "") or "")
+        self.title_input.setPlaceholderText("タイトルを入力してください")
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(self.title_input)
+        layout.addLayout(title_layout)
+
+        # URL入力
+        url_layout = QVBoxLayout()
+        url_label = QLabel("URL:")
+        url_label.setFont(create_qfont(size=10, bold=True))
+        self.url_input = QTextEdit()
+        self.url_input.setPlainText(getattr(self.node, "url", "") or "")
+        self.url_input.setPlaceholderText("URLを入力してください")
+        self.url_input.setMaximumHeight(80)
+        url_layout.addWidget(url_label)
+        url_layout.addWidget(self.url_input)
+        layout.addLayout(url_layout)
+
+        # ボタンエリア
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.setObjectName("ghostButton")
+        cancel_btn.clicked.connect(self.reject)
+
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primaryButton")
+        save_btn.clicked.connect(self.accept)
+
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(save_btn)
+        layout.addLayout(btn_layout)
+
+    def get_data(self) -> tuple[str, str]:
+        """編集後のタイトルとURLを返す"""
+        return self.title_input.text().strip(), self.url_input.toPlainText().strip()
