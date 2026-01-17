@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
                 ("上へ移動", self.cmd_move_up),
                 ("重複削除", self.cmd_delete_duplicates),
                 ("フォルダ統合", self.cmd_merge_duplicate_folders),
+                ("ドメイン統合", self.cmd_consolidate_domain),
             ],
             "ai": [
                 ("スマート分類", self.cmd_smart_classify),
@@ -953,6 +954,35 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.refresh_counts()
         self.statusBar().showMessage(f"Merged {removed} duplicate folders", 3000)
+
+    def cmd_consolidate_domain(self) -> None:
+        """ドメイン統計から選択されたドメインを一括で統合（全ツリー対象）。"""
+        if not self.root_node:
+            return
+        from PySide6.QtWidgets import QDialog
+        from gui.components import DomainConsolidationDialog
+
+        stats = self.bookmark_service.get_domain_statistics(self.root_node)
+        if not stats:
+            QMessageBox.information(self, "Info", "ドメイン統計が空です。")
+            return
+
+        dialog = DomainConsolidationDialog(stats, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.result_data:
+            return
+
+        domain, folder_name = dialog.result_data
+        moved = self.bookmark_service.consolidate_by_domain(self.root_node, domain, folder_name)
+        if moved <= 0:
+            QMessageBox.information(self, "完了", f"{domain} の対象ブックマークは見つかりませんでした。")
+            return
+
+        # 構造が変わったので検索を再構築して全体更新
+        self.search_service.rebuild(self.root_node)
+        self.refresh_tree(select_node=self.current_folder or self.root_node)
+        self.refresh_list()
+        self.refresh_counts()
+        QMessageBox.information(self, "完了", f"{domain} のブックマークを {moved} 件統合しました。")
 
     def cmd_expand_all(self) -> None:
         """Expand all folders in the tree view(s) and save the state."""

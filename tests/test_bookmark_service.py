@@ -211,6 +211,35 @@ class TestBookmarkService:
         assert len(details) == 1
         assert "https://example.com" in details[0]
 
+    def test_get_domain_statistics_and_consolidate(self, bookmark_service):
+        root = Node("folder", "Root")
+        f1 = Node("folder", "F1")
+        f2 = Node("folder", "F2")
+        root.append(f1)
+        root.append(f2)
+
+        b1 = Node("bookmark", "A", url="https://www.example.com/a")
+        b2 = Node("bookmark", "B", url="https://example.com/b")
+        b3 = Node("bookmark", "C", url="https://other.com/c")
+        f1.append(b1)
+        f1.append(b3)
+        f2.append(b2)
+
+        stats = bookmark_service.get_domain_statistics(root)
+        stats_map = dict(stats)
+        assert stats_map.get("example.com") == 2
+        assert stats_map.get("other.com") == 1
+
+        moved = bookmark_service.consolidate_by_domain(root, "example.com", "Example統合")
+        assert moved == 2
+        assert root.children[0].type == "folder"
+        assert root.children[0].title == "Example統合"
+        target = root.children[0]
+        assert len([c for c in target.children if c.type == "bookmark"]) == 2
+        # 元のフォルダから消えている
+        assert b1.parent is target
+        assert b2.parent is target
+
     def test_merge_duplicate_folders(self, bookmark_service):
         """Test merging folders with same name."""
         parent = Node("folder", "Root")

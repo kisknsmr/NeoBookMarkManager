@@ -1826,3 +1826,60 @@ class BookmarkEditDialog(QDialog):
     def get_data(self) -> tuple[str, str]:
         """編集後のタイトルとURLを返す"""
         return self.title_input.text().strip(), self.url_input.toPlainText().strip()
+
+
+class DomainConsolidationDialog(QDialog):
+    """ドメイン統計を表示し、統合先を指定するダイアログ"""
+
+    def __init__(self, stats: List[Tuple[str, int]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("ドメイン一括統合")
+        self.setMinimumWidth(500)
+        self.stats = stats
+        self.result_data: tuple[str, str] | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        title = QLabel("統合したいドメインを選択してください:")
+        title.setFont(create_qfont(size=11, bold=True))
+        layout.addWidget(title)
+
+        self.list_widget = QListWidget()
+        for domain, count in self.stats:
+            item = QListWidgetItem(f"{domain} ({count}件)")
+            item.setData(Qt.UserRole, domain)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget)
+
+        folder_layout = QHBoxLayout()
+        folder_layout.addWidget(QLabel("作成するフォルダ名:"))
+        self.folder_input = QLineEdit()
+        self.folder_input.setPlaceholderText("例: Google関連, ニュースサイト など")
+        folder_layout.addWidget(self.folder_input, 1)
+        layout.addLayout(folder_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.setObjectName("ghostButton")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("統合を実行")
+        ok_btn.setObjectName("primaryButton")
+        ok_btn.clicked.connect(self._on_accept)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+    def _on_accept(self) -> None:
+        selected = self.list_widget.currentItem()
+        folder_name = self.folder_input.text().strip()
+        if not selected or not folder_name:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "入力不足", "ドメインの選択とフォルダ名の入力が必要です。")
+            return
+        self.result_data = (str(selected.data(Qt.UserRole)), folder_name)
+        self.accept()

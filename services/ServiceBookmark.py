@@ -218,6 +218,79 @@ class BookmarkService:
         logger.info(f"Deleted {node.type} '{node.title}'")
 
     # ==================== Organize ====================
+    def _normalize_domain(self, url: str) -> str:
+        """URLからドメインを正規化して返す（lower, port除去, www除去）。"""
+        if not url:
+            return ""
+        try:
+            netloc = (urlparse(url).netloc or "").lower()
+        except Exception:
+            return ""
+        if ":" in netloc:
+            netloc = netloc.split(":", 1)[0]
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
+
+    def get_domain_statistics(self, root: Node) -> List[Tuple[str, int]]:
+        """全ブックマークのドメイン統計を頻度順に返す（全ツリー対象）。"""
+        if not root:
+            return []
+        stats: dict[str, int] = {}
+        for node in self._iter_bookmarks(root):
+            domain = self._normalize_domain(getattr(node, "url", "") or "")
+            if not domain:
+                continue
+            stats[domain] = stats.get(domain, 0) + 1
+        return sorted(stats.items(), key=lambda x: x[1], reverse=True)
+
+    def consolidate_by_domain(self, root: Node, domain: str, target_folder_name: str) -> int:
+        """
+        指定ドメインのブックマークを、root直下のフォルダへ一括移動する。
+        既に同名フォルダがあれば再利用する。
+        """
+        if not root or not domain or not target_folder_name:
+            return 0
+
+        domain_norm = domain.lower().strip()
+        if domain_norm.startswith("www."):
+            domain_norm = domain_norm[4:]
+
+        # 1) 統合先フォルダ（root直下）を取得/作成（先頭に寄せる）
+        target_folder = None
+        for ch in list(getattr(root, "children", []) or []):
+            if getattr(ch, "type", "") == "folder" and (ch.title or "") == target_folder_name:
+                target_folder = ch
+                break
+        if target_folder is None:
+            target_folder = Node("folder", target_folder_name)
+            root.insert_child(0, target_folder)
+
+        moved_count = 0
+
+        # 2) 対象抽出（親も必要なのでツリー走査）
+        def walk(parent: Node) -> None:
+            nonlocal moved_count
+            for child in list(getattr(parent, "children", []) or []):
+                if child is target_folder:
+                    # 統合先フォルダ配下は対象外
+                    continue
+                if getattr(child, "type", "") == "bookmark":
+                    d = self._normalize_domain(getattr(child, "url", "") or "")
+                    if d and d == domain_norm:
+                        try:
+                            self.move_to_folder(child, target_folder)
+                            moved_count += 1
+                        except Exception as exc:
+                            logger.error(f"Consolidate move failed: {exc}")
+                    continue
+                if getattr(child, "type", "") == "folder":
+                    walk(child)
+
+        walk(root)
+        logger.info(f"Consolidated domain '{domain_norm}' -> '{target_folder_name}': moved={moved_count}")
+        return moved_count
+
     def sort_bookmarks(self, criteria: str, parent_node: Node | None = None) -> bool:
         """
         指定されたノード直下の子要素のみをソートする。
