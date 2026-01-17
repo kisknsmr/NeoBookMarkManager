@@ -784,7 +784,7 @@ class MainWindow(QMainWindow):
             root_node=self.root_node,
             exclude_nodes=[self.selected_node]
         )
-        if dialog.exec() != dialog.Accepted or not dialog.result:
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.result:
             return
         
         target_folder = dialog.result
@@ -1148,7 +1148,7 @@ class MainWindow(QMainWindow):
 
         # Get additional prompt from user
         dialog = CustomPromptDialog(self, title="追加指示（任意）", previous_prompts=[])
-        if dialog.exec() != dialog.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             additional_prompt = None
         else:
             additional_prompt = dialog.result or None
