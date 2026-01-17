@@ -38,12 +38,6 @@ class SessionController:
             # HTMLファイルが存在しない場合でも拡大縮小ボタンを表示
             if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
                 self.window.left_panel.tree_controls.setVisible(True)
-            # 2画面モードボタンも表示（ロードが無い場合はここで解禁）
-            if hasattr(self.window, "left_panel") and hasattr(self.window.left_panel, "dual_tree_button"):
-                try:
-                    self.window.left_panel.dual_tree_button.setVisible(True)
-                except Exception:
-                    pass
 
     def auto_load_bookmarks(self, file_path: str) -> None:
         try:
@@ -68,12 +62,6 @@ class SessionController:
             # HTML読み込み完了後に拡大縮小ボタンを表示
             if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
                 self.window.left_panel.tree_controls.setVisible(True)
-            # HTML読み込み完了後に2画面モードボタンを表示
-            if hasattr(self.window, "left_panel") and hasattr(self.window.left_panel, "dual_tree_button"):
-                try:
-                    self.window.left_panel.dual_tree_button.setVisible(True)
-                except Exception:
-                    pass
 
             self.window.statusBar().showMessage(f"Loaded: {os.path.basename(file_path)}", 5000)
             self.window.logger.info(f"Auto-loaded bookmarks: {file_path}")
@@ -82,9 +70,3 @@ class SessionController:
             # エラーが発生した場合でも拡大縮小ボタンを表示
             if hasattr(self.window, 'left_panel') and hasattr(self.window.left_panel, 'tree_controls'):
                 self.window.left_panel.tree_controls.setVisible(True)
-            # エラー時でも2画面モードボタンを表示
-            if hasattr(self.window, "left_panel") and hasattr(self.window.left_panel, "dual_tree_button"):
-                try:
-                    self.window.left_panel.dual_tree_button.setVisible(True)
-                except Exception:
-                    pass

@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QLayout,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QPoint
 from PySide6.QtGui import QIcon, QFont, QPixmap, QCursor, QPainter, QFontMetrics
 
 from core.ModelBookmark import Node
@@ -46,70 +46,41 @@ from gui.UtilGuiResources import Theme, Typography, Spacing, ColorTokens, create
 _favicon_cache: Dict[str, Optional[QPixmap]] = {}
 
 
-def _pixmap_from_data_image(icon_data: str, size: int) -> Optional[QPixmap]:
-    """
-    data:image/*;base64,... から QPixmap を生成。
-    PILを経由せずQtだけでデコード/リサイズする（高速化）。
-    """
-    if not icon_data or not icon_data.startswith("data:image"):
-        return None
-
-    try:
-        import base64
-
-        _, encoded = icon_data.split(",", 1)
-        raw = base64.b64decode(encoded)
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(raw):
-            return None
-        if size > 0:
-            pixmap = pixmap.scaled(
-                size,
-                size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        return pixmap
-    except Exception:
-        return None
-
-
 def get_favicon_image(icon_data: str, size: int = 16) -> Optional[QPixmap]:
-    """（互換用）ファビコンデータから QPixmap を取得（キャッシュ付き）"""
+    """ファビコンデータから QPixmap を取得（キャッシュ付き）"""
     if not icon_data:
         return None
-
-    cache_key = f"{hash(icon_data)}_{size}"
-    if cache_key in _favicon_cache:
-        return _favicon_cache[cache_key]
-
-    pixmap = _pixmap_from_data_image(icon_data, size=size)
-    _favicon_cache[cache_key] = pixmap
-    return pixmap
-
-
-def get_node_favicon_pixmap(node: Optional[Node], size: int = 16) -> Optional[QPixmap]:
-    """
-    Nodeに紐づくfaviconを取得（Node自体にQPixmapキャッシュを持たせる最速パス）。
-    """
-    if not node:
-        return None
-    icon_data = getattr(node, "icon", "") or ""
-    if not icon_data:
-        return None
-
-    # Node側キャッシュ（要求どおり「Node自身が持つ」）
-    cache = getattr(node, "qt_pixmap_cache", None)
-    if isinstance(cache, dict):
-        key = (hash(icon_data), int(size))
-        if key in cache:
-            return cache[key]
-        pixmap = _pixmap_from_data_image(icon_data, size=size)
-        cache[key] = pixmap
-        return pixmap
-
-    # フォールバック（古いNode互換）
-    return get_favicon_image(icon_data, size=size)
+    
+    try:
+        from PIL import Image
+        from io import BytesIO
+        import base64
+        
+        cache_key = f"{hash(icon_data)}_{size}"
+        if cache_key in _favicon_cache:
+            return _favicon_cache[cache_key]
+        
+        if icon_data.startswith('data:image'):
+            header, encoded = icon_data.split(',', 1)
+            img_data = base64.b64decode(encoded)
+            img = Image.open(BytesIO(img_data))
+            img = img.resize((size, size), Image.Resampling.LANCZOS)
+            
+            # PIL Image から QPixmap に変換
+            import io
+            with io.BytesIO() as buf:
+                img.save(buf, format='PNG')
+                buf.seek(0)
+                pixmap = QPixmap()
+                pixmap.loadFromData(buf.read())
+            
+            _favicon_cache[cache_key] = pixmap
+            return pixmap
+    except Exception:
+        pass
+    
+    _favicon_cache[cache_key] = None
+    return None
 
 
 # ==================== Basic Components ====================
@@ -126,9 +97,9 @@ class BookmarkCard(QFrame):
     clicked = Signal()
     double_clicked = Signal()
     
-    def __init__(self, node: Optional[Node], parent: Optional[QWidget] = None):
+    def __init__(self, node: Node, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.node: Optional[Node] = node
+        self.node = node
         self.is_selected = False
         
         # QSSクラス設定
@@ -147,66 +118,35 @@ class BookmarkCard(QFrame):
         header_layout.setSpacing(8)
         
         # ファビコン
+        favicon = get_favicon_image(node.icon, 18) if node.icon else None
         icon_label = QLabel()
-        self._icon_label = icon_label
+        if favicon:
+            icon_label.setPixmap(favicon)
+        else:
+            icon_label.setText("🔗")
+            icon_label.setFont(FontManager.get_ui_font(12))
         header_layout.addWidget(icon_label)
         
         # タイトル
-        title_label = QLabel("Untitled")
+        title_label = QLabel(node.title or "Untitled")
         title_label.setFont(FontManager.get_heading_font(11))
         title_label.setObjectName("cardTitle")
         title_label.setWordWrap(True)
-        self._title_label = title_label
         header_layout.addWidget(title_label, 1)
         
         layout.addLayout(header_layout)
         
-        # URL（常設してshow/hideで制御）
-        url_label = QLabel("")
-        url_label.setFont(FontManager.get_body_font(9))
-        url_label.setObjectName("cardUrl")
-        url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
-        url_label.setMaximumHeight(35)
-        url_label.setWordWrap(True)
-        self._url_label = url_label
-        layout.addWidget(url_label)
+        # URL
+        if node.url:
+            url_label = QLabel(node.url)
+            url_label.setFont(FontManager.get_body_font(9))
+            url_label.setObjectName("cardUrl")
+            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            url_label.setMaximumHeight(35)
+            url_label.setWordWrap(True)
+            layout.addWidget(url_label)
         
         layout.addStretch()
-
-        # 初期データ反映
-        self.set_node(node)
-
-    def set_node(self, node: Optional[Node]) -> None:
-        """表示内容を更新（BookmarkViewのプール再利用向け）"""
-        self.node = node
-        if not node:
-            self._icon_label.setText("🔗")
-            self._icon_label.setPixmap(QPixmap())
-            self._icon_label.setFont(FontManager.get_ui_font(12))
-            self._title_label.setText("Untitled")
-            self._url_label.setText("")
-            self._url_label.hide()
-            return
-
-        # favicon（Node内キャッシュで高速化）
-        favicon = get_node_favicon_pixmap(node, 18)
-        if favicon:
-            self._icon_label.setPixmap(favicon)
-            self._icon_label.setText("")
-        else:
-            self._icon_label.setPixmap(QPixmap())
-            self._icon_label.setText("🔗")
-            self._icon_label.setFont(FontManager.get_ui_font(12))
-
-        self._title_label.setText(getattr(node, "title", None) or "Untitled")
-
-        url = getattr(node, "url", None)
-        if url:
-            self._url_label.setText(url)
-            self._url_label.show()
-        else:
-            self._url_label.setText("")
-            self._url_label.hide()
     
     def mousePressEvent(self, event):
         """マウスクリックイベント"""
@@ -241,9 +181,9 @@ class BookmarkRow(QFrame):
     clicked = Signal()
     delete_requested = Signal()
     
-    def __init__(self, node: Optional[Node], parent: Optional[QWidget] = None):
+    def __init__(self, node: Node, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.node: Optional[Node] = node
+        self.node = node
         self.is_selected = False
         
         # QSSクラス設定
@@ -258,9 +198,13 @@ class BookmarkRow(QFrame):
         layout.setSpacing(12)
         
         # 1. ファビコン
+        favicon = get_favicon_image(node.icon, 16) if node.icon else None
         icon_label = QLabel()
+        if favicon:
+            icon_label.setPixmap(favicon)
+        else:
+            icon_label.setText("🔗")
         icon_label.setFixedSize(16, 16)
-        self._icon_label = icon_label
         layout.addWidget(icon_label)
         
         # 2. テキストエリア（タイトルとURLを垂直に配置）
@@ -273,19 +217,28 @@ class BookmarkRow(QFrame):
         title_font = FontManager.get_heading_font(12)
         title_label.setFont(title_font)
         title_label.setObjectName("rowTitle")
-        self._title_label = title_label
-        self._title_font = title_font
+        
+        # タイトルが長い場合に「...」で省略
+        metrics = QFontMetrics(title_font)
+        elided_title = metrics.elidedText(node.title or "Untitled", Qt.TextElideMode.ElideRight, 400)
+        title_label.setText(elided_title)
+        title_label.setToolTip(node.title or "Untitled")  # ツールチップに完全なタイトルを表示
         text_container.addWidget(title_label)
         
         # URL (薄い色、小さいフォント)
-        url_label = QLabel()
-        url_font = FontManager.get_body_font(10)
-        url_label.setFont(url_font)
-        url_label.setObjectName("rowUrl")
-        url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
-        self._url_label = url_label
-        self._url_font = url_font
-        text_container.addWidget(url_label)
+        if node.url:
+            url_label = QLabel()
+            url_font = FontManager.get_body_font(10)
+            url_label.setFont(url_font)
+            url_label.setObjectName("rowUrl")
+            url_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+            
+            # URLが長い場合に「...」で省略
+            url_metrics = QFontMetrics(url_font)
+            elided_url = url_metrics.elidedText(node.url, Qt.TextElideMode.ElideRight, 500)
+            url_label.setText(elided_url)
+            url_label.setToolTip(node.url)  # ツールチップに完全なURLを表示
+            text_container.addWidget(url_label)
         
         layout.addLayout(text_container, 1)  # stretch=1 で余白を埋める
         
@@ -296,67 +249,6 @@ class BookmarkRow(QFrame):
         delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         delete_btn.clicked.connect(self.delete_requested.emit)
         layout.addWidget(delete_btn)
-
-        # 初期データ反映
-        self.set_node(node)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # 幅が確定したら省略を再計算（安定して崩れない）
-        self._update_texts()
-
-    def set_node(self, node: Optional[Node]) -> None:
-        """表示内容を更新（BookmarkViewのプール再利用向け）"""
-        self.node = node
-        self._update_texts()
-
-    def _update_texts(self) -> None:
-        node = self.node
-        if not node:
-            self._icon_label.setPixmap(QPixmap())
-            self._icon_label.setText("🔗")
-            self._title_label.setText("Untitled")
-            self._title_label.setToolTip("")
-            self._url_label.setText("")
-            self._url_label.setToolTip("")
-            self._url_label.hide()
-            return
-
-        # favicon（Node内キャッシュで高速化）
-        favicon = get_node_favicon_pixmap(node, 16)
-        if favicon:
-            self._icon_label.setPixmap(favicon)
-            self._icon_label.setText("")
-        else:
-            self._icon_label.setPixmap(QPixmap())
-            self._icon_label.setText("🔗")
-
-        # おおよその利用可能幅（ボタン/アイコン分を引く）
-        available = self.width()
-        if available <= 0:
-            title_max = 400
-            url_max = 500
-        else:
-            # icon(16) + spacing(12) + delete button(50) + margins(24) + safety(30)
-            base = max(120, available - (16 + 12 + 50 + 24 + 30))
-            title_max = base
-            url_max = base
-
-        title = getattr(node, "title", None) or "Untitled"
-        title_metrics = QFontMetrics(self._title_font)
-        self._title_label.setText(title_metrics.elidedText(title, Qt.TextElideMode.ElideRight, title_max))
-        self._title_label.setToolTip(title)
-
-        url = getattr(node, "url", None)
-        if url:
-            url_metrics = QFontMetrics(self._url_font)
-            self._url_label.setText(url_metrics.elidedText(url, Qt.TextElideMode.ElideRight, url_max))
-            self._url_label.setToolTip(url)
-            self._url_label.show()
-        else:
-            self._url_label.setText("")
-            self._url_label.setToolTip("")
-            self._url_label.hide()
     
     def mousePressEvent(self, event):
         """マウスクリックイベント"""
@@ -500,7 +392,7 @@ class FolderTree(QTreeWidget):
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDropEnabled)
 
-        pixmap = get_node_favicon_pixmap(node, 16)
+        pixmap = get_favicon_image(node.icon) if getattr(node, "icon", "") else None
         if pixmap:
             item.setIcon(0, QIcon(pixmap))
         elif hasattr(QStyle.StandardPixmap, 'SP_FileIcon'):
@@ -738,121 +630,194 @@ class SearchBar(QFrame):
 
 # ==================== Views ====================
 
-class BookmarkListView(QFrame):
+class BookmarkView(QFrame):
     """
-    Bookmark list view component for displaying bookmarks as cards or rows.
-    Handles item display, selection, and signals for main window.
+    ブックマークの表示を管理するメインコンテナ。
+    ウィジェットを完全に再利用し、レイアウトのみを切り替える超軽量版。
     """
+    node_selected = Signal(Node)
+    open_requested = Signal(str)
+    delete_requested = Signal(Node)
+    preview_fetch_requested = Signal(Node)
 
-    # Signals
-    node_selected = Signal(Node)  # Emitted when a bookmark is selected
-    open_requested = Signal(str)  # Emitted when bookmark should be opened (URL)
-    delete_requested = Signal(Node)  # Emitted when bookmark deletion is requested
-    preview_fetch_requested = Signal(Node)  # Emitted when preview should be fetched
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("bookmarkListView")
-
-        # UI
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(12)
-
-        # State
-        self.selected_cards: Set[Any] = set()
-        self.view_mode: str = "list"  # "card" or "list"
-        self._widgets: List[QWidget] = []
-        self._last_nodes: List[Node] = []  # Cache for optimization
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("bookmarkView")
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.container = QWidget()
+        self.main_layout.addWidget(self.container)
+        
+        self.selected_widgets: Set[Any] = set()
+        self.view_mode: str = "card"
+        self._nodes: List[Node] = []
+        self._widgets: List[QWidget] = []  # ウィジェットプール
+        self._last_width = 0
 
     def set_items(self, nodes: List[Node], view_mode: str = "card") -> None:
-        """
-        Set bookmarks to display.
-
-        Args:
-            nodes: List of bookmark nodes to display
-            view_mode: Display mode ("card" or "list")
-        """
-        # Optimization: skip if items are identical (same nodes in same order)
-        if self.view_mode == view_mode and self._last_nodes == nodes:
-            return
+        """データをセットし、描画を更新する"""
+        from PySide6.QtWidgets import QApplication
         
-        self._last_nodes = list(nodes)  # Cache for next comparison
+        # モード変更の検知
+        mode_changed = self.view_mode != view_mode
         self.view_mode = view_mode
-        self.clear()
+        self._nodes = list(nodes)
 
-        if not nodes:
+        # 1. モードが変わる場合は、レイアウトエンジンのみをリセット
+        # ※ウィジェット本体は捨てない
+        if mode_changed:
+            self._reset_layout_only()
+        
+        if len(nodes) > 50:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        self._refresh_ui_optimized()
+        
+        if len(nodes) > 50:
+            QApplication.restoreOverrideCursor()
+
+    def _reset_layout_only(self) -> None:
+        """レイアウト（枠組み）だけを破棄し、ウィジェットはプールに回収する"""
+        if self.container.layout():
+            old_layout = self.container.layout()
+            # レイアウトからウィジェットを「取り出す」だけで削除はしない
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None) # 親子関係を切ってプールに保持
+                elif item.layout():
+                    self._delete_sub_layout(item.layout())
+            
+            import sip
+            sip.delete(old_layout)
+        
+        self.selected_widgets.clear()
+
+    def _delete_sub_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+            elif item.layout():
+                self._delete_sub_layout(item.layout())
+        import sip
+        sip.delete(layout)
+
+    def _refresh_ui_optimized(self) -> None:
+        """既存ウィジェットの並び替えのみを行う高速ロジック"""
+        layout = self.container.layout()
+        
+        # 適切なレイアウトがなければ作成
+        if not layout:
+            if self.view_mode == "card":
+                layout = QGridLayout(self.container)
+                layout.setSpacing(15)
+                layout.setContentsMargins(10, 10, 10, 10)
+            else:
+                layout = QVBoxLayout(self.container)
+                layout.setSpacing(4)
+                layout.setContentsMargins(5, 5, 5, 5)
+
+        if not self._nodes:
             self._set_placeholder()
             return
 
-        for node in nodes:
-            if self.view_mode == "list":
-                widget = BookmarkRow(node)
-                widget.delete_requested.connect(lambda n=node: self._on_delete_requested(n))
+        target_class = BookmarkCard if self.view_mode == "card" else BookmarkRow
+        column_count = max(1, (self.width() - 20) // 195) if self.view_mode == "card" else 1
+
+        # 2. プールの整理（クラスが違うウィジェットを入れ替える）
+        for i in range(len(self._nodes)):
+            if i < len(self._widgets):
+                if not isinstance(self._widgets[i], target_class):
+                    old_w = self._widgets[i]
+                    old_w.deleteLater()
+                    self._widgets[i] = target_class(self._nodes[i])
             else:
-                widget = BookmarkCard(node)
-                widget.double_clicked.connect(lambda n=node: self._on_open_requested(n.url))
+                # 不足分を新規作成
+                self._widgets.append(target_class(self._nodes[i]))
 
+        # 3. データの更新とレイアウトへの追加
+        for i, node in enumerate(self._nodes):
+            widget = self._widgets[i]
+            widget.node = node
+            
+            # シグナル再接続（BookmarkCard/Rowの既存設計に合わせる）
+            try: widget.clicked.disconnect()
+            except: pass
             widget.clicked.connect(lambda n=node, w=widget: self._on_node_selected(n, w))
-            self.layout.addWidget(widget)
-            self._widgets.append(widget)
 
-        self.layout.addStretch()
+            if self.view_mode == "card":
+                try: widget.double_clicked.disconnect()
+                except: pass
+                widget.double_clicked.connect(lambda n=node: self.open_requested.emit(n.url))
+                layout.addWidget(widget, i // column_count, i % column_count)
+            else:
+                try: widget.delete_requested.disconnect()
+                except: pass
+                widget.delete_requested.connect(lambda n=node: self.delete_requested.emit(n))
+                layout.addWidget(widget)
+            
+            widget.show()
+
+        # 4. 余ったウィジェットを隠す
+        for k in range(len(self._nodes), len(self._widgets)):
+            self._widgets[k].hide()
+
+        # ストレッチ（余白調整）
+        if self.view_mode == "card":
+            layout.setRowStretch(layout.rowCount(), 1)
+            layout.setColumnStretch(column_count, 1)
+        else:
+            # 前のストレッチを消してから追加
+            layout.addStretch()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.view_mode == "card" and self._nodes:
+            if abs(self.width() - self._last_width) > 20:
+                self._last_width = self.width()
+                self._refresh_ui_optimized()
+
+    def clear_all(self):
+        """完全リセットが必要な場合のみ呼ぶ"""
+        self._reset_layout_only()
+        for w in self._widgets:
+            w.deleteLater()
+        self._widgets.clear()
+        self._nodes.clear()
+
+    def _set_placeholder(self) -> None:
+        layout = self.container.layout()
+        placeholder = QLabel("表示するブックマークがありません。")
+        placeholder.setObjectName("placeholder")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(placeholder, 0, Qt.AlignmentFlag.AlignCenter)
+
+    def _on_node_selected(self, node: Node, widget: Any) -> None:
+        for w in self.selected_widgets:
+            if hasattr(w, "set_selected"): w.set_selected(False)
+        self.selected_widgets = {widget}
+        if hasattr(widget, "set_selected"): widget.set_selected(True)
+        self.node_selected.emit(node)
 
     def select_node(self, node: Node) -> None:
-        """
-        Select a node programmatically.
-
-        Args:
-            node: Node to select
-        """
+        """ノードをプログラム的に選択"""
         for widget in self._widgets:
             if hasattr(widget, "node") and widget.node is node:
                 self._on_node_selected(node, widget)
                 break
-
-    def clear(self) -> None:
-        """Clear all items from the list."""
-        for i in reversed(range(self.layout.count())):
-            item = self.layout.takeAt(i)
-            if item.widget():
-                item.widget().deleteLater()
-        self.selected_cards.clear()
-        self._widgets.clear()
-
-    def _set_placeholder(self) -> None:
-        """Display placeholder when no items."""
-        placeholder = QLabel("No bookmarks to display.")
-        placeholder.setWordWrap(True)
-        placeholder.setObjectName("placeholder")
-        self.layout.addWidget(placeholder)
-
-    def _on_node_selected(self, node: Node, widget: Any) -> None:
-        """Handle node selection."""
-        # Deselect previous selections
-        for w in list(self.selected_cards):
-            if hasattr(w, "set_selected"):
-                w.set_selected(False)
-
-        # Select new widget
-        self.selected_cards = {widget}
-        if hasattr(widget, "set_selected"):
-            widget.set_selected(True)
-
-        # Emit signal
-        self.node_selected.emit(node)
-
-    def _on_open_requested(self, url: str) -> None:
-        """Handle open URL request."""
-        self.open_requested.emit(url)
-
-    def _on_delete_requested(self, node: Node) -> None:
-        """Handle delete request."""
-        self.delete_requested.emit(node)
-
+    
     def request_preview_fetch(self, node: Node) -> None:
-        """Request preview fetch for a node."""
+        """プレビュー取得を要求"""
         self.preview_fetch_requested.emit(node)
+
+
+# Backward compatibility:
+# ControllerMainWindow (and older code) imports `BookmarkListView`.
+# Keep it as an alias to the current lightweight `BookmarkView` without changing visuals.
+class BookmarkListView(BookmarkView):
+    pass
 
 
 # ==================== Panels ====================
@@ -914,244 +879,6 @@ class TopBar(QFrame):
         if hasattr(self, 'search_bar'):
             self.search_bar._update_height()
 
-# ==================== Views ====================
-
-class BookmarkView(QFrame):
-    """
-    ブックマークの表示を管理するメインコンテナ。
-    カード用/リスト用の専用コンテナを切り替えることで、レイアウト衝突を根絶しつつ高速表示。
-    """
-    node_selected = Signal(Node)
-    open_requested = Signal(str)
-    delete_requested = Signal(Node)
-    preview_fetch_requested = Signal(Node)
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setObjectName("bookmarkView")
-
-        # メインレイアウト
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(0, 0, 0, 0)
-        self.main_layout.setSpacing(0)
-
-        # カード用/リスト用の専用コンテナ
-        self.card_container = QWidget()
-        self.list_container = QWidget()
-        self.card_container.setObjectName("bookmarkCardContainer")
-        self.list_container.setObjectName("bookmarkListContainer")
-
-        self.main_layout.addWidget(self.card_container)
-        self.main_layout.addWidget(self.list_container)
-
-        # レイアウトは固定（毎回差し替えない）
-        self._card_layout = QGridLayout(self.card_container)
-        self._card_layout.setSpacing(15)
-        self._card_layout.setContentsMargins(10, 10, 10, 10)
-
-        self._list_layout = QVBoxLayout(self.list_container)
-        self._list_layout.setSpacing(4)
-        self._list_layout.setContentsMargins(5, 5, 5, 5)
-
-        # 状態
-        self.view_mode: str = "card"
-        self._nodes: List[Node] = []
-        self._widgets_card: List[BookmarkCard] = []
-        self._widgets_list: List[BookmarkRow] = []
-        self._last_width = 0
-        self._selected_node: Optional[Node] = None
-
-        # 初期状態はカードを表示
-        self.list_container.hide()
-
-        # 遅延更新（連打/ドラッグ後の詰まりを抑える）
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setSingleShot(True)
-        self._refresh_timer.timeout.connect(self._refresh_ui)
-
-    def set_items(self, nodes: List[Node], view_mode: str = "card") -> None:
-        """データをセットし、表示を切り替える（内部で遅延更新して詰まりを回避）"""
-        from PySide6.QtWidgets import QApplication
-
-        self._nodes = list(nodes)
-
-        mode_changed = self.view_mode != view_mode
-        self.view_mode = view_mode
-
-        # モードに合わせてコンテナの可視性を切り替え（衝突防止の要）
-        if self.view_mode == "card":
-            self.list_container.hide()
-            self.card_container.show()
-        else:
-            self.card_container.hide()
-            self.list_container.show()
-
-        # モード切替直後/大量件数は少しだけ遅延（UIスレッドの詰まり回避）
-        delay_ms = 10 if mode_changed or len(self._nodes) > 200 else 0
-
-        if len(self._nodes) > 50:
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            self._schedule_refresh(delay_ms)
-        finally:
-            if len(self._nodes) > 50:
-                QApplication.restoreOverrideCursor()
-
-    def _schedule_refresh(self, delay_ms: int = 0) -> None:
-        if self._refresh_timer.isActive():
-            self._refresh_timer.stop()
-        self._refresh_timer.start(max(0, int(delay_ms)))
-
-    def _clear_layout_keep_widgets(self, layout: QLayout) -> None:
-        """
-        レイアウトからアイテムを外す。
-        重要: ここで setParent(None) すると、表示中のウィジェットがトップレベル化して
-        “大量に別ウィンドウが出る”原因になるため、親は維持したまま hide() する。
-        """
-        while layout.count():
-            item = layout.takeAt(0)
-            if item and item.widget():
-                w = item.widget()
-                # プレースホルダーは再利用せず破棄（リーク/積み上がり防止）
-                if getattr(w, "objectName", lambda: "")() == "placeholder":
-                    w.deleteLater()
-                else:
-                    w.hide()
-
-    def _ensure_pool_card(self, n: int) -> None:
-        while len(self._widgets_card) < n:
-            w = BookmarkCard(None, parent=self.card_container)
-            # シグナルは生成時に一回だけ接続（disconnect禁止）
-            w.clicked.connect(lambda w=w: self._on_node_selected(w.node, w))
-            w.double_clicked.connect(
-                lambda w=w: self.open_requested.emit(getattr(w.node, "url", "") or "")
-                if getattr(w, "node", None)
-                else None
-            )
-            self._widgets_card.append(w)
-
-    def _ensure_pool_list(self, n: int) -> None:
-        while len(self._widgets_list) < n:
-            w = BookmarkRow(None, parent=self.list_container)
-            w.clicked.connect(lambda w=w: self._on_node_selected(w.node, w))
-            w.delete_requested.connect(lambda w=w: self.delete_requested.emit(w.node) if getattr(w, "node", None) else None)
-            self._widgets_list.append(w)
-
-    def _refresh_ui(self) -> None:
-        """現在のモードのコンテナのみを更新（レイアウト衝突ゼロ）"""
-        if self.view_mode == "card":
-            layout = self._card_layout
-            self._clear_layout_keep_widgets(layout)
-            if not self._nodes:
-                self._set_placeholder(layout)
-                return
-
-            # 列数（少しバッファを広げて安定化）
-            card_total_width = 195
-            column_count = max(1, (self.width() - 20) // card_total_width)
-
-            self._ensure_pool_card(len(self._nodes))
-            for i, node in enumerate(self._nodes):
-                w = self._widgets_card[i]
-                w.setParent(self.card_container)
-                w.set_node(node)
-                w.show()
-                layout.addWidget(w, i // column_count, i % column_count)
-
-            # 余りは隠す
-            for k in range(len(self._nodes), len(self._widgets_card)):
-                self._widgets_card[k].hide()
-
-            layout.setRowStretch(layout.rowCount(), 1)
-            layout.setColumnStretch(column_count, 1)
-
-        else:
-            layout = self._list_layout
-            self._clear_layout_keep_widgets(layout)
-            if not self._nodes:
-                self._set_placeholder(layout)
-                return
-
-            self._ensure_pool_list(len(self._nodes))
-            for i, node in enumerate(self._nodes):
-                w = self._widgets_list[i]
-                w.setParent(self.list_container)
-                w.set_node(node)
-                w.show()
-                layout.addWidget(w)
-
-            for k in range(len(self._nodes), len(self._widgets_list)):
-                self._widgets_list[k].hide()
-
-            layout.addStretch()
-
-        # 選択状態を維持
-        if self._selected_node:
-            self.select_node(self._selected_node)
-
-    def resizeEvent(self, event):
-        """カードビューの時だけ列数を再計算（過敏に反応しない）"""
-        super().resizeEvent(event)
-        if self.view_mode == "card" and self._nodes:
-            if abs(self.width() - self._last_width) > 50:
-                self._last_width = self.width()
-                self._schedule_refresh(0)
-
-    def select_node(self, node: Node) -> None:
-        container_layout = self._card_layout if self.view_mode == "card" else self._list_layout
-        for i in range(container_layout.count()):
-            item = container_layout.itemAt(i)
-            if item and item.widget() and hasattr(item.widget(), "node"):
-                if getattr(item.widget(), "node") is node:
-                    self._on_node_selected(node, item.widget())
-                    break
-
-    def _set_placeholder(self, layout: QLayout) -> None:
-        placeholder = QLabel("表示するブックマークがありません。")
-        placeholder.setObjectName("placeholder")
-        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(placeholder, 0, Qt.AlignmentFlag.AlignCenter)
-
-    def _on_node_selected(self, node: Optional[Node], widget: Any) -> None:
-        if not node:
-            return
-
-        self._selected_node = node
-
-        # 選択解除の走査対象を現在のコンテナに限定
-        container_layout = self._card_layout if self.view_mode == "card" else self._list_layout
-        for i in range(container_layout.count()):
-            item = container_layout.itemAt(i)
-            if item and item.widget() and hasattr(item.widget(), "set_selected"):
-                item.widget().set_selected(False)
-
-        if hasattr(widget, "set_selected"):
-            widget.set_selected(True)
-        self.node_selected.emit(node)
-
-    def request_preview_fetch(self, node: Node) -> None:
-        """プレビュー取得を要求"""
-        self.preview_fetch_requested.emit(node)
-
-    def clear_all(self) -> None:
-        """完全リセット（通常は不要）"""
-        self._nodes.clear()
-        self._selected_node = None
-        self._clear_layout_keep_widgets(self._card_layout)
-        self._clear_layout_keep_widgets(self._list_layout)
-        for w in self._widgets_card:
-            w.deleteLater()
-        for w in self._widgets_list:
-            w.deleteLater()
-        self._widgets_card.clear()
-        self._widgets_list.clear()
-
-    def clear(self) -> None:
-        """後方互換"""
-        self.clear_all()
-
-
-# ==================== Panels ====================
 
 class LeftPanel(QFrame):
     """
@@ -1161,7 +888,6 @@ class LeftPanel(QFrame):
     collapse_all = Signal()
     expand_current = Signal()
     collapse_current = Signal()
-    toggle_dual_tree = Signal(bool)
 
     def __init__(self, callbacks: Optional[Dict[str, Callable]] = None):
         super().__init__()
@@ -1184,7 +910,6 @@ class LeftPanel(QFrame):
         self.bookmarks_count_label: Optional[QLabel] = None
         self.workspace_count_label: Optional[QLabel] = None
         self.view_buttons: Dict[str, QPushButton] = {}
-        self.dual_tree_button: Optional[QPushButton] = None
 
         self._init_ui()
 
@@ -1193,6 +918,7 @@ class LeftPanel(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(self._create_header())
+        layout.addWidget(self._create_workspace_header())
         layout.addWidget(self._create_content_area(), 1)
 
     def _create_header(self) -> QWidget:
@@ -1211,23 +937,20 @@ class LeftPanel(QFrame):
         header_layout.addStretch()
         return header_widget
 
-    def _create_bookmarks_header(self) -> QWidget:
-        """下側（リスト/カード表示エリア）のヘッダー：List/Card切替をここに置く"""
-        header = QWidget()
-        layout = QHBoxLayout(header)
+    def _create_workspace_header(self) -> QWidget:
+        workspace_header = QWidget()
+        layout = QHBoxLayout(workspace_header)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
 
-        title = QLabel("Workspace")
-        layout.addWidget(title)
-
+        workspace_title = QLabel("Workspace")
+        workspace_title.setObjectName("panelHeader")
+        layout.addWidget(workspace_title)
+        
         self.workspace_count_label = QLabel("0")
         self.workspace_count_label.setObjectName("chip")
         layout.addWidget(self.workspace_count_label)
-
         layout.addStretch()
 
-        # List/Card切替ボタン（下側ヘッダーに移設）
         for mode in ["list", "card"]:
             btn = QPushButton(mode.capitalize())
             btn.setObjectName("ghostButton" if mode == "list" else "tonalButton")
@@ -1237,38 +960,7 @@ class LeftPanel(QFrame):
             layout.addWidget(btn)
             self.view_buttons[mode] = btn
 
-        return header
-
-    def _create_tree_header(self) -> QWidget:
-        """ツリービュー上部のヘッダー：2画面切替ボタンをここに置く"""
-        header = QWidget()
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        title = QLabel("Tree")
-        layout.addWidget(title)
-        layout.addStretch()
-
-        dual_btn = QPushButton("2画面モード")
-        dual_btn.setCheckable(True)
-        # 初期状態はコールバックがあれば問い合わせ、無ければFalse
-        if "get_dual_tree_mode" in self.callbacks:
-            try:
-                dual_btn.setChecked(bool(self.callbacks["get_dual_tree_mode"]()))
-            except Exception:
-                dual_btn.setChecked(False)
-        dual_btn.setObjectName("ghostButton")
-        # 起動直後は非表示（読み込み完了後に表示する）
-        dual_btn.setVisible(False)
-        # シグナル/コールバックを両対応（既存Controllerとの接続が楽）
-        dual_btn.toggled.connect(self.toggle_dual_tree.emit)
-        if "set_dual_tree_mode" in self.callbacks:
-            dual_btn.toggled.connect(self.callbacks["set_dual_tree_mode"])
-        self.dual_tree_button = dual_btn
-        layout.addWidget(dual_btn)
-
-        return header
+        return workspace_header
 
     def _create_content_area(self) -> QWidget:
         """コンテンツエリアの生成（ツリーとブックマーク表示の分割エリア）"""
@@ -1334,6 +1026,7 @@ class LeftPanel(QFrame):
         tree_scroll.setWidgetResizable(True)
         tree_scroll.setObjectName("treeScroll")
         tree_scroll.setWidget(self.folder_tree)
+        tree_scroll.setVisible(False)
         self.tree_scroll = tree_scroll
         
         # 2画面モード用のスプリッター
@@ -1353,17 +1046,8 @@ class LeftPanel(QFrame):
         dual_tree_splitter.setSizes([400, 400])
         dual_tree_splitter.setStretchFactor(0, 1)
         dual_tree_splitter.setStretchFactor(1, 1)
+        dual_tree_splitter.setVisible(False)
         self.dual_tree_splitter = dual_tree_splitter
-
-        # 初期表示は現在のモードに合わせる（起動直後にツリーが「空」に見えるのを防ぐ）
-        dual_mode = False
-        if "get_dual_tree_mode" in self.callbacks:
-            try:
-                dual_mode = bool(self.callbacks["get_dual_tree_mode"]())
-            except Exception:
-                dual_mode = False
-        tree_scroll.setVisible(not dual_mode)
-        dual_tree_splitter.setVisible(dual_mode)
 
         # ブックマーク表示エリア
         cards_scroll = QScrollArea()
@@ -1377,28 +1061,16 @@ class LeftPanel(QFrame):
         tree_layout = QVBoxLayout(tree_container)
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.setSpacing(8)
-        tree_layout.addWidget(self._create_tree_header())
         tree_layout.addWidget(tree_controls)
-        # ツリー本体が垂直方向に最大まで広がるようにストレッチを付与（余白解消）
-        tree_layout.addWidget(tree_scroll, 1)
-        tree_layout.addWidget(dual_tree_splitter, 1)
-
-        # 下側（ブックマーク表示）コンテナ：ヘッダー + スクロール
-        bookmarks_container = QWidget()
-        bookmarks_layout = QVBoxLayout(bookmarks_container)
-        bookmarks_layout.setContentsMargins(0, 0, 0, 0)
-        bookmarks_layout.setSpacing(8)
-        bookmarks_layout.addWidget(self._create_bookmarks_header())
-        bookmarks_layout.addWidget(cards_scroll, 1)
+        tree_layout.addWidget(tree_scroll)
+        tree_layout.addWidget(dual_tree_splitter)
 
         # メインスプリッター（上下分割）
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_splitter.addWidget(tree_container)
-        left_splitter.addWidget(bookmarks_container)
-        # ツリー(0)とブックマーク(1)の比率。ツリーが縮みすぎないよう設定
-        left_splitter.setStretchFactor(0, 3)
-        left_splitter.setStretchFactor(1, 2)
-        left_splitter.setCollapsible(0, False)
+        left_splitter.addWidget(cards_scroll)
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 1)
         left_splitter.setSizes([350, 350])
         self.left_splitter = left_splitter
 
@@ -1417,6 +1089,7 @@ class LeftPanel(QFrame):
             btn.setObjectName("tonalButton" if key == mode else "ghostButton")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+
 
 class ActionSection(QFrame):
     """
@@ -1563,11 +1236,7 @@ class RightPanel(QFrame):
         layout.addWidget(scroll, stretch=1)
     
     def _initialize_sections(self) -> None:
-        """Initialize all action sections with callbacks.
-
-        NOTE: 編集系のうち「名前変更」「URL編集」「移動」はDetailPanel側に集約するため、
-        RightPanelの編集セクションからは除外する。
-        """
+        """Initialize all action sections with callbacks."""
         file_callbacks = self.callbacks.get("file", {})
         if file_callbacks:
             self.add_action_section(
@@ -1579,19 +1248,22 @@ class RightPanel(QFrame):
         
         edit_callbacks = self.callbacks.get("edit", {})
         if edit_callbacks:
+            # 「名前変更」「URL編集」「移動」をここから除外（DetailPanelに専念）
             excluded = {"名前変更", "URL編集", "移動"}
-            try:
-                # ControllerMainWindowからは List[tuple] が渡される
-                edit_callbacks = [t for t in edit_callbacks if t and t[0] not in excluded]
-            except Exception:
-                pass
-            self.add_action_section(
-                "edit",
-                "✏️ 編集",
-                "中",
-                edit_callbacks,
-                danger_buttons={"削除"}
-            )
+            filtered_edit = edit_callbacks
+            # ControllerMainWindowからは List[tuple] が来る。dict形式にも一応対応する。
+            if isinstance(edit_callbacks, dict):
+                filtered_edit = {k: v for k, v in edit_callbacks.items() if k not in excluded}
+            elif isinstance(edit_callbacks, list):
+                filtered_edit = [t for t in edit_callbacks if t and t[0] not in excluded]
+            if filtered_edit:
+                self.add_action_section(
+                    "edit",
+                    "✏️ 編集",
+                    "中",
+                    filtered_edit,
+                    danger_buttons={"削除"}
+                )
         
         organize_callbacks = self.callbacks.get("organize", {})
         if organize_callbacks:

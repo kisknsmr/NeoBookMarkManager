@@ -7,6 +7,7 @@ from typing import Optional
 
 from core.ModelBookmark import Node
 from gui.components import FolderTree
+from PySide6.QtCore import QTimer
 
 
 class UIEventController:
@@ -62,7 +63,8 @@ class UIEventController:
         old_parent.remove_child(node)
         new_parent.insert_child(index, node)
 
-        self.window.refresh_tree(select_node=node)
+        # ドロップ処理中に即 refresh_tree すると、QtのD&Dと衝突して固まることがあるため遅延する
+        QTimer.singleShot(0, lambda: self.window.refresh_tree(select_node=node))
 
     def _is_descendant_of(self, node: Node, folder: Node) -> bool:
         cur = node.parent

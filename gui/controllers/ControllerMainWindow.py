@@ -397,23 +397,10 @@ class MainWindow(QMainWindow):
 
         # Backward compatibility: allow existing code to update chip/button
         self.mode_chip = self.topbar.mode_chip
-        # dual_tree_buttonはLeftPanel側のツリーヘッダーに移設するため、あとで差し替える
         self.dual_tree_button = self.topbar.dual_tree_button
-        try:
-            self.topbar.dual_tree_button.setVisible(False)
-        except Exception:
-            pass
 
         self.left_panel = self._create_left_panel()
         self.right_panel = self._create_right_panel()
-
-        # 2画面モードボタンはツリーヘッダー側を正とする（メニュー操作時の同期対象もこちら）
-        if hasattr(self.left_panel, "dual_tree_button") and self.left_panel.dual_tree_button is not None:
-            self.dual_tree_button = self.left_panel.dual_tree_button
-            try:
-                self.dual_tree_button.setChecked(bool(self.dual_tree_mode))
-            except Exception:
-                pass
 
         self._install_main_layout()
 
@@ -1318,12 +1305,6 @@ class MainWindow(QMainWindow):
             self.dual_tree_action.setChecked(self.dual_tree_mode)
         if hasattr(self, "dual_tree_button"):
             self.dual_tree_button.setChecked(self.dual_tree_mode)
-            # ラベルは「現在の状態」ではなく「次の切り替え先」を表示
-            # 2画面ON中は「1画面」、2画面OFF中は「2画面」
-            try:
-                self.dual_tree_button.setText("1画面" if self.dual_tree_mode else "2画面")
-            except Exception:
-                pass
         self.refresh_tree(select_node=self.current_folder or self.root_node)
 
     def _apply_sort(self, sort_by: str) -> None:

@@ -394,12 +394,6 @@ QTreeWidget#folderTree::item {
     font-size: 13px;
 }
 
-/* ドラッグ中のドロップ先フィードバック（プレースホルダー感） */
-QTreeWidget#folderTree::item:drop {
-    background-color: rgba(187, 134, 252, 0.18);
-    border: 1px dashed rgba(187, 134, 252, 0.55);
-}
-
 /* ブランチアイコンのスタイル（Unicode文字を使用） */
 QTreeView::branch:has-siblings:!adjoins-item {
     border-image: none;
