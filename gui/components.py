@@ -33,6 +33,11 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QLayout,
+    QProgressBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QCheckBox,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QPoint
 from PySide6.QtGui import QIcon, QFont, QPixmap, QCursor, QPainter, QFontMetrics
@@ -1314,8 +1319,8 @@ class RightPanel(QFrame):
             self._initialize_sections()
         
         scroll_layout.addWidget(self.actions_container, 0) # 高さを中身に合わせる
-        scroll_layout.addWidget(self.detail_panel, 1)      # 高さを中身に合わせる
-        scroll_layout.addStretch()                        # 余った空白を一番下に追いやる
+        scroll_layout.addWidget(self.detail_panel, 0)      # 詳細も可変（スクロールで担保）
+        scroll_layout.addStretch(1)                        # 余った空白を一番下に追いやる
         
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, stretch=1)
@@ -1428,11 +1433,14 @@ class DetailPanel(QScrollArea):
     copy_url_requested = Signal(str)
     move_requested = Signal(Node)
     delete_requested = Signal(Node)
+    edit_tags_requested = Signal(Node)
     
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         
         self.current_node: Optional[Node] = None
+        self._tag_provider: Optional[Callable[[Node], List[str]]] = None
+        self._tag_detail_provider: Optional[Callable[[Node], List[Tuple[str, str, Any]]]] = None
         
         # QSSクラス設定
         self.setObjectName("detailPanel")
@@ -1445,6 +1453,14 @@ class DetailPanel(QScrollArea):
         self.content_layout.setSpacing(12)
         
         self.setWidget(self.content_widget)
+
+    def set_tag_provider(self, provider: Optional[Callable[[Node], List[str]]]) -> None:
+        """Tag表示用のプロバイダを設定（DBアクセスはController側に寄せる）。"""
+        self._tag_provider = provider
+
+    def set_tag_detail_provider(self, provider: Optional[Callable[[Node], List[Tuple[str, str, Any]]]]) -> None:
+        """タグ詳細（name, source, confidence）表示用のプロバイダ。"""
+        self._tag_detail_provider = provider
     
     def clear_layout(self, layout: QLayout) -> None:
         """レイアウトを再帰的にクリア"""
@@ -1503,6 +1519,46 @@ class DetailPanel(QScrollArea):
             desc_value.setObjectName("valueLabel")
             desc_value.setWordWrap(True)
             self.content_layout.addWidget(desc_value)
+
+        # タグ（ブックマークのみ）
+        if getattr(node, "type", "") == "bookmark":
+            tags_label = QLabel("タグ:")
+            tags_label.setFont(FontManager.get_heading_font(13))
+            tags_label.setObjectName("sectionLabel")
+            self.content_layout.addWidget(tags_label)
+
+            tags = []
+            tag_details: List[Tuple[str, str, Any]] = []
+            try:
+                if self._tag_detail_provider:
+                    tag_details = self._tag_detail_provider(node) or []
+                if self._tag_provider:
+                    tags = self._tag_provider(node) or []
+            except Exception:
+                tags = []
+                tag_details = []
+
+            if tag_details:
+                # 表示例: Dev [rule], Python [manual]
+                parts = []
+                for name, source, conf in tag_details:
+                    s = (source or "").strip() or "unknown"
+                    if conf is None or conf == "":
+                        parts.append(f"{name} [{s}]")
+                    else:
+                        try:
+                            parts.append(f"{name} [{s} {float(conf):.2f}]")
+                        except Exception:
+                            parts.append(f"{name} [{s}]")
+                tags_text = ", ".join(parts)
+            else:
+                tags_text = ", ".join(tags) if tags else "(なし)"
+
+            tags_value = QLabel(tags_text)
+            tags_value.setFont(FontManager.get_body_font(12))
+            tags_value.setObjectName("valueLabel")
+            tags_value.setWordWrap(True)
+            self.content_layout.addWidget(tags_value)
         
         # 操作ボタンセクション
         self.content_layout.addSpacing(12)
@@ -1520,6 +1576,13 @@ class DetailPanel(QScrollArea):
         edit_btn.setObjectName("actionButton")
         edit_btn.clicked.connect(lambda: self.edit_requested.emit(self.current_node))
         button_layout.addWidget(edit_btn)
+
+        # タグ編集（ブックマークのみ）
+        if getattr(node, "type", "") == "bookmark":
+            tags_btn = QPushButton("🏷 タグ編集")
+            tags_btn.setObjectName("actionButton")
+            tags_btn.clicked.connect(lambda: self.edit_tags_requested.emit(self.current_node))
+            button_layout.addWidget(tags_btn)
         
         # URLコピーボタン
         if node.url:
@@ -1650,6 +1713,276 @@ class CustomPromptDialog(QDialog):
         """キャンセルが押されたとき"""
         self.result = None
         self.reject()
+
+
+class AiProgressDialog(QDialog):
+    """AI処理の進捗表示＋キャンセル（チャンク境界でキャンセルされる想定）。"""
+
+    def __init__(self, parent: Optional[QWidget] = None, title: str = "AI処理", total: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self._cancelled = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title_label = QLabel(title)
+        title_label.setFont(FontManager.get_heading_font(13))
+        layout.addWidget(title_label)
+
+        self.status_label = QLabel("準備中...")
+        self.status_label.setFont(FontManager.get_body_font(11))
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, max(0, int(total)))
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
+
+        self.traffic_label = QLabel("")
+        self.traffic_label.setFont(FontManager.get_body_font(10))
+        self.traffic_label.setStyleSheet(f"color: {ColorTokens.TEXT_SECONDARY};")
+        layout.addWidget(self.traffic_label)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        self.cancel_btn = QPushButton("キャンセル")
+        self.cancel_btn.setObjectName("ghostButton")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        btns.addWidget(self.cancel_btn)
+        layout.addLayout(btns)
+
+    def _on_cancel(self) -> None:
+        self._cancelled = True
+        try:
+            self.cancel_btn.setEnabled(False)
+        except Exception:
+            pass
+        self.status_label.setText("キャンセル要求を送信しました。次の中断点で停止します…")
+
+    def is_cancelled(self) -> bool:
+        return bool(self._cancelled)
+
+    def update_progress(self, processed: int, total: int, sent_bytes: int, recv_bytes: int) -> None:
+        self.progress.setRange(0, max(0, int(total)))
+        self.progress.setValue(int(processed))
+        self.status_label.setText(f"処理中: {processed}/{total}")
+        self.traffic_label.setText(f"送信: {sent_bytes:,} bytes / 受信: {recv_bytes:,} bytes")
+
+
+class AiReviewDialog(QDialog):
+    """
+    AI提案のレビュー（選別適用）。
+    - confidence 昇順を初期表示（不安なものを上に）
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None, rows: Optional[List[Dict[str, Any]]] = None):
+        super().__init__(parent)
+        self.setWindowTitle("AI提案のレビュー")
+        self.setMinimumWidth(980)
+        self.setMinimumHeight(520)
+        self._rows: List[Dict[str, Any]] = rows or []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("適用する項目を選択してください（confidenceが低い順に表示）")
+        header.setFont(FontManager.get_heading_font(12))
+        layout.addWidget(header)
+
+        controls = QHBoxLayout()
+        self.chk_select_all = QCheckBox("すべて選択")
+        self.chk_select_all.setChecked(True)
+        self.chk_select_all.stateChanged.connect(self._on_select_all)
+        controls.addWidget(self.chk_select_all)
+
+        self.btn_exclude_low = QPushButton("confidence < 0.8 を一括除外")
+        self.btn_exclude_low.setObjectName("secondaryButton")
+        self.btn_exclude_low.clicked.connect(self._exclude_low_confidence)
+        controls.addWidget(self.btn_exclude_low)
+
+        self.chk_send_excluded = QCheckBox("除外項目を _AI/Review に送る")
+        self.chk_send_excluded.setChecked(True)
+        controls.addWidget(self.chk_send_excluded)
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["適用", "元フォルダ", "提案先", "タイトル", "URL", "confidence", "reason"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.setObjectName("ghostButton")
+        cancel_btn.clicked.connect(self.reject)
+        apply_btn = QPushButton("選択した項目を適用")
+        apply_btn.setObjectName("primaryButton")
+        apply_btn.clicked.connect(self.accept)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(apply_btn)
+        layout.addLayout(btns)
+
+        self._populate()
+
+    def _populate(self) -> None:
+        # confidence昇順
+        self._rows.sort(key=lambda r: float(r.get("confidence", 1.0)))
+        self.table.setRowCount(len(self._rows))
+        for i, r in enumerate(self._rows):
+            apply_item = QTableWidgetItem("")
+            apply_item.setFlags(apply_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            # 低confidenceは初期で除外
+            try:
+                conf = float(r.get("confidence", 0.0))
+            except Exception:
+                conf = 0.0
+            apply_item.setCheckState(Qt.CheckState.Checked if conf >= 0.8 else Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, apply_item)
+
+            self.table.setItem(i, 1, QTableWidgetItem(r.get("from_folder", "") or ""))
+            self.table.setItem(i, 2, QTableWidgetItem(r.get("to_folder", "") or ""))
+            self.table.setItem(i, 3, QTableWidgetItem(r.get("title", "") or ""))
+            self.table.setItem(i, 4, QTableWidgetItem(r.get("url", "") or ""))
+            self.table.setItem(i, 5, QTableWidgetItem(f'{float(r.get("confidence", 0.0)):.2f}'))
+            self.table.setItem(i, 6, QTableWidgetItem(r.get("reason", "") or ""))
+
+    def _on_select_all(self) -> None:
+        checked = self.chk_select_all.isChecked()
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+
+    def _exclude_low_confidence(self) -> None:
+        for i, r in enumerate(self._rows):
+            try:
+                conf = float(r.get("confidence", 0.0))
+            except Exception:
+                conf = 0.0
+            if conf < 0.8:
+                item = self.table.item(i, 0)
+                if item:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+
+    def get_selected_rows(self) -> List[Dict[str, Any]]:
+        selected: List[Dict[str, Any]] = []
+        for i, r in enumerate(self._rows):
+            item = self.table.item(i, 0)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                selected.append(r)
+        return selected
+
+    def should_send_excluded_to_review(self) -> bool:
+        return bool(self.chk_send_excluded.isChecked())
+
+
+class RestoreDialog(QDialog):
+    """バックアップ一覧から復元先（世代）を選ぶダイアログ。"""
+
+    def __init__(self, parent: Optional[QWidget] = None, backups: Optional[List[str]] = None):
+        super().__init__(parent)
+        self.setWindowTitle("バックアップから復元")
+        self.setMinimumWidth(560)
+        self._backups = backups or []
+        self.selected_backup: Optional[str] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        desc = QLabel("復元する世代を選択してください（復元後、アプリは再起動されます）。")
+        desc.setWordWrap(True)
+        desc.setFont(FontManager.get_body_font(11))
+        layout.addWidget(desc)
+
+        self.list_widget = QListWidget()
+        for b in self._backups:
+            self.list_widget.addItem(QListWidgetItem(b))
+        if self._backups:
+            self.list_widget.setCurrentRow(0)
+        layout.addWidget(self.list_widget, 1)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.setObjectName("ghostButton")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("復元")
+        ok_btn.setObjectName("dangerButton")
+        ok_btn.clicked.connect(self._accept)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        layout.addLayout(btns)
+
+    def _accept(self) -> None:
+        item = self.list_widget.currentItem()
+        if not item:
+            return
+        self.selected_backup = item.text()
+        self.accept()
+
+
+class TagEditDialog(QDialog):
+    """ローカルタグ編集（カンマ区切り）。"""
+
+    def __init__(self, parent: Optional[QWidget] = None, *, current_tags: Optional[List[str]] = None):
+        super().__init__(parent)
+        self.setWindowTitle("タグ編集")
+        self.setMinimumWidth(600)
+        self._result: Optional[List[str]] = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        label = QLabel("タグをカンマ区切りで入力してください（例: python, ai, news）")
+        label.setWordWrap(True)
+        label.setFont(FontManager.get_body_font(11))
+        layout.addWidget(label)
+
+        self.input = QLineEdit()
+        self.input.setText(", ".join(current_tags or []))
+        layout.addWidget(self.input)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel_btn = QPushButton("キャンセル")
+        cancel_btn.setObjectName("ghostButton")
+        cancel_btn.clicked.connect(self.reject)
+        ok_btn = QPushButton("保存")
+        ok_btn.setObjectName("primaryButton")
+        ok_btn.clicked.connect(self._accept)
+        btns.addWidget(cancel_btn)
+        btns.addWidget(ok_btn)
+        layout.addLayout(btns)
+
+    def _accept(self) -> None:
+        raw = self.input.text()
+        tags = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        self._result = tags
+        self.accept()
+
+    def get_tags(self) -> List[str]:
+        return self._result or []
 
 
 class FolderSelectDialog(QDialog):

@@ -62,6 +62,20 @@ def main() -> None:
     app.setApplicationName(APP_NAME_SHORT)
     app.setApplicationVersion(VERSION)
 
+    # Phase 1 (AI Safety): Initialize local DB compatibility gate early
+    # user_data.db is created if missing; if DB is newer than app supports, abort startup.
+    try:
+        from core.DatabaseManager import DatabaseManager
+
+        dbm = DatabaseManager(project_root=Path(__file__).parent)
+        dbm.ensure_compatible()
+    except Exception as e:
+        print("=" * 60)
+        print("[FATAL] Database initialization failed:")
+        print(e)
+        print("=" * 60)
+        raise SystemExit(1)
+
     # QApplication 作成後に実行する必要がある
     FontLoader.initialize()
 

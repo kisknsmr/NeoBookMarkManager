@@ -13,6 +13,22 @@ prompt_file = config/prompt.txt
 [Classifier]
 priority_terms = Python, Power BI, SharePoint, AWS
 
+[AI]
+# モデル名（google-generativeai）
+model = gemini-1.5-flash
+# チャンクサイズ（30〜50推奨）
+chunk_size = 40
+# 送信前サニタイズ（クエリ除去）: true/false
+sanitize_urls = true
+# コスト承認ゲート用（USD / 1M tokens）
+# ※ 未設定/0の場合は安全側でAI実行を停止します（Phase2 Must: コスト提示と承認）。
+input_cost_per_1m_tokens = 0.0
+output_cost_per_1m_tokens = 0.0
+
+[AutoTag]
+# 将来的にドメイン辞書/キーワード辞書をここから読み込む想定（今回はハードコード実装）。
+# allow_network = false
+
 [Session]
 # last_bookmarks_file = samples/bookmarks_2026_01_10.html
 # window_width = 1400

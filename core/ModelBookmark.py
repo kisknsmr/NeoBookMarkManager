@@ -24,12 +24,23 @@ class Node:
         "last_modified",
         "icon",
         "description",
+        "bookmark_id",
         "children",
         "parent",
         "qt_pixmap_cache",
     )
 
-    def __init__(self, type_, title="", url="", add_date="", last_modified="", icon="", description=""):
+    def __init__(
+        self,
+        type_,
+        title="",
+        url="",
+        add_date="",
+        last_modified="",
+        icon="",
+        description="",
+        bookmark_id="",
+    ):
         self.type = type_
         self.title = title
         self.url = url
@@ -37,6 +48,7 @@ class Node:
         self.last_modified = last_modified
         self.icon = icon  # ファビコンURLまたはbase64データ
         self.description = description
+        self.bookmark_id = bookmark_id or ""
         self.children = []
         self.parent = None
         self.qt_pixmap_cache = {}
@@ -102,9 +114,10 @@ class NetscapeBookmarkParser(HTMLParser):
         elif tag == "a":
             # ICON属性を読み込む（data:image形式またはURL）
             icon_data = attr.get("icon", "")
+            bookmark_id = attr.get("bookmark_id", "") or attr.get("data-bookmark-id", "") or ""
             self._pending_link = Node("bookmark", title="", url=attr.get("href", ""), 
                                      add_date=attr.get("add_date", ""),
-                                     last_modified=attr.get("last_modified", ""), icon=icon_data)
+                                     last_modified=attr.get("last_modified", ""), icon=icon_data, bookmark_id=bookmark_id)
             self._capture_text_for = "link";
             self._buffer = []
 
@@ -147,8 +160,9 @@ def export_netscape_html(root: Node) -> str:
                 write_folder(ch, indent + 1)
             else:
                 icon_attr = f' ICON="{esc(ch.icon)}"' if ch.icon else ""
+                bid_attr = f' BOOKMARK_ID="{esc(getattr(ch, "bookmark_id", "") or "")}"' if getattr(ch, "bookmark_id", "") else ""
                 out.write(
-                    f'{ind}    <DT><A HREF="{esc(ch.url)}" ADD_DATE="{esc(ch.add_date)}" LAST_MODIFIED="{esc(ch.last_modified)}"{icon_attr}>{esc(ch.title)}</A>\n')
+                    f'{ind}    <DT><A HREF="{esc(ch.url)}" ADD_DATE="{esc(ch.add_date)}" LAST_MODIFIED="{esc(ch.last_modified)}"{icon_attr}{bid_attr}>{esc(ch.title)}</A>\n')
         out.write(f"{ind}</DL><p>\n")
 
     for ch in root.children:
@@ -156,7 +170,8 @@ def export_netscape_html(root: Node) -> str:
             write_folder(ch, 1)
         else:
             icon_attr = f' ICON="{esc(ch.icon)}"' if ch.icon else ""
+            bid_attr = f' BOOKMARK_ID="{esc(getattr(ch, "bookmark_id", "") or "")}"' if getattr(ch, "bookmark_id", "") else ""
             out.write(
-                f'    <DT><A HREF="{esc(ch.url)}" ADD_DATE="{esc(ch.add_date)}" LAST_MODIFIED="{esc(ch.last_modified)}"{icon_attr}>{esc(ch.title)}</A>\n')
+                f'    <DT><A HREF="{esc(ch.url)}" ADD_DATE="{esc(ch.add_date)}" LAST_MODIFIED="{esc(ch.last_modified)}"{icon_attr}{bid_attr}>{esc(ch.title)}</A>\n')
     out.write(BOOKMARK_HTML_FOOTER)
     return out.getvalue()

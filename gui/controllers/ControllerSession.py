@@ -41,10 +41,28 @@ class SessionController:
 
     def auto_load_bookmarks(self, file_path: str) -> None:
         try:
+            # Phase 1/2 Safety: DB migrations must run with 3-target backup (bookmarks.html + user_data.db + config.ini)
+            from pathlib import Path
+            from core.DatabaseManager import DatabaseManager
+
+            project_root = Path(__file__).resolve().parent.parent.parent
+            config_path = Path(getattr(self.config, "config_path", project_root / "config" / "config.ini"))
+            DatabaseManager(project_root=project_root).migrate_if_needed(
+                bookmarks_html=Path(file_path),
+                config_ini=config_path,
+                keep_generations=30,
+            )
+
             root, rules, rules_path = self._load_bookmarks(file_path)
             if root is None or not isinstance(root, Node):
                 self.window.logger.error("Auto-load failed: invalid root node")
                 return
+
+            # Must: assign stable internal ids for local tagging (persisted into HTML on save)
+            try:
+                self.window.bookmark_service.ensure_bookmark_ids(root)
+            except Exception:
+                pass
 
             self.window.set_root_node_state(root)
             self.window.set_rules_state(rules or self._default_rules(), rules_path)

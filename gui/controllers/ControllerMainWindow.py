@@ -29,6 +29,8 @@ from core.UtilLogger import logger
 from core.ModelBookmark import Node
 from core.ServiceStorage import ConfigManager, load_bookmarks, save_bookmarks
 from core.UtilCoreUtils import LRUCache, is_valid_url
+from core.UtilBackupManager import BackupManager, BackupTargets, BackupError
+from core.DatabaseManager import DatabaseManager
 from gui.components import (
     BookmarkListView,
     BookmarkCard,
@@ -37,13 +39,18 @@ from gui.components import (
     SearchBar,
     CustomPromptDialog,
     FolderSelectDialog,
+    AiProgressDialog,
+    AiReviewDialog,
+    RestoreDialog,
+    TagEditDialog,
     LeftPanel,
     TopBar,
     RightPanel,
     DetailPanel,
 )
 from services.WorkerNetwork import fetch_preview, fix_titles
-from services.legacy.ServiceAiClassifierLegacy import AIBookmarkClassifier, BookmarkNode
+from services.ServiceAiClassifier import AIBookmarkClassifier, BookmarkNode
+from services.ServiceAutoTag import AutoTagService
 from services.ServicePlans import build_rules_plan
 from gui.UtilGuiResources import Typography, WindowSize
 from gui.ModelAppState import AppState
@@ -54,6 +61,7 @@ from gui.controllers.ControllerTreeUi import TreeUIController
 from gui.controllers.ControllerUiEvent import UIEventController
 from services.ServiceBookmark import BookmarkService
 from services.ServiceSearch import SearchService
+from services.ServiceTags import TagService
 from services.BusWorker import WorkerBus, WorkerEventHandler
 from services.ServiceFeatureFlags import FeatureFlagManager
 
@@ -159,6 +167,7 @@ class MainWindow(QMainWindow):
         self.app_state = AppState()
         self.bookmark_service = BookmarkService()
         self.search_service = SearchService()
+        self.tag_service = TagService(project_root=Path(__file__).resolve().parent.parent.parent)
         self.feature_flags = FeatureFlagManager.get()
 
         # ==================== Legacy UI State (gradual migration) ====================
@@ -361,6 +370,24 @@ class MainWindow(QMainWindow):
         fix_titles_action = QAction("Fix Titles from URL", self)
         fix_titles_action.triggered.connect(self.cmd_fix_titles_from_url)
         tools_menu.addAction(fix_titles_action)
+
+        tools_menu.addSeparator()
+
+        auto_tag_offline_action = QAction("Local Auto-Tag (Offline)", self)
+        auto_tag_offline_action.triggered.connect(self.cmd_local_auto_tag_offline)
+        tools_menu.addAction(auto_tag_offline_action)
+
+        auto_tag_online_action = QAction("Local Auto-Tag (Online)", self)
+        auto_tag_online_action.triggered.connect(self.cmd_local_auto_tag_online)
+        tools_menu.addAction(auto_tag_online_action)
+
+        undo_action = QAction("Undo (Latest Backup)", self)
+        undo_action.triggered.connect(self.cmd_undo_latest_backup)
+        tools_menu.addAction(undo_action)
+
+        restore_action = QAction("Restore from Backup...", self)
+        restore_action.triggered.connect(self.cmd_restore_from_backup)
+        tools_menu.addAction(restore_action)
     
     def _create_view_menu(self) -> None:
         """Create View menu."""
@@ -469,6 +496,8 @@ class MainWindow(QMainWindow):
                 ("別名保存", self.cmd_save_as),
                 ("保存", self.cmd_save),
                 ("開く", self.cmd_open),
+                ("Undo", self.cmd_undo_latest_backup),
+                ("復元", self.cmd_restore_from_backup),
             ],
             "edit": [
                 ("新規フォルダ", self.cmd_new_folder),
@@ -489,6 +518,8 @@ class MainWindow(QMainWindow):
             ],
             "ai": [
                 ("スマート分類", self.cmd_smart_classify),
+                ("自動タグ（オフライン）", self.cmd_local_auto_tag_offline),
+                ("自動タグ（オンライン）", self.cmd_local_auto_tag_online),
                 ("ルール分類", self.cmd_show_classify_preview),
                 ("ルール編集", self.cmd_show_classify_preview),
                 ("上限設定", self.cmd_save),
@@ -499,14 +530,62 @@ class MainWindow(QMainWindow):
         panel = RightPanel(callbacks=callbacks)
         self.actions_container = panel.actions_container
         self.detail_panel = panel.get_detail_panel()
+        try:
+            self.detail_panel.set_tag_provider(
+                lambda node: self.tag_service.get_tags(getattr(node, "bookmark_id", "") or "")
+            )
+            self.detail_panel.set_tag_detail_provider(
+                lambda node: [
+                    (d.name, d.source, d.confidence)
+                    for d in self.tag_service.get_tag_details(getattr(node, "bookmark_id", "") or "")
+                ]
+            )
+        except Exception:
+            pass
         
         # Connect detail panel signals
         self.detail_panel.edit_requested.connect(self._on_edit_bookmark)
         self.detail_panel.copy_url_requested.connect(self._copy_to_clipboard)
         self.detail_panel.move_requested.connect(self.ui_events.on_detail_move)
         self.detail_panel.delete_requested.connect(self.ui_events.on_detail_delete)
+        self.detail_panel.edit_tags_requested.connect(self._on_edit_tags)
         
         return panel
+
+    def _on_edit_tags(self, node: Node) -> None:
+        """ローカルタグ編集（DB保存）。"""
+        if not node or getattr(node, "type", "") != "bookmark":
+            return
+        if not getattr(node, "bookmark_id", ""):
+            try:
+                self.bookmark_service.ensure_bookmark_ids(self.root_node)
+            except Exception:
+                pass
+        bid = getattr(node, "bookmark_id", "") or ""
+        if not bid:
+            QMessageBox.warning(self, "タグ編集", "bookmark_id の付与に失敗しました。")
+            return
+
+        try:
+            current = self.tag_service.get_tags(bid)
+        except Exception:
+            current = []
+
+        dlg = TagEditDialog(self, current_tags=current)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            self.tag_service.set_tags(bid, dlg.get_tags(), source="manual")
+        except Exception as exc:
+            QMessageBox.critical(self, "タグ保存失敗", f"タグの保存に失敗しました:\n{exc}")
+            return
+
+        try:
+            self.detail_panel.set_node(node)
+        except Exception:
+            pass
+        self.statusBar().showMessage("タグを保存しました", 2000)
 
     # ------------------------------ window events ----------------------------
     def showEvent(self, event: Any) -> None:
@@ -596,6 +675,54 @@ class MainWindow(QMainWindow):
         if getattr(self, "workspace_count_label", None) is not None:
             self.workspace_count_label.setText(f"{total_current:,}")
 
+    # ----------------------------- Phase 1 Safety Gate ------------------------------
+    def _ensure_backup_or_abort(self, operation_name: str) -> bool:
+        """
+        Spec (AI機能実装計画.md):
+        破壊的変更（AI/一括整理/タグ付け等）の開始直前に必ず3点セットのバックアップを作成。
+        失敗した場合は後続処理を即時中止する。
+        """
+        if not self.current_file:
+            QMessageBox.warning(self, "バックアップ不可", f"{operation_name} の前にHTMLを読み込んでください。")
+            return False
+
+        project_root = Path(__file__).resolve().parent.parent.parent
+        db_path = project_root / "user_data.db"
+        config_path = Path(getattr(self.config_manager, "config_path", project_root / "config" / "config.ini"))
+
+        # Ensure config.ini exists (first run can be empty)
+        try:
+            if not config_path.exists():
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                config_path.write_text("", encoding="utf-8")
+        except Exception as exc:
+            QMessageBox.critical(self, "バックアップ失敗", f"{operation_name} を開始できません。\nconfig.ini の準備に失敗しました:\n{exc}")
+            return False
+
+        # Ensure DB exists
+        try:
+            if not db_path.exists():
+                DatabaseManager(project_root=project_root).ensure_ready()
+        except Exception as exc:
+            QMessageBox.critical(self, "バックアップ失敗", f"{operation_name} を開始できません。\nuser_data.db の準備に失敗しました:\n{exc}")
+            return False
+
+        try:
+            targets = BackupTargets(
+                bookmarks_html=Path(self.current_file),
+                user_data_db=db_path,
+                config_ini=config_path,
+            )
+            BackupManager(project_root=project_root, keep_generations=30).create_backup(targets)
+            return True
+        except (BackupError, Exception) as exc:
+            QMessageBox.critical(
+                self,
+                "バックアップ失敗",
+                f"{operation_name} を開始できません。\nバックアップ作成に失敗しました:\n{exc}",
+            )
+            return False
+
     def _after_model_changed(self, select_node: Optional[Node] = None, refresh_parts: str = "all") -> None:
         """
         Unified handler for model changes. Call this INSTEAD of manually calling _build_search_index + _refresh_*.
@@ -627,6 +754,20 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
+        # Phase 1/2 Safety: DB migrations must run with 3-target backup (bookmarks.html + user_data.db + config.ini)
+        try:
+            project_root = Path(__file__).resolve().parent.parent.parent
+            db_path = project_root / "user_data.db"
+            config_path = Path(getattr(self.config_manager, "config_path", project_root / "config" / "config.ini"))
+            DatabaseManager(project_root=project_root).migrate_if_needed(
+                bookmarks_html=Path(file_path),
+                config_ini=config_path,
+                keep_generations=30,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"DBマイグレーションに失敗しました:\n{exc}")
+            return
+
         try:
             root, rules, rules_path = load_bookmarks(file_path)
         except Exception as exc:
@@ -634,6 +775,11 @@ class MainWindow(QMainWindow):
             return
 
         self.set_root_node_state(root)
+        # Must: assign stable internal ids for local tagging (persisted into HTML on save)
+        try:
+            self.bookmark_service.ensure_bookmark_ids(root)
+        except Exception:
+            pass
         self.set_rules_state(rules, rules_path)
         self.set_current_file_state(file_path)
         self.current_folder = root
@@ -916,6 +1062,8 @@ class MainWindow(QMainWindow):
         """Delete duplicate bookmarks in current folder."""
         if not self.current_folder:
             return
+        if not self._ensure_backup_or_abort("重複削除"):
+            return
 
         project_root = Path(__file__).resolve().parent.parent.parent
         log_path = project_root / "logs" / "cleanup_history.log"
@@ -945,6 +1093,8 @@ class MainWindow(QMainWindow):
         """Merge duplicate folders in current folder."""
         if not self.current_folder:
             return
+        if not self._ensure_backup_or_abort("重複フォルダの統合"):
+            return
         
         removed = self.bookmark_service.merge_duplicate_folders(self.current_folder)
         
@@ -972,6 +1122,8 @@ class MainWindow(QMainWindow):
             return
 
         domain, folder_name = dialog.result_data
+        if not self._ensure_backup_or_abort(f"ドメイン統合（{domain}）"):
+            return
         moved = self.bookmark_service.consolidate_by_domain(self.root_node, domain, folder_name)
         if moved <= 0:
             QMessageBox.information(self, "完了", f"{domain} の対象ブックマークは見つかりませんでした。")
@@ -1212,6 +1364,9 @@ class MainWindow(QMainWindow):
         )
         if res != QMessageBox.StandardButton.Yes:
             return
+
+        if not self._ensure_backup_or_abort("ルールベース分類"):
+            return
         
         for folder_name, nodes in plan.items():
             target = self.bookmark_service.find_or_create_folder(base, folder_name)
@@ -1255,13 +1410,109 @@ class MainWindow(QMainWindow):
                 bn = BookmarkNode(title=node.title or "", url=node.url or "")
                 items.append(bn)
                 node_map[bn] = node
-            
-            result = classifier.classify_bookmarks(
+
+            # Cost estimate & approval gate (Phase2 Must)
+            model_name = self.config_manager.get("AI", "model", fallback="gemini-1.5-flash")
+            chunk_size = int(self.config_manager.get("AI", "chunk_size", fallback="40") or 40)
+            sanitize_urls = str(self.config_manager.get("AI", "sanitize_urls", fallback="true")).lower() in ("1", "true", "yes", "on")
+
+            estimate = classifier.estimate_cost(
                 items,
                 priority_terms=priority_terms,
-                max_items=self.max_smart_items,
                 additional_prompt=additional_prompt,
+                chunk_size=chunk_size,
+                model_name=model_name,
+                sanitize_urls=sanitize_urls,
             )
+            if estimate.input_cost_usd_est <= 0 or estimate.output_cost_usd_est_range[0] < 0:
+                QMessageBox.critical(
+                    self,
+                    "AI実行不可（単価未設定）",
+                    "Phase 2 Safety仕様により、AI実行前にコスト提示と承認が必須です。\n"
+                    "config/config.ini の [AI] input_cost_per_1m_tokens / output_cost_per_1m_tokens を設定してください。",
+                )
+                return
+
+            msg = (
+                f"AI分類を実行しますか？\n\n"
+                f"- モデル: {estimate.model}\n"
+                f"- 対象: {estimate.items} 件（{estimate.chunks} チャンク）\n"
+                f"- 推定入力: {estimate.input_tokens_est:,} tokens / ${estimate.input_cost_usd_est:.6f}\n"
+                f"- 推定出力: {estimate.output_tokens_est_range[0]:,}〜{estimate.output_tokens_est_range[1]:,} tokens "
+                f"/ ${estimate.output_cost_usd_est_range[0]:.6f}〜${estimate.output_cost_usd_est_range[1]:.6f}\n"
+            )
+            res = QMessageBox.question(self, "AIコスト承認", msg)
+            if res != QMessageBox.StandardButton.Yes:
+                return
+
+            # Must: AI処理開始直前にバックアップ
+            if not self._ensure_backup_or_abort("AI分類"):
+                return
+
+            # Progress + cancellation (chunk boundary)
+            cancel_flag = {"cancelled": False}
+            progress_dialog = AiProgressDialog(self, title="AI分類", total=len(items))
+            try:
+                progress_dialog.cancel_btn.clicked.connect(lambda: cancel_flag.__setitem__("cancelled", True))
+            except Exception:
+                pass
+
+            from PySide6.QtCore import QObject, Signal, QThread
+
+            class _AiWorker(QObject):
+                progress = Signal(int, int, int, int)
+                finished = Signal(object, object)  # (result, error)
+
+                def run(self):
+                    try:
+                        classifier.set_progress_callback(lambda a, b, c, d: self.progress.emit(a, b, c, d))
+                        r = classifier.classify_bookmarks(
+                            items,
+                            priority_terms=priority_terms,
+                            max_items=self.max_smart_items,
+                            additional_prompt=additional_prompt,
+                            chunk_size=chunk_size,
+                            model_name=model_name,
+                            sanitize_urls=sanitize_urls,
+                            cancel_checker=lambda: cancel_flag.get("cancelled", False),
+                        )
+                        self.finished.emit(r, None)
+                    except Exception as e:
+                        self.finished.emit(None, e)
+            
+            thread = QThread(self)
+            worker = _AiWorker()
+            worker.moveToThread(thread)
+            worker.progress.connect(progress_dialog.update_progress)
+
+            result_holder = {"result": None, "error": None}
+
+            def _on_finished(r, e):
+                result_holder["result"] = r
+                result_holder["error"] = e
+                progress_dialog.accept()
+
+            worker.finished.connect(_on_finished)
+            thread.started.connect(worker.run)
+            thread.start()
+
+            if progress_dialog.exec() != QDialog.DialogCode.Accepted:
+                cancel_flag["cancelled"] = True
+                try:
+                    classifier.cancel()
+                except Exception:
+                    pass
+                thread.quit()
+                thread.wait(1000)
+                return
+
+            thread.quit()
+            thread.wait(1000)
+
+            if result_holder["error"] is not None:
+                raise result_holder["error"]
+
+            result = result_holder["result"]
         except Exception as exc:
             QMessageBox.critical(self, "AI Classify", f"AI分類に失敗しました:\n{exc}")
             return
@@ -1270,17 +1521,65 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "AI Classify", "分類結果が空でした。")
             return
 
-        # Apply classification
-        for folder_name, items in result.plan.items():
-            target = self.bookmark_service.find_or_create_folder(base, folder_name)
-            for item in items:
-                node = node_map.get(item)
+        # Review UI
+        review_rows = []
+        for item, folder, conf, reason in getattr(result, "decisions", []) or []:
+            node = node_map.get(item)
+            if not node:
+                continue
+            try:
+                from_folder = self._get_folder_path(node.parent) if node.parent else ""
+            except Exception:
+                from_folder = ""
+            review_rows.append(
+                {
+                    "node": node,
+                    "from_folder": from_folder,
+                    "to_folder": folder,
+                    "title": node.title or "",
+                    "url": node.url or "",
+                    "confidence": conf,
+                    "reason": reason,
+                }
+            )
+
+        dlg = AiReviewDialog(self, rows=review_rows)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = dlg.get_selected_rows()
+        if not selected:
+            QMessageBox.information(self, "AI Classify", "適用する項目がありません。")
+            return
+
+        # Apply selected decisions (AI folders are restricted to /_AI)
+        ai_root = self.bookmark_service.get_or_create_ai_root(self.root_node)
+        review_folder = self.bookmark_service.get_or_create_ai_review_folder(self.root_node)
+        selected_set = set(id(r.get("node")) for r in selected if r.get("node") is not None)
+
+        for row in selected:
+            node = row.get("node")
+            folder_name = str(row.get("to_folder") or "Unsorted")
+            if not node:
+                continue
+            target = self.bookmark_service.ai_find_or_create_folder(self.root_node, folder_name)
+            try:
+                self.bookmark_service.move_to_folder(node, target)
+            except ValueError as e:
+                self.logger.warning(f"Failed to move {getattr(node, 'title', '')}: {e}")
+
+        # Excluded items policy (Spec: fixed retreat folder)
+        if dlg.should_send_excluded_to_review():
+            for row in review_rows:
+                node = row.get("node")
                 if not node:
                     continue
+                if id(node) in selected_set:
+                    continue
                 try:
-                    self.bookmark_service.move_to_folder(node, target)
-                except ValueError as e:
-                    self.logger.warning(f"Failed to move {node.title}: {e}")
+                    self.bookmark_service.move_to_folder(node, review_folder)
+                except Exception:
+                    # excluded items failure should not abort entire apply
+                    pass
 
         # Structure changed, rebuild search and refresh
         self.search_service.rebuild(self.root_node)
@@ -1288,6 +1587,143 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.refresh_counts()
         self.statusBar().showMessage("AI classification completed", 4000)
+
+    # ----------------------------- Restore / Undo ------------------------------
+    def _restart_app(self) -> None:
+        """Force restart (Spec: restore requires restart or full reload)."""
+        import sys
+        import os
+
+        python = sys.executable
+        args = [python] + sys.argv
+        os.execv(python, args)
+
+    def _get_backup_paths(self):
+        project_root = Path(__file__).resolve().parent.parent.parent
+        db_path = project_root / "user_data.db"
+        config_path = Path(getattr(self.config_manager, "config_path", project_root / "config" / "config.ini"))
+        return project_root, db_path, config_path
+
+    def cmd_undo_latest_backup(self) -> None:
+        if not self.current_file:
+            QMessageBox.warning(self, "Undo不可", "先にHTMLを読み込んでください。")
+            return
+        project_root, db_path, config_path = self._get_backup_paths()
+        bm = BackupManager(project_root=project_root, keep_generations=30)
+        backups = bm.list_backups()
+        if not backups:
+            QMessageBox.information(self, "Undo", "バックアップが見つかりません。")
+            return
+        try:
+            bm.restore_backup(
+                backup_dir=backups[0],
+                targets=BackupTargets(
+                    bookmarks_html=Path(self.current_file),
+                    user_data_db=db_path,
+                    config_ini=config_path,
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "復元失敗", f"復元に失敗しました:\n{e}")
+            return
+        QMessageBox.information(self, "復元完了", "復元が完了しました。アプリを再起動します。")
+        self._restart_app()
+
+    def cmd_restore_from_backup(self) -> None:
+        if not self.current_file:
+            QMessageBox.warning(self, "復元不可", "先にHTMLを読み込んでください。")
+            return
+        project_root, db_path, config_path = self._get_backup_paths()
+        bm = BackupManager(project_root=project_root, keep_generations=30)
+        backups = bm.list_backups()
+        if not backups:
+            QMessageBox.information(self, "復元", "バックアップが見つかりません。")
+            return
+        names = [p.name for p in backups]
+        dlg = RestoreDialog(self, backups=names)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected_backup:
+            return
+        backup_dir = project_root / "backups" / dlg.selected_backup
+        try:
+            bm.restore_backup(
+                backup_dir=backup_dir,
+                targets=BackupTargets(
+                    bookmarks_html=Path(self.current_file),
+                    user_data_db=db_path,
+                    config_ini=config_path,
+                ),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "復元失敗", f"復元に失敗しました:\n{e}")
+            return
+        QMessageBox.information(self, "復元完了", "復元が完了しました。アプリを再起動します。")
+        self._restart_app()
+
+    # ----------------------------- Local Auto-Tag (Phase 2.3) ------------------------------
+    def _run_local_auto_tag(self, *, allow_network: bool) -> None:
+        """ローカル自動タグ付け（Tier1 + allow_networkならTier2）。DBに source='rule' で保存。全件対象。"""
+        base = self.root_node
+        if not base:
+            return
+        # ensure bookmark_id exists for all bookmarks (otherwise DB write is skipped)
+        assigned = 0
+        try:
+            assigned = self.bookmark_service.ensure_bookmark_ids(base)
+        except Exception:
+            assigned = 0
+
+        nodes = list(self.bookmark_service.iter_bookmarks(base))
+        if not nodes:
+            QMessageBox.information(self, "ローカル自動タグ", "対象ブックマークがありません。")
+            return
+
+        if not self._ensure_backup_or_abort("ローカル自動タグ（rule）"):
+            return
+
+        proxy_info = None
+        if allow_network:
+            proxy_info = self.config_manager.get_proxies_for_requests(use_proxy=self.use_proxy)
+
+        try:
+            auto = AutoTagService(project_root=Path(__file__).resolve().parent.parent.parent)
+            r = auto.auto_tag(nodes=nodes, allow_network=allow_network, proxy_info=proxy_info)
+        except Exception as exc:
+            QMessageBox.critical(self, "ローカル自動タグ", f"実行に失敗しました:\n{exc}")
+            return
+
+        QMessageBox.information(
+            self,
+            "ローカル自動タグ",
+            "完了:\n"
+            f"- タグ保存: {r.tagged}/{r.processed} 件（scrape={r.scraped}）\n"
+            f"- bookmark_id 未付与でスキップ: {r.missing_id} 件\n"
+            f"- DB保存失敗: {r.save_failed} 件\n"
+            + (f"\n※ bookmark_id を {assigned} 件に付与しました。永続化のためHTMLを保存してください。" if assigned else ""),
+        )
+        # detail panel tag view uses DB, so refresh current selection
+        try:
+            if self.selected_node:
+                self.detail_panel.set_node(self.selected_node)
+        except Exception:
+            pass
+
+    def cmd_local_auto_tag_offline(self) -> None:
+        """自動タグ分類（オフライン）: Tier1のみ（高速・ネットワークなし）"""
+        self._run_local_auto_tag(allow_network=False)
+
+    def cmd_local_auto_tag_online(self) -> None:
+        """自動タグ分類（オンライン）: Tier1 + Tier2（軽量スクレイピング）"""
+        if not self.network_updates_enabled:
+            ans = QMessageBox.question(
+                self,
+                "ネットワーク無効",
+                "オンライン自動タグ分類にはネットワーク取得の許可が必要です。\n"
+                "ネットワーク取得を有効化しますか？",
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            self.network_updates_enabled = True
+        self._run_local_auto_tag(allow_network=True)
 
     # ----------------------------- Network Commands ------------------------------
     def cmd_check_proxy(self) -> None:
@@ -1306,6 +1742,9 @@ class MainWindow(QMainWindow):
 
     def cmd_fix_titles_from_url(self) -> None:
         """Fix bookmark titles by fetching from URLs."""
+        if not self._ensure_backup_or_abort("タイトル取得（URLから更新）"):
+            return
+
         self._enable_network_updates("タイトル取得")
         
         nodes = list(self.bookmark_service.iter_bookmarks(self.current_folder)) \

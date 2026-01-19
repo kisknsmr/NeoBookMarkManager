@@ -14,6 +14,7 @@ import datetime
 
 from core.ModelBookmark import Node
 from core.UtilLogger import logger
+import uuid
 
 
 class BookmarkService:
@@ -59,6 +60,35 @@ class BookmarkService:
             if child.type == "folder" and child.title == name:
                 return child
         return self.create_folder(parent, name)
+
+    # ==================== AI Safety (/_AI root) ====================
+    def get_or_create_ai_root(self, root: Node, *, ai_root_name: str = "_AI") -> Node:
+        """AI専用ルート `/_AI` を root 直下に保証する。"""
+        if not root or root.type != "folder":
+            raise ValueError("root must be a folder")
+        for ch in list(getattr(root, "children", []) or []):
+            if getattr(ch, "type", "") == "folder" and (ch.title or "") == ai_root_name:
+                return ch
+        ai_root = Node("folder", ai_root_name)
+        root.insert_child(0, ai_root)
+        return ai_root
+
+    def get_or_create_ai_review_folder(self, root: Node, *, ai_root_name: str = "_AI") -> Node:
+        """`/_AI/Review` を保証する。"""
+        ai_root = self.get_or_create_ai_root(root, ai_root_name=ai_root_name)
+        return self.find_or_create_folder(ai_root, "Review")
+
+    def ai_find_or_create_folder(self, root: Node, folder_name: str, *, ai_root_name: str = "_AI") -> Node:
+        """
+        AIが作るフォルダは `/_AI` 配下に限定（Spec Must）。
+        folder_name は単一階層として扱い、`/` は `_` に置換。
+        """
+        ai_root = self.get_or_create_ai_root(root, ai_root_name=ai_root_name)
+        safe_name = (folder_name or "Unsorted").strip() or "Unsorted"
+        safe_name = safe_name.replace("/", "_")
+        if safe_name in ("_AI", ""):
+            safe_name = "Unsorted"
+        return self.find_or_create_folder(ai_root, safe_name)
 
     def create_bookmark(self, parent: Node, url: str, title: Optional[str] = None) -> Node:
         """
@@ -199,6 +229,19 @@ class BookmarkService:
     def iter_bookmarks(self, node: Node) -> List[Node]:
         """Public wrapper to list bookmarks in subtree."""
         return self._iter_bookmarks(node)
+
+    def ensure_bookmark_ids(self, root: Node) -> int:
+        """bookmark_id が無いブックマークにIDを付与する（HTMLへ保存されて永続化される）。"""
+        if not root:
+            return 0
+        updated = 0
+        for bm in self._iter_bookmarks(root):
+            if not getattr(bm, "bookmark_id", ""):
+                bm.bookmark_id = uuid.uuid4().hex
+                updated += 1
+        if updated:
+            logger.info(f"Assigned bookmark_id to {updated} bookmark(s)")
+        return updated
 
     # ==================== Delete ====================
     def delete(self, node: Node) -> None:
