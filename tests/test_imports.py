@@ -14,13 +14,13 @@ sys.path.insert(0, project_root)
 
 # テストケース定義
 TEST_CASES = [
-    ("core.UtilLogger", "from core.UtilLogger import logger"),
+    ("core.util_core", "from core.util_core import logger, is_valid_url, LRUCache"),
     ("core.ServiceStorage", "from core.ServiceStorage import ConfigManager, load_bookmarks, save_bookmarks"),
     ("core.ModelBookmark", "from core.ModelBookmark import Node, NetscapeBookmarkParser"),
-    ("core.UtilCoreUtils", "from core.UtilCoreUtils import is_valid_url, LRUCache"),
     ("services.WorkerNetwork", "from services.WorkerNetwork import fetch_preview, fix_titles"),
-    ("gui.components", "from gui.components import CustomPromptDialog, BookmarkCard"),
-    ("gui.UtilGuiResources", "from gui.UtilGuiResources import Colors, Fonts"),
+    ("gui.ui_dialogs", "from gui.ui_dialogs import CustomPromptDialog"),
+    ("gui.ui_components", "from gui.ui_components import BookmarkCard"),
+    ("gui.UtilGuiResources", "from gui.UtilGuiResources import Typography, WindowSize"),
 ]
 
 @pytest.mark.parametrize("module_name,import_statement", TEST_CASES)

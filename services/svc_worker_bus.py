@@ -1,13 +1,10 @@
-"""WorkerBus - async queue polling and event dispatch.
-
-Moves polling / queue processing / legacy tuple conversion out of MainWindow.
-"""
+"""Worker bus utilities (svc_ prefix)."""
 
 from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List
 
 from PySide6.QtCore import QTimer
 
@@ -43,7 +40,6 @@ class WorkerEventHandler:
                 self.search_service.update_node(node)
             self.refresh_list()
             return
-
         if isinstance(event, TitleFixDoneEvent):
             self.status_message("Title fix complete", 4000)
             for node in self._get_titlefix_nodes() or []:
@@ -51,7 +47,6 @@ class WorkerEventHandler:
             self._set_titlefix_nodes([])
             self.refresh_list()
             return
-
         if hasattr(event, "percentage"):
             pct = event.percentage if isinstance(event.percentage, (int, float)) else 0
             self.status_message(f"{event.__class__.__name__}: {pct:.0f}%")
@@ -73,7 +68,6 @@ class WorkerBus:
         self.ui_queue = ui_queue
         self.logger = logger
         self._handlers: List[Callable[[WorkerEvent], None]] = []
-
         self._timer = QTimer(qt_parent)
         self._timer.timeout.connect(self.poll_once)
         self._poll_interval_ms = int(poll_interval_ms)

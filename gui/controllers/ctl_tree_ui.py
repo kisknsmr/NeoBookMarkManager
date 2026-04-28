@@ -1,12 +1,9 @@
-"""Tree UI controller.
-
-Bridges MainWindow UI widgets and TreeController (tree generation logic).
-"""
+"""Tree UI controller (ctl_ prefix)."""
 
 from typing import Optional, Set
 
 from core.ModelBookmark import Node
-from gui.components import FolderTree
+from gui.ui_components import FolderTree
 
 
 class TreeUIController:
@@ -30,7 +27,6 @@ class TreeUIController:
         self._get_dual_tree_mode = get_dual_tree_mode
         self._get_trees = get_trees
         self._get_all_trees = get_all_trees
-
         self._building = False
 
     @property
@@ -42,10 +38,8 @@ class TreeUIController:
         root = self._get_root()
         if not trees or not root:
             return
-
         if select_node is None:
             select_node = self._get_current_folder() or root
-
         self._building = True
         try:
             hits: Set[Node] = set(self._get_search_hits() or set())

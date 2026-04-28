@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any
-from .UtilLogger import logger
+from .util_core import logger
 
 """
 ストレージ／設定モジュール。

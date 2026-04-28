@@ -12,9 +12,8 @@ try:
 except ImportError:
     BeautifulSoup = None
 
-from core.UtilCoreUtils import AppConstants
+from core.util_core import logger
 from core.ModelBookmark import Node
-from core.UtilLogger import logger
 from urllib.parse import urlparse, urljoin
 import base64
 
@@ -82,11 +81,11 @@ def fetch_preview(url: str, ui_queue: 'queue.Queue', proxy_info: Optional[Dict[s
         proxy_info: プロキシ設定（オプション）
         timeout: リクエストタイムアウト（秒、デフォルト: AppConstants.PREVIEW_FETCH_TIMEOUT）
     """
+    # Defaults in absence of AppConstants
     if timeout is None:
-        timeout = getattr(AppConstants, 'PREVIEW_FETCH_TIMEOUT', 10)
-    
-    max_retries = getattr(AppConstants, 'MAX_RETRIES', 3)
-    retry_delay = getattr(AppConstants, 'RETRY_DELAY_BASE', 1)
+        timeout = 10
+    max_retries = 3
+    retry_delay = 1
 
     for attempt in range(max_retries):
         try:
@@ -160,7 +159,7 @@ def fix_titles(
         check_cancel: キャンセルチェック関数（オプション）
     """
     if timeout is None:
-        timeout = getattr(AppConstants, 'DEFAULT_FETCH_TIMEOUT', 10)
+        timeout = 10
     
     processed = 0
     total = len(nodes)

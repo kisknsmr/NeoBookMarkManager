@@ -28,7 +28,7 @@ from bs4 import BeautifulSoup
 
 from core.DatabaseManager import DatabaseManager
 from core.ModelBookmark import Node
-from core.UtilLogger import logger
+from core.util_core import logger
 
 
 @dataclass(frozen=True)

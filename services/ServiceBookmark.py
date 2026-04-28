@@ -13,7 +13,7 @@ from pathlib import Path
 import datetime
 
 from core.ModelBookmark import Node
-from core.UtilLogger import logger
+from core.util_core import logger
 import uuid
 
 

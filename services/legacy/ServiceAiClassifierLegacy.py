@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from typing import List, Dict, Optional, Callable
 import google.generativeai as genai
 from core.ServiceStorage import ConfigManager
-from core.UtilLogger import logger
+from core.util_core import logger
 
 
 class BookmarkNode:
@@ -143,7 +143,7 @@ class AIBookmarkClassifier:
 
         self.traffic_sent += len(final_prompt.encode('utf-8')) + len(data_json.encode('utf-8'))
 
-        from core.UtilCoreUtils import AppConstants
+        from core.util_core import AppConstants
 
         try:
             resp = model.generate_content(

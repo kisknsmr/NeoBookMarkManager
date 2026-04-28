@@ -8,7 +8,7 @@ from typing import Any, Optional, Set
 from PySide6.QtCore import Qt, QSignalBlocker
 
 from core.ModelBookmark import Node
-from gui.components import FolderTree
+from gui.ui_components import FolderTree
 
 
 class TreeController:

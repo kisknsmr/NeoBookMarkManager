@@ -16,7 +16,7 @@ sys.dont_write_bytecode = True
 # Ensure the core/gui/services modules are importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.UtilFontLoader import FontLoader
+from core.util_font import FontLoader
 
 
 def cleanup_on_exit() -> None:

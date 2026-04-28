@@ -1,13 +1,11 @@
-"""UI event controller.
-
-Collects user interaction entrypoints and delegates to window refresh/commands.
-"""
+"""UI event controller (ctl_ prefix)."""
 
 from typing import Optional
 
-from core.ModelBookmark import Node
-from gui.components import FolderTree
 from PySide6.QtCore import QTimer
+
+from core.ModelBookmark import Node
+from gui.ui_components import FolderTree
 
 
 class UIEventController:
@@ -17,10 +15,8 @@ class UIEventController:
     def on_folder_selected(self, node: Node, source_tree: Optional[FolderTree] = None) -> None:
         if getattr(self.window, "tree_ui", None) and self.window.tree_ui.is_building:
             return
-
         if source_tree is not None and getattr(self.window, "tree_ui", None):
             self.window.tree_ui.sync_selection(node, source_tree)
-
         if node.type == "folder":
             self.window.current_folder = node
             self.window.selected_node = None
@@ -59,11 +55,8 @@ class UIEventController:
             self.window.statusBar().showMessage("Cannot move a folder into its descendant", 3000)
             self.window.refresh_tree(select_node=node)
             return
-
         old_parent.remove_child(node)
         new_parent.insert_child(index, node)
-
-        # ドロップ処理中に即 refresh_tree すると、QtのD&Dと衝突して固まることがあるため遅延する
         QTimer.singleShot(0, lambda: self.window.refresh_tree(select_node=node))
 
     def _is_descendant_of(self, node: Node, folder: Node) -> bool:

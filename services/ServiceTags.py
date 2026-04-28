@@ -14,8 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from core.UtilLogger import logger
-from core.UtilSafety import normalize_tag
+from core.util_core import logger, normalize_tag
 
 
 @dataclass(frozen=True)

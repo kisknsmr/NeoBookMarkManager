@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 
-from core.UtilSafety import normalize_tag
+from core.util_core import normalize_tag
 
 from core.UtilBackupManager import BackupManager, BackupTargets, BackupError
 

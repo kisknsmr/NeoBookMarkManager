@@ -21,8 +21,13 @@ import google.generativeai as genai
 from pydantic import BaseModel, Field, ValidationError
 
 from core.ServiceStorage import ConfigManager
-from core.UtilCoreUtils import AppConstants
-from core.UtilLogger import logger
+from core.util_core import logger
+
+# Local defaults replacing missing AppConstants (safety-first)
+AI_REQUEST_TIMEOUT = 30
+DEFAULT_MAX_SMART_ITEMS = 200
+MAX_RETRIES = 3
+RETRY_DELAY_BASE = 1.5
 
 
 @dataclass(frozen=True)
@@ -279,7 +284,7 @@ CRITICAL OUTPUT RULES (SAFETY OVERRIDE):
                 )
             resp = model.generate_content(
                 [prompt2, data_json],
-                request_options={"timeout": AppConstants.AI_REQUEST_TIMEOUT},
+                request_options={"timeout": AI_REQUEST_TIMEOUT},
                 generation_config={"response_mime_type": "application/json"},
             )
             text = (getattr(resp, "text", "") or "").strip()
@@ -304,7 +309,7 @@ CRITICAL OUTPUT RULES (SAFETY OVERRIDE):
         bookmarks: List[BookmarkNode],
         *,
         priority_terms: Optional[List[str]] = None,
-        max_items: int = AppConstants.DEFAULT_MAX_SMART_ITEMS,
+        max_items: int = DEFAULT_MAX_SMART_ITEMS,
         additional_prompt: Optional[str] = None,
         chunk_size: int = 40,
         model_name: str = "gemini-1.5-flash",
@@ -338,13 +343,13 @@ CRITICAL OUTPUT RULES (SAFETY OVERRIDE):
 
             # Retry for 429/5xx with exponential backoff
             moves: List[_Move] = []
-            for attempt in range(AppConstants.MAX_RETRIES):
+            for attempt in range(MAX_RETRIES):
                 try:
                     moves = self._process_batch(model, final_prompt, batch, sanitize_urls=sanitize_urls)
                     break
                 except Exception as exc:
                     if self._is_retryable_error(exc) and attempt < AppConstants.MAX_RETRIES - 1:
-                        delay = AppConstants.RETRY_DELAY_BASE * (2**attempt)
+                        delay = RETRY_DELAY_BASE * (2**attempt)
                         logger.warning(f"[AI_ENGINE] Retryable error, retrying in {delay}s: {exc}")
                         time.sleep(delay)
                         continue
