@@ -51,3 +51,7 @@ Thumbs.db
 *.bak
 .cursor/
 
+# ローカル作業データ（リポジトリに含めない）
+backups/
+user_data.db
+
