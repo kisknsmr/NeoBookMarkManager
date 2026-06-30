@@ -1,0 +1,23 @@
+[package]
+name = "nbm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+camino.workspace = true
+html5ever.workspace = true
+markup5ever_rcdom.workspace = true
+markup5ever.workspace = true
+configparser.workspace = true
+tracing.workspace = true
+rusqlite.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+
+[dev-dependencies]
+anyhow.workspace = true

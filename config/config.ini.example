@@ -1,0 +1,55 @@
+[API]
+# Prefer using environment variables (GENAI_API_KEY / GOOGLE_API_KEY).
+# api_key = YOUR_API_KEY_HERE
+
+[Proxy]
+# url = http://proxy.example.com:8080
+# user =
+# password =
+
+[Prompt]
+prompt_file = config/prompt.txt
+
+[Classifier]
+priority_terms = Python, Power BI, SharePoint, AWS
+
+[AI]
+# モデル名（google-generativeai）
+model = gemini-2.5-flash-lite
+# チャンクサイズ（30〜50推奨）
+chunk_size = 40
+# 送信前サニタイズ（クエリ除去）: true/false
+sanitize_urls = true
+# コスト承認ゲート用（USD / 1M tokens）
+# ※ 未設定/0の場合は安全側でAI実行を停止します（コスト提示と承認）。
+# 既定値は gemini-2.5-flash-lite の標準価格。
+input_cost_per_1m_tokens = 0.10
+output_cost_per_1m_tokens = 0.40
+
+[AutoTag]
+# 将来的にドメイン辞書/キーワード辞書をここから読み込む想定（今回はハードコード実装）。
+# allow_network = false
+
+[Network]
+# タイトル更新・説明文取得の同時並列数（1〜20）。未設定なら LinkCheck.concurrency → 5。
+# 大きいほど速いが、相手サーバ/プロキシへの負荷とタイムアウト誤検知が増える。
+concurrency = 8
+
+[LinkCheck]
+# チェックをスキップするURLパターン（カンマ区切り、部分一致）
+# イントラネット・ローカルアドレス・特殊スキームなどを指定
+# 例: 10.*, 192.168.*, *.local, intranet, file://, javascript:
+exclude_patterns = 10.*, 192.168.*, 172.16.*, *.local, localhost, file://, javascript:, about:
+# 接続タイムアウト（秒）
+timeout_secs = 10
+# 同時チェック数
+concurrency = 5
+
+[Organize]
+# 重複削除で除外するURL（カンマ区切り）。これらは何件あっても削除されません。
+dedupe_exclude_urls = http://bookmark.placeholder.url/
+
+[Session]
+# last_bookmarks_file = samples/bookmarks_2026_01_10.html
+# window_width = 1400
+# window_height = 800
