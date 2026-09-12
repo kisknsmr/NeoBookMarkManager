@@ -7,7 +7,7 @@
 //! 4. Inject `window.__NBM_API_BASE__` into the webview before index.html loads.
 
 use std::net::TcpListener as StdTcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
@@ -22,6 +22,10 @@ struct Resolved {
     config_ini: PathBuf,
     backup_root: PathBuf,
 }
+
+/// Shipped defaults, compiled in so a portable install needs no repo checkout.
+const DEFAULT_CONFIG_INI: &str = include_str!("../../config/config.ini.example");
+const DEFAULT_MODELS_JSON: &str = include_str!("../../config/models.json");
 
 fn resolve_paths() -> Resolved {
     // Portable layout: prefer directory next to the exe that has data/ or config/.
@@ -76,7 +80,7 @@ fn resolve_paths() -> Resolved {
 }
 
 /// Create the portable directory layout on first run.
-fn bootstrap_portable(root: &PathBuf) {
+fn bootstrap_portable(root: &Path) {
     let data_dir = root.join("data");
     let config_dir = root.join("config");
     let backup_dir = root.join("backups");
@@ -104,14 +108,28 @@ fn bootstrap_portable(root: &PathBuf) {
         }
     }
 
-    // Minimal config.ini on first run.
+    // config.ini on first run. Seeded from config.ini.example so every option
+    // — including the AI keys and the free/paid tier flag — is documented in
+    // place, instead of a three-line stub that hid most of the settings.
     let ini = config_dir.join("config.ini");
     if !ini.exists() {
-        let content = "[API]\n# api_key = YOUR_GEMINI_KEY_HERE\n\n[Proxy]\n# url = http://proxy:3128\n\n[Classifier]\n# priority_terms = Python, Rust, DevOps\n";
-        if let Err(e) = std::fs::write(&ini, content) {
+        if let Err(e) = std::fs::write(&ini, DEFAULT_CONFIG_INI) {
             tracing::warn!(error=%e, "bootstrap: failed to write config.ini");
         } else {
             tracing::info!("bootstrap: created {}", ini.display());
+        }
+    }
+
+    // Price table. Without this the portable layout had no models.json at all,
+    // so every model showed "単価不明" and the cost gate blocked every AI run.
+    // (The server also falls back to its embedded copy; writing it here makes
+    // the prices visible and editable next to the exe.)
+    let models = config_dir.join("models.json");
+    if !models.exists() {
+        if let Err(e) = std::fs::write(&models, DEFAULT_MODELS_JSON) {
+            tracing::warn!(error=%e, "bootstrap: failed to write models.json");
+        } else {
+            tracing::info!("bootstrap: created {}", models.display());
         }
     }
 }

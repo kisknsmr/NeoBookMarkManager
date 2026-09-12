@@ -1,6 +1,13 @@
 [API]
-# Prefer using environment variables (GENAI_API_KEY / GOOGLE_API_KEY).
+# 通常使うキー。環境変数 (GENAI_API_KEY / GOOGLE_API_KEY) の方が優先されます。
 # api_key = YOUR_API_KEY_HERE
+#
+# 有料枠（請求先アカウントを紐付けたプロジェクト）のキー。任意。
+# 分類はまず上の api_key で実行し、無料枠の上限で止まったときだけ、
+# 確認のうえこちらへ切り替えて残りを続行します。勝手には切り替わりません。
+# 枠はキー（プロジェクト）単位で決まるため、使い分けにはキーが2本必要です。
+# 環境変数 GENAI_PAID_API_KEY でも指定できます。
+# paid_api_key = YOUR_PAID_API_KEY_HERE
 
 [Proxy]
 # url = http://proxy.example.com:8080
@@ -20,9 +27,16 @@ model = gemini-2.5-flash-lite
 chunk_size = 40
 # 送信前サニタイズ（クエリ除去）: true/false
 sanitize_urls = true
-# コスト承認ゲート用（USD / 1M tokens）
-# ※ 未設定/0の場合は安全側でAI実行を停止します（コスト提示と承認）。
-# 既定値は gemini-2.5-flash-lite の標準価格。
+# 上の api_key が無料枠かどうかの自己申告: true/false（未設定なら「未申告」）
+# API からは問い合わせられないため、ユーザーの申告に頼っています。
+# true にすると、見積もり画面が「無料枠のため請求されません」と表示します。
+# ※ 無料枠では送信内容が Google の製品改善に利用され、人間のレビュアーが
+#    読む場合があります。規約上も機微情報の送信は禁止されています。
+# free_tier = true
+# コスト承認ゲート用（USD / 1M tokens）のフォールバック。
+# ※ 通常は config/models.json のモデル別価格が使われます。ここの値は
+#    models.json に載っていないモデルを指定したときだけ参照されます。
+# ※ どちらからも単価が得られない場合は、安全側でAI実行を停止します。
 input_cost_per_1m_tokens = 0.10
 output_cost_per_1m_tokens = 0.40
 

@@ -5,7 +5,7 @@
 // D&D and 2-pane tree-to-tree moves come in Phase 4.
 
 const API_BASE_STORAGE_KEY = "nbm_api_base";
-const SPLIT_STORAGE_KEY = "nbm_split_state";
+const SPLIT_STORAGE_KEY = "nbm_split_state_v3";
 const VIEW_STORAGE_KEY = "nbm_view_mode";
 const DUAL_STORAGE_KEY = "nbm_dual_pane";
 const TREE_OPEN_STORAGE_KEY = "nbm_tree_open";
@@ -31,7 +31,6 @@ const treeContainerB = $("treeContainerB");
 const listContainer = $("listContainer");
 const treeCountEl = $("treeCount");
 const listCountEl = $("listCount");
-const viewChip = $("viewChip");
 const viewListBtn = $("viewListBtn");
 const viewCardBtn = $("viewCardBtn");
 const dualPaneBtn = $("dualPaneBtn");
@@ -62,6 +61,12 @@ const state = {
   openFolders: new Set(), // folder paths currently expanded (shared A+B)
   openFoldersB: new Set(), // open state for Tree B (independent)
   searchQuery: "",
+  // 操作の対象 ("selection" | "folder" | "all")。Organize / Enrich / AI が共有する。
+  scope: "all",
+  filePath: null,         // 開いているファイル（null なら未読込）
+  dirty: false,           // 未保存の変更があるか
+  undoCount: 0,
+  redoCount: 0,
 };
 
 // --- Toast / status --------------------------------------------------------
@@ -83,7 +88,17 @@ function setStatus(text) {
 async function api(path, opts = {}) {
   const url = API_BASE + path;
   const res = await fetch(url, opts);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // The server answers failures with {"error": "..."} — the reason the call
+    // was rejected. Dropping it meant every failure reached the user as a bare
+    // "404 Not Found" with nothing to act on.
+    let detail = "";
+    try {
+      const body = await res.json();
+      if (body && body.error) detail = `: ${body.error}`;
+    } catch (_) {}
+    throw new Error(`${res.status} ${res.statusText}${detail}`);
+  }
   return res.json();
 }
 
@@ -230,6 +245,8 @@ function renderTreeNode(node, pane = "A") {
       state.selectedFolderB = node.path;
     } else {
       state.selectedFolder = node.path;
+      // 対象はユーザーが最後に指したものに追従する（スコープバーに即反映される）
+      state.scope = "folder";
     }
     persistOpenFolders();
     renderAllTrees();
@@ -474,6 +491,147 @@ function visibleBookmarks() {
   return out;
 }
 
+// --- Scope: 操作の対象を1か所で決める --------------------------------------
+//
+// 「整理する」「情報を補う」「AI」の各操作は、必ず state.scope が指す範囲に
+// 対して実行される。以前は Organize が state.selectedFolder を暗黙に使い、
+// Enrich / AI は実行のたびにモーダルで対象を訊き直していたため、隣り合う
+// ボタン同士で対象の決まり方が違っていた。
+//
+// scope は直近の明示的な選択に追従する（フォルダを選べば "folder"、
+// ブックマークを選べば "selection"）。パネル上部のセグメントで上書きできる。
+
+const SCOPE_KINDS = ["selection", "folder", "all"];
+
+/// 指定スコープの bookmark_id 配列。そのスコープが使えないときは null。
+function scopeIdsFor(kind) {
+  if (kind === "selection") {
+    const ids = [...state.selectedBookmarks].filter(Boolean);
+    return ids.length ? ids : null;
+  }
+  if (kind === "folder") {
+    if (state.selectedFolder == null || !state.treeRoot) return null;
+    const node = findFolderByPath(state.treeRoot, state.selectedFolder);
+    if (!node) return null;
+    const out = [];
+    flattenBookmarks(node, state.selectedFolder || "", out);
+    return out.map((b) => b.bookmark_id).filter(Boolean);
+  }
+  return state.bookmarks.map((b) => b.bookmark_id).filter(Boolean);
+}
+
+/// 現在のスコープを解決する。folderPath はフォルダ単位 API 用
+/// （"selection" スコープではフォルダを特定できないので null）。
+function currentScope() {
+  const kind = state.scope;
+  const ids = scopeIdsFor(kind) || [];
+  if (kind === "selection") {
+    return { kind, ids, folderPath: null, label: `選択中の ${ids.length} 件` };
+  }
+  if (kind === "folder") {
+    const path = state.selectedFolder || "";
+    return { kind, ids, folderPath: path, label: `フォルダ「${path || "ルート"}」以下の ${ids.length} 件` };
+  }
+  return { kind, ids, folderPath: "", label: `全ブックマーク ${ids.length} 件` };
+}
+
+function setScope(kind) {
+  if (!SCOPE_KINDS.includes(kind)) return;
+  state.scope = kind;
+  refreshContext();
+}
+
+/// 選択操作に追従してスコープを移す。そのスコープが空なら何もしない。
+function followScope(kind) {
+  if (scopeIdsFor(kind)) state.scope = kind;
+}
+
+function renderScopeBar() {
+  const idsSel    = scopeIdsFor("selection");
+  const idsFolder = scopeIdsFor("folder");
+  const idsAll    = scopeIdsFor("all") || [];
+
+  // 使えなくなったスコープが選ばれたままにならないよう退避する
+  if (state.scope === "selection" && !idsSel)    state.scope = idsFolder ? "folder" : "all";
+  if (state.scope === "folder"    && !idsFolder) state.scope = "all";
+
+  const fmt = (v) => (v ? v.length.toLocaleString() : "—");
+  $("scopeNSelection").textContent = fmt(idsSel);
+  $("scopeNFolder").textContent    = fmt(idsFolder);
+  $("scopeNAll").textContent       = idsAll.length.toLocaleString();
+
+  const avail = { selection: !!idsSel, folder: !!idsFolder, all: true };
+  for (const btn of document.querySelectorAll(".scope-opt")) {
+    const kind = btn.dataset.scope;
+    btn.setAttribute("aria-checked", state.scope === kind ? "true" : "false");
+    btn.disabled = !avail[kind];
+    btn.title = avail[kind] ? ""
+      : kind === "selection" ? "一覧かツリーでブックマークを選択すると使えます"
+      : "ツリーでフォルダを選択すると使えます";
+  }
+  document.body.dataset.scope = state.scope;
+
+  const target = $("scopeTarget");
+  if (target) target.textContent = state.filePath ? currentScope().label : "ファイルを開いてください";
+
+  const listLabel = $("listScopeLabel");
+  if (listLabel) {
+    listLabel.textContent = state.searchQuery ? "検索結果"
+      : state.selectedFolder == null ? "すべて"
+      : `📂 ${state.selectedFolder || "ルート"}`;
+  }
+}
+
+// --- Enablement: 押す前に「今できること」を見せる ---------------------------
+//
+// data-need でボタンの前提条件を宣言し、満たさないものは disabled にして
+// 理由を title に出す。以前は全ボタンが常に有効で、押して初めてトーストで
+// 「ブックマークを選択してください」と怒られる作りだった。
+
+const NEED_CHECKS = {
+  file:           () => !!state.filePath,
+  bookmark:       () => !!state.selectedBookmark,
+  folder:         () => state.selectedFolder != null,
+  dirty:          () => state.dirty,
+  undo:           () => state.undoCount > 0,
+  redo:           () => state.redoCount > 0,
+  "scope-any":    () => currentScope().ids.length > 0,
+  "scope-folder": () => !!state.filePath && state.scope !== "selection",
+};
+
+function updateEnablement() {
+  for (const el of document.querySelectorAll("[data-need]")) {
+    const check = NEED_CHECKS[el.dataset.need];
+    const ok = check ? check() : true;
+    el.disabled = !ok;
+    if (el.dataset.titleOn === undefined) el.dataset.titleOn = el.getAttribute("title") || "";
+    el.setAttribute("title", ok ? el.dataset.titleOn : (el.dataset.hint || el.dataset.titleOn));
+  }
+}
+
+/// 選択・スコープ・ファイル状態が変わったら呼ぶ。
+function refreshContext() {
+  renderScopeBar();
+  updateEnablement();
+}
+
+document.addEventListener("click", (e) => {
+  const opt = e.target.closest && e.target.closest(".scope-opt");
+  if (opt && !opt.disabled) setScope(opt.dataset.scope);
+});
+
+/// 実行前に「何件に効くのか」だけ確かめる。対象の選び直しはさせない
+/// （それはスコープバーの役目）。キャンセル時は null。
+async function confirmScope(message) {
+  const sc = currentScope();
+  if (!sc.ids.length) {
+    toast("対象のブックマークがありません", "error");
+    return null;
+  }
+  const ok = await confirmDialog(`${message}\n\n対象: ${sc.label}`, { okLabel: "実行", cancelLabel: "キャンセル" });
+  return ok ? sc.ids : null;
+}
+
 // favicon: sessionStorage でホスト単位にキャッシュ
 // プライバシーモード時は Google s2 を呼ばずローカルの汎用アイコンを返す
 const FAVICON_PRIVACY_KEY = "nbm_favicon_privacy";
@@ -508,13 +666,7 @@ function renderList() {
     listContainer.appendChild(renderListRow(bm));
     listContainer.appendChild(renderListCard(bm));
   }
-  // Update Organize / Enrich scope indicators
-  const f = state.selectedFolder;
-  const scopeText = f ? `（${f}）` : "（全体）";
-  for (const id of ["organizeScope", "enrichScope"]) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = scopeText;
-  }
+  refreshContext();
 }
 
 function attachBmDragDrop(el, bm) {
@@ -630,6 +782,7 @@ function selectBookmark(bm) {
     state.selectedBookmarks.add(bm.bookmark_id);
     state.selectedBookmarkMap.set(bm.bookmark_id, bm);
     state.lastClickedBmId = bm.bookmark_id;
+    followScope("selection");
   } else {
     state.lastClickedBmId = null;
   }
@@ -652,6 +805,7 @@ function toggleBookmarkSelection(bm) {
     state.selectedBookmark = bm;
   }
   state.lastClickedBmId = bm.bookmark_id;
+  followScope("selection");
   syncSelectionUI();
   renderDetail();
 }
@@ -675,6 +829,7 @@ function rangeSelectBookmark(bm) {
     state.selectedBookmarkMap.set(b.bookmark_id, b);
   }
   state.selectedBookmark = bm;
+  followScope("selection");
   syncSelectionUI();
   renderDetail();
 }
@@ -698,6 +853,7 @@ function syncSelectionUI() {
     el.classList.toggle("selected",       id === single && multi.size <= 1);
     el.classList.toggle("multi-selected", multi.size > 1 && multi.has(id));
   }
+  refreshContext();
 }
 
 // --- Detail ----------------------------------------------------------------
@@ -707,10 +863,15 @@ function renderDetail() {
   if (!bm) {
     detailEmpty.classList.remove("hidden");
     detailCard.classList.add("hidden");
+    const emptyLabel = $("detailFolderLabel");
+    if (emptyLabel) emptyLabel.textContent = "";
     return;
   }
   detailEmpty.classList.add("hidden");
   detailCard.classList.remove("hidden");
+
+  const folderLabel = $("detailFolderLabel");
+  if (folderLabel) folderLabel.textContent = bm.folder_path ? `📂 ${bm.folder_path}` : "📂 ルート";
 
   detailTitle.value = bm.title || "";
   detailFetchedTitle.textContent = "";
@@ -854,7 +1015,6 @@ $("searchClearBtn").addEventListener("click", () => {
 
 function setViewMode(mode) {
   document.body.dataset.view = mode;
-  viewChip.textContent = `表示: ${mode === "card" ? "Card" : "List"}`;
   viewListBtn.setAttribute("aria-pressed", mode === "list");
   viewCardBtn.setAttribute("aria-pressed", mode === "card");
   try { localStorage.setItem(VIEW_STORAGE_KEY, mode); } catch (_) {}
@@ -926,17 +1086,49 @@ function persistOpenFolders() {
 
 // --- Splitter drag (flex-basis resize) -------------------------------------
 
+// スプリッターはドラッグした片側だけをピクセル固定し、反対側は必ず
+// flex: 1 1 0 のままにする。両側を `0 0 Npx` にすると合計がウィンドウ幅に
+// 追従しなくなり、端に使われない余白が残る（4K で顕著だった）。
+// どちら側を固定にするかは data-fixed で宣言する（既定は prev）。
+const SPLIT_MIN_PX = 120;
+
+function splitSides(sp) {
+  const prev = sp.previousElementSibling;
+  const next = sp.nextElementSibling;
+  if (!prev || !next) return null;
+  const fixedIsNext = sp.dataset.fixed === "next";
+  return {
+    prev, next,
+    fixed: fixedIsNext ? next : prev,
+    fluid: fixedIsNext ? prev : next,
+  };
+}
+
+function applySplit(sp, sizePx) {
+  const sides = splitSides(sp);
+  if (!sides) return;
+  sides.fixed.style.flex = `0 0 ${Math.round(sizePx)}px`;
+  sides.fluid.style.flex = "1 1 0";
+}
+
 function initSplitters() {
   document.querySelectorAll(".splitter-h, .splitter-v").forEach((sp) => {
+    // ダブルクリックで既定の配分に戻す（掴んだ幅から抜け出せる逃げ道）
+    sp.addEventListener("dblclick", () => {
+      const sides = splitSides(sp);
+      if (!sides) return;
+      sides.fixed.style.flex = "";
+      sides.fluid.style.flex = "";
+      saveSplit();
+    });
+
     sp.addEventListener("pointerdown", (e) => {
       sp.setPointerCapture(e.pointerId);
-      const target = sp.dataset.target;
       const isH = sp.classList.contains("splitter-h"); // horizontal = resizes left/right siblings
 
-      // Identify the two flex siblings around this splitter
-      const prev = sp.previousElementSibling;
-      const next = sp.nextElementSibling;
-      if (!prev || !next) return;
+      const sides = splitSides(sp);
+      if (!sides) return;
+      const { prev, next } = sides;
 
       const startPos = isH ? e.clientX : e.clientY;
       const startPrev = isH ? prev.getBoundingClientRect().width : prev.getBoundingClientRect().height;
@@ -946,9 +1138,8 @@ function initSplitters() {
         const delta = (isH ? ev.clientX : ev.clientY) - startPos;
         const newPrev = startPrev + delta;
         const newNext = startNext - delta;
-        if (newPrev > 80 && newNext > 80) {
-          prev.style.flex = `0 0 ${newPrev}px`;
-          next.style.flex = `0 0 ${newNext}px`;
+        if (newPrev > SPLIT_MIN_PX && newNext > SPLIT_MIN_PX) {
+          applySplit(sp, sp.dataset.fixed === "next" ? newNext : newPrev);
         }
       };
       const onUp = () => {
@@ -970,9 +1161,13 @@ function saveSplit() {
     const paneTreeA = document.querySelector("#paneTreeA");
     const paneTreB  = document.querySelector("#paneTreB");
     const actions   = document.querySelector(".pane-actions");
+    const colRight  = document.querySelector(".col-right");
+    const detail    = document.querySelector(".pane-detail");
     localStorage.setItem(SPLIT_STORAGE_KEY, JSON.stringify({
       colLeft:   colLeft?.style.flex   || "",
+      colRight:  colRight?.style.flex  || "",
       actions:   actions?.style.flex   || "",
+      detail:    detail?.style.flex    || "",
       paneUpper: paneUpper?.style.flex || "",
       paneList:  document.querySelector(".pane-list")?.style.flex || "",
       paneTreeA: paneTreeA?.style.flex || "",
@@ -986,13 +1181,25 @@ function restoreSplit() {
     const raw = localStorage.getItem(SPLIT_STORAGE_KEY);
     if (!raw) return;
     const v = JSON.parse(raw);
-    const set = (sel, val) => { if (val) { const el = document.querySelector(sel); if (el) el.style.flex = val; } };
-    set(".col-left",   v.colLeft);
-    set(".pane-actions", v.actions);
-    set(".pane-upper", v.paneUpper);
-    set(".pane-list",  v.paneList);
-    set("#paneTreeA",  v.paneTreeA);
-    set("#paneTreB",   v.paneTreB);
+    // 前回より小さいウィンドウで開いたときに、保存値が画面を食い潰さないよう捨てる
+    const set = (sel, val, maxPx) => {
+      if (!val) return;
+      const el = document.querySelector(sel);
+      if (!el) return;
+      const px = val.startsWith("0 0 ") ? parseFloat(val.slice(4)) : NaN;
+      if (!Number.isNaN(px) && px > maxPx) return;
+      el.style.flex = val;
+    };
+    const maxW = window.innerWidth  * 0.7;
+    const maxH = window.innerHeight * 0.7;
+    set(".col-left",     v.colLeft,   maxW);
+    set(".col-right",    v.colRight,  maxW);
+    set(".pane-actions", v.actions,   maxW);
+    set(".pane-detail",  v.detail,    maxW);
+    set(".pane-upper",   v.paneUpper, maxH);
+    set(".pane-list",    v.paneList,  maxH);
+    set("#paneTreeA",    v.paneTreeA, maxW);
+    set("#paneTreB",     v.paneTreB,  maxW);
   } catch (_) {}
 }
 
@@ -1080,9 +1287,23 @@ async function reload() {
     renderAllTrees();
     renderList();
     treeCountEl.textContent = state.bookmarks.length.toLocaleString();
-    const label = listData.dirty ? `${listData.count.toLocaleString()} 件 ●` : `${listData.count.toLocaleString()} 件`;
-    setStatus(label);
-    document.title = listData.dirty ? "NeoBookMarkManager ●" : "NeoBookMarkManager";
+
+    // 未保存かどうかは保存ボタン自体に出す（タイトルバーの ● は気づけないため）
+    state.filePath = listData.file_path || null;
+    state.dirty = !!listData.dirty;
+    document.body.dataset.loaded = state.filePath ? "true" : "false";
+    document.body.dataset.dirty = state.dirty ? "true" : "false";
+
+    const fileChip = $("fileChip");
+    if (fileChip) {
+      const name = state.filePath ? state.filePath.split(/[\\/]/).pop() : null;
+      fileChip.textContent = name || "ファイル未選択";
+      fileChip.title = state.filePath || "ファイルが開かれていません";
+    }
+
+    setStatus(`${listData.count.toLocaleString()} 件${state.dirty ? " · 未保存" : ""}`);
+    document.title = state.dirty ? "NeoBookMarkManager ●" : "NeoBookMarkManager";
+    refreshContext();
   } catch (e) {
     toast(`リロード失敗: ${e.message}`, "error");
   }
@@ -1104,11 +1325,13 @@ function handleCommand(cmd) {
     case "edit.new-bookmark":   return cmdNewBookmark();
     case "edit.delete":         return cmdDeleteSelected();
     case "edit.move-up":        return cmdMoveUp();
+    case "edit.rename-folder":  return cmdRenameFolder(state.selectedFolder ?? "");
     case "edit.undo":           return cmdUndo();
     case "edit.redo":           return cmdRedo();
     case "detail.edit":         return cmdDetailEdit();
     case "detail.edit-tags":    return cmdDetailEditTags();
     case "detail.copy-url":     return cmdCopyUrl();
+    case "detail.open":         return cmdOpenInBrowser();
     case "detail.move":         return cmdDetailMove();
     case "detail.delete":       return cmdDetailDelete();
     case "backup.restore":      return cmdBackupRestore();
@@ -1126,12 +1349,20 @@ function handleCommand(cmd) {
     case "ai.classify":
     case "classify.ai":          return cmdAiClassify();
     case "ai.settings":          return cmdAiSettings();
+    case "help.open":            return cmdHelp();
     default:
       toast(`未実装: ${cmd}`, "error");
   }
 }
 
 // --- Command implementations -----------------------------------------------
+
+function cmdOpenInBrowser() {
+  const bm = state.selectedBookmark;
+  if (!bm) return toast("ブックマークを選択してください", "error");
+  if (window.__TAURI__) window.__TAURI__.shell.open(bm.url);
+  else window.open(bm.url, "_blank");
+}
 
 function cmdCopyUrl() {
   const bm = state.selectedBookmark;
@@ -1163,16 +1394,13 @@ async function cmdRedo() {
 }
 
 function updateUndoRedoButtons(undoCount, redoCount) {
-  const btnUndo = document.getElementById("btnUndo");
-  const btnRedo = document.getElementById("btnRedo");
-  if (btnUndo) {
-    btnUndo.disabled = undoCount === 0;
-    btnUndo.textContent = `↩ Undo${undoCount > 0 ? ` (${undoCount})` : ""}`;
-  }
-  if (btnRedo) {
-    btnRedo.disabled = redoCount === 0;
-    btnRedo.textContent = `↪ Redo${redoCount > 0 ? ` (${redoCount})` : ""}`;
-  }
+  state.undoCount = undoCount || 0;
+  state.redoCount = redoCount || 0;
+  const ub = $("undoBadge");
+  const rb = $("redoBadge");
+  if (ub) ub.textContent = state.undoCount > 0 ? state.undoCount : "";
+  if (rb) rb.textContent = state.redoCount > 0 ? state.redoCount : "";
+  updateEnablement();
 }
 
 async function cmdSave() {
@@ -1193,21 +1421,47 @@ function getTauriDialog() {
 }
 
 async function cmdOpen() {
+  // Picking the file and loading it are reported separately: one "開けません
+  // でした" for both stages gave no way to tell a missing dialog API from a
+  // file the server refused to parse.
+  let selected;
   try {
     const { open } = getTauriDialog();
-    const selected = await open({
+    selected = await open({
       title: "ブックマークファイルを開く",
       filters: [{ name: "HTML", extensions: ["html", "htm"] }],
       multiple: false,
     });
-    const path = typeof selected === "string" ? selected : null;
-    if (!path) return;
+  } catch (e) {
+    console.error("[open] dialog failed", e);
+    toast(`ファイル選択ダイアログを開けませんでした: ${e.message ?? e}`, "error");
+    return;
+  }
+
+  // Cancelling returns null. Older dialog builds hand back {path, name}
+  // instead of a bare string, which used to fall through as "cancelled" and
+  // left the user with a dialog that appeared to do nothing.
+  const path =
+    typeof selected === "string" ? selected :
+    selected && typeof selected.path === "string" ? selected.path :
+    null;
+  if (!path) {
+    if (selected != null) {
+      console.error("[open] unexpected dialog result", selected);
+      toast(`選択結果を解釈できませんでした: ${JSON.stringify(selected)}`, "error");
+    }
+    return;
+  }
+
+  try {
     const opened = await api("/file/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
     await maybePromptResume(opened.resume_available, opened.path);
     await reload();
-    toast("ファイルを開きました");
+    toast(`ファイルを開きました (${opened.count} 件)`);
   } catch (e) {
-    toast(`開けませんでした: ${e.message}`, "error");
+    console.error("[open] load failed", path, e);
+    toast(`読み込みに失敗しました: ${e.message ?? e}
+${path}`, "error");
   }
 }
 
@@ -1523,20 +1777,15 @@ function hideSseProgress() {
 }
 
 async function cmdNetworkFixTitles() {
-  if (!state.bookmarks.length) return toast("ブックマークがありません", "error");
-  const ids = await pickScopeTarget("URLからタイトル取得 — 対象を選択");
-  if (!ids) return; // cancelled
-  if (!ids.length) return toast("対象ブックマークがありません", "error");
-  if (!(await confirmDialog(`${ids.length} 件のブックマークのタイトルをURLから更新しますか?`))) return;
+  const ids = await confirmScope("各URLにアクセスして、ページのタイトルで置き換えます。");
+  if (!ids) return;
   await runSseCommand("/network/fix-titles", { bookmark_ids: ids }, "タイトル更新");
   toast("タイトル更新完了");
 }
 
 async function cmdNetworkFetchPreview() {
-  if (!state.bookmarks.length) return toast("ブックマークがありません", "error");
-  const ids = await pickScopeTarget("説明文を取得 — 対象を選択");
-  if (!ids) return; // cancelled
-  if (!ids.length) return toast("対象ブックマークがありません", "error");
+  const ids = await confirmScope("各URLにアクセスして、ページの説明文を取り込みます。");
+  if (!ids) return;
   await runSseCommand("/network/fetch-preview", { bookmark_ids: ids }, "説明文取得");
   toast("説明文の取得が完了しました");
 }
@@ -1555,16 +1804,8 @@ async function cmdNetworkProxyCheck() {
 }
 
 async function cmdLinkCheck() {
-  const folder = state.selectedFolder ?? "";
-  const scope = folder ? `「${folder}」以下` : "全体";
-  const ids = state.bookmarks
-    .filter((b) => {
-      const fp = b.folder_path || "";
-      return folder === "" || fp === folder || fp.startsWith(folder + "/");
-    })
-    .map((b) => b.bookmark_id).filter(Boolean);
-  if (!ids.length) return toast(`${scope} にブックマークがありません`, "error");
-  if (!(await confirmDialog(`${scope} の ${ids.length} 件のリンクをチェックします。\n(除外パターンに一致するURLはスキップ)\nよろしいですか?`))) return;
+  const ids = await confirmScope("各URLにアクセスして、リンク切れを調べます。\n(除外パターンに一致するURLはスキップ)");
+  if (!ids) return;
 
   // dead/timeout の結果を蓄積してモーダル表示
   const deadList = [];
@@ -1631,37 +1872,106 @@ function showLinkCheckResults(deadList, total) {
   modal.innerHTML = `
     <div style="background:var(--surface-1);border:1px solid var(--border);border-radius:10px;padding:24px;min-width:520px;max-width:700px;max-height:80vh;display:flex;flex-direction:column;gap:12px">
       <h2 style="margin:0;color:var(--danger);font-size:15px">⚠ リンク切れ ${deadList.length} 件 / ${total} 件チェック</h2>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-mid)">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input id="lc-all" type="checkbox" checked /> すべて選択
+        </label>
+        <span style="flex:1"></span>
+        <span>タイムアウトは一時的な不通のこともあります。削除前に確認してください。</span>
+      </div>
       <div id="lc-list" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="lc-delete" class="danger-btn">🗑 選択した 0 件を削除</button>
         <button id="lc-close" class="ghost-btn">閉じる</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 
   const listEl = modal.querySelector("#lc-list");
+  const allEl = modal.querySelector("#lc-all");
+  const delEl = modal.querySelector("#lc-delete");
+
+  // Timeouts are checked by default but flagged in the hint above: a slow or
+  // briefly unreachable host is not the same evidence of rot as a 404.
   for (const p of deadList) {
     const badge = p.result === "timeout" ? "⏱ タイムアウト" : `❌ ${p.detail || "切れ"}`;
     const row = document.createElement("div");
     row.style.cssText =
-      "padding:8px 10px;background:var(--surface-2);border-radius:6px;border-left:3px solid var(--danger);display:flex;flex-direction:column;gap:3px";
+      "padding:8px 10px;background:var(--surface-2);border-radius:6px;border-left:3px solid var(--danger);display:flex;align-items:center;gap:10px";
     row.innerHTML = `
-      <div style="font-size:13px;color:var(--text-hi);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.bookmark_title || "(no title)")}</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:11px;color:var(--danger);white-space:nowrap">${badge}</span>
-        <a href="${escHtml(p.url || "")}" style="font-size:11px;color:var(--text-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" target="_blank" rel="noreferrer">${escHtml(p.url || "")}</a>
+      <input type="checkbox" class="lc-pick" data-id="${escHtml(p.bookmark_id || "")}" checked
+             style="flex:none;cursor:pointer" />
+      <div style="min-width:0;display:flex;flex-direction:column;gap:3px;flex:1">
+        <div style="font-size:13px;color:var(--text-hi);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.bookmark_title || "(no title)")}</div>
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <span style="font-size:11px;color:var(--danger);white-space:nowrap">${badge}</span>
+          <a href="${escHtml(p.url || "")}" style="font-size:11px;color:var(--text-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" target="_blank" rel="noreferrer">${escHtml(p.url || "")}</a>
+        </div>
       </div>`;
     listEl.appendChild(row);
   }
 
+  const picks = () => Array.from(listEl.querySelectorAll(".lc-pick"));
+  const checkedIds = () =>
+    picks().filter((c) => c.checked && c.dataset.id).map((c) => c.dataset.id);
+
+  const syncButtons = () => {
+    const n = checkedIds().length;
+    delEl.textContent = `🗑 選択した ${n} 件を削除`;
+    delEl.disabled = n === 0;
+    const boxes = picks();
+    allEl.checked = n > 0 && n === boxes.length;
+    allEl.indeterminate = n > 0 && n < boxes.length;
+  };
+
+  allEl.addEventListener("change", () => {
+    for (const c of picks()) c.checked = allEl.checked;
+    syncButtons();
+  });
+  listEl.addEventListener("change", (e) => {
+    if (e.target.classList.contains("lc-pick")) syncButtons();
+  });
+
+  delEl.addEventListener("click", async () => {
+    const ids = checkedIds();
+    if (!ids.length) return;
+    if (!(await confirmDialog(
+      `リンク切れ ${ids.length} 件をブックマークから削除します。
+
+` +
+      `元に戻す場合は削除後に「元に戻す」を1回実行してください。`,
+      { okLabel: "削除", cancelLabel: "キャンセル" }
+    ))) return;
+    delEl.disabled = true;
+    try {
+      const res = await api("/edit/bookmark/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookmark_ids: ids }),
+      });
+      modal.remove();
+      state.selectedBookmark = null;
+      renderDetail();
+      await reload();
+      const skipped = (res.missing || []).length;
+      toast(
+        `リンク切れ ${res.deleted} 件を削除しました` +
+        (skipped ? `（${skipped} 件は見つからずスキップ）` : "")
+      );
+    } catch (e) {
+      delEl.disabled = false;
+      toast(`削除失敗: ${e.message}`, "error");
+    }
+  });
+
   modal.querySelector("#lc-close").addEventListener("click", () => modal.remove());
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.remove(); });
+  syncButtons();
 }
 
 async function cmdAutotagOffline() {
-  if (!state.bookmarks.length) return toast("ブックマークがありません", "error");
-  const ids = await pickScopeTarget("自動タグ付け — 対象を選択");
-  if (!ids) return; // cancelled
-  if (!ids.length) return toast("対象ブックマークがありません", "error");
+  const ids = currentScope().ids;
+  if (!ids.length) return toast("対象のブックマークがありません", "error");
 
   // 前提: 分類材料（タイトル・説明文）が揃っていないと良いタグが付かない。
   // 選択された対象に未取得があれば警告するが、ブロックはせず実行可否を委ねる。
@@ -1674,8 +1984,12 @@ async function cmdAutotagOffline() {
     if (noTitle > 0) missing.push(`・タイトル未取得 ${noTitle} 件 →「URLからタイトル取得」を先に実行すると精度が上がります`);
     if (noDesc > 0)  missing.push(`・説明文未取得 ${noDesc} 件 →「説明文を取得」を先に実行すると精度が上がります`);
     if (!(await confirmDialog(
-      `タグ付けの分類材料が一部不足しています。\n\n${missing.join("\n")}\n\nこのまま ${ids.length} 件にタグ付けを実行しますか?`
+      `タグ付けの分類材料が一部不足しています。\n\n${missing.join("\n")}\n\n` +
+      `このまま実行しますか?\n\n対象: ${currentScope().label}`,
+      { okLabel: "実行", cancelLabel: "キャンセル" }
     ))) return;
+  } else if (!(await confirmScope("タイトル・説明文・URL からローカルでタグを付けます。"))) {
+    return;
   }
 
   await runSseCommand("/autotag/local", { bookmark_ids: ids }, "自動タグ付け");
@@ -1683,8 +1997,10 @@ async function cmdAutotagOffline() {
 }
 
 async function cmdOrganizeDedupe() {
-  const folder = state.selectedFolder ?? "";
-  if (!(await confirmDialog(`「${folder || "ルート"}」フォルダの重複ブックマークを削除しますか?`))) return;
+  const sc = currentScope();
+  const folder = sc.folderPath ?? "";
+  if (!(await confirmDialog(`同じURLのブックマークをまとめて1件にします。\n\n対象: ${sc.label}`,
+        { okLabel: "実行", cancelLabel: "キャンセル" }))) return;
   try {
     const res = await api("/organize/dedupe", {
       method: "POST",
@@ -1699,8 +2015,10 @@ async function cmdOrganizeDedupe() {
 }
 
 async function cmdOrganizeMergeDupFolders() {
-  const parent = state.selectedFolder ?? "";
-  if (!(await confirmDialog(`「${parent || "ルート"}」配下の重複フォルダを統合しますか?`))) return;
+  const sc = currentScope();
+  const parent = sc.folderPath ?? "";
+  if (!(await confirmDialog(`同じ名前のフォルダを1つにまとめます。\n\n対象: ${sc.label}`,
+        { okLabel: "実行", cancelLabel: "キャンセル" }))) return;
   try {
     const res = await api("/organize/merge-duplicate-folders", {
       method: "POST",
@@ -1715,9 +2033,10 @@ async function cmdOrganizeMergeDupFolders() {
 }
 
 async function cmdOrganizeSortByDomain() {
-  const folder = state.selectedFolder ?? "";
-  const label = folder || "ルート";
-  if (!(await confirmDialog(`「${label}」内のブックマークをドメイン順に並び替えますか?`))) return;
+  const sc = currentScope();
+  const folder = sc.folderPath ?? "";
+  if (!(await confirmDialog(`ブックマークをドメイン順に並べ替えます。\n\n対象: ${sc.label}`,
+        { okLabel: "実行", cancelLabel: "キャンセル" }))) return;
   try {
     const res = await api("/organize/sort-by-domain", {
       method: "POST",
@@ -1732,8 +2051,8 @@ async function cmdOrganizeSortByDomain() {
 }
 
 async function cmdOrganizeConsolidateDomain() {
-  const folder = state.selectedFolder ?? "";
-  const scope = folder ? `「${folder}」以下` : "全体";
+  const folder = currentScope().folderPath ?? "";
+  const scope = currentScope().label;
 
   const scopedBms = state.bookmarks.filter((b) => {
     const fp = b.folder_path || "";
@@ -1816,8 +2135,8 @@ async function cmdOrganizeConsolidateDomain() {
 // --- Domain × Keyword振り分け -----------------------------------------------
 
 async function cmdOrganizeDomainKeyword() {
-  const folder = state.selectedFolder ?? "";
-  const scope  = folder ? `「${folder}」以下` : "全体";
+  const folder = currentScope().folderPath ?? "";
+  const scope  = currentScope().label;
 
   const scopedBms = state.bookmarks.filter((b) => {
     const fp = b.folder_path || "";
@@ -2211,6 +2530,239 @@ async function cmdBackupUndoLatest() {
 // --- AI Settings -----------------------------------------------------------
 
 /// 設定モーダル: APIキーをUIから登録 + 現在のキー/単価ステータスを表示。
+// --- Help ------------------------------------------------------------------
+//
+// 料金まわりは「models.json が優先」「単価不明なら実行をブロック」など
+// 覚えておくべき規則が多く、静的な説明文はすぐ古くなる。そこで実際に
+// /config/ai-status と /config/models を読み、その場の設定を表示する。
+
+async function cmdHelp() {
+  // 料金セクションは実データで描く。取れなくてもヘルプ自体は開く。
+  let status = null, models = null;
+  try { status = await api("/config/ai-status"); } catch (_) {}
+  try { models = await api("/config/models"); } catch (_) {}
+
+  const C = AI_C;
+  const catalog = models?.catalog || null;
+  const list = Array.isArray(catalog?.models) ? catalog.models : [];
+
+  const row = (label, value, color) =>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0">
+       <span style="color:${C.mid};flex:0 0 auto">${label}</span>
+       <span style="color:${color || C.hi};text-align:right;word-break:break-all">${value}</span>
+     </div>`;
+
+  // 実効単価とその出所。設定画面と同じ解決ロジックの結果が出る。
+  let priceRows;
+  if (!status) {
+    priceRows = row("状態", "サーバに接続できませんでした", C.red);
+  } else if (status.pricing_set) {
+    const src = { catalog: "config/models.json", config: "config.ini [AI]" }[status.pricing_source] || status.pricing_source;
+    priceRows =
+      row("既定モデル", escHtml(status.model)) +
+      row("入力単価", `$${status.input_cost_per_1m} / 1M tokens`, C.green) +
+      row("出力単価", `$${status.output_cost_per_1m} / 1M tokens`, C.green) +
+      row("この単価の出所", escHtml(src), C.accent) +
+      row("通常キーの枠", status.free_tier == null ? "未申告" : (status.free_tier ? "無料枠" : "有料枠"),
+          status.free_tier == null ? C.amber : C.hi) +
+      row("有料枠のキー", status.paid_key_set ? "登録済み" : "未登録",
+          status.paid_key_set ? C.green : C.lo) +
+      row("AI実行", "可能", C.green);
+  } else {
+    priceRows =
+      row("既定モデル", escHtml(status.model)) +
+      row("単価", "不明", C.red) +
+      row("AI実行", "ブロックされます", C.red);
+  }
+
+  // 注記に「※」が入っているモデル＝期限や割増がある要注意モデル。
+  // カタログから拾うので、models.json を更新すればここも自動で追随する。
+  const caution = list.filter((m) => String(m.note || "").includes("※"));
+  const cautionHtml = caution.length
+    ? caution.map((m) =>
+        `<div style="padding:6px 0;border-top:1px solid ${C.border}">
+           <div style="color:${C.hi};font-size:12px">${escHtml(m.label || m.id)}
+             <span style="color:${C.lo};font-size:11px">（$${m.input_per_1m} / $${m.output_per_1m}）</span></div>
+           <div style="color:${C.amber};font-size:11px;line-height:1.55;margin-top:2px">${escHtml(m.note)}</div>
+         </div>`).join("")
+    : `<div style="color:${C.lo};font-size:11px">注意が必要なモデルはありません。</div>`;
+
+  const updated = catalog?._updated ? escHtml(catalog._updated) : "不明";
+  const sourceUrl = catalog?._source || "https://ai.google.dev/gemini-api/docs/pricing";
+
+  const section = (title, body) =>
+    `<section style="border:1px solid ${C.border};border-radius:8px;overflow:hidden">
+       <h3 style="margin:0;padding:8px 12px;background:${C.bg2};color:${C.mid};font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${title}</h3>
+       <div style="padding:11px 12px;font-size:12px;color:${C.hi};line-height:1.7">${body}</div>
+     </section>`;
+
+  const kbd = (k) =>
+    `<span style="display:inline-block;background:${C.bg3};border:1px solid ${C.border};border-radius:3px;padding:0 5px;font-size:11px;color:${C.hi}">${k}</span>`;
+
+  const modal = document.createElement("div");
+  modal.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit";
+  modal.innerHTML = `
+    <div style="background:${C.bg1};border:1px solid ${C.border};border-radius:10px;width:720px;max-width:94vw;height:84vh;display:flex;flex-direction:column;overflow:hidden">
+
+      <div style="padding:15px 20px 11px;border-bottom:1px solid ${C.border};flex:0 0 auto">
+        <div style="color:${C.hi};font-size:15px;font-weight:600">ヘルプ</div>
+        <div style="color:${C.lo};font-size:11px;margin-top:3px">この画面の内容は、いま読み込まれている設定から生成しています。</div>
+      </div>
+
+      <div style="flex:1 1 0;overflow-y:auto;padding:14px 20px;display:flex;flex-direction:column;gap:12px">
+
+        ${section("AI の料金 — 現在の状態", `
+          <div style="background:${C.bg2};border-radius:6px;padding:9px 11px;margin-bottom:10px">${priceRows}</div>
+          <div style="color:${C.mid};font-size:11.5px">
+            単価は次の順で解決されます。<br>
+            <b style="color:${C.hi}">1.</b> <code style="color:${C.accent}">config/models.json</code> のモデル別価格（通常はこちら）<br>
+            <b style="color:${C.hi}">2.</b> <code style="color:${C.accent}">config.ini [AI]</code> の <code>input/output_cost_per_1m_tokens</code>（models.json に無いモデル用のフォールバック）<br>
+            <b style="color:${C.red}">3.</b> どちらからも取れない場合は、<b style="color:${C.red}">Gemini に一切送信せず実行をブロック</b>します。
+          </div>`)}
+
+        ${section("無料枠と有料枠の違い", `
+          <div style="color:${C.amber};font-size:11.5px;margin-bottom:8px;line-height:1.6">
+            このアプリが送るのは<b>ブックマークのタイトルとURL</b>です。何を見ているかがほぼ分かる情報なので、
+            どちらの枠で使っているかは把握しておいてください。
+          </div>
+          <div style="overflow-x:auto">
+          <table style="border-collapse:collapse;width:100%;font-size:11.5px">
+            <thead><tr style="background:${C.bg2};color:${C.mid};font-size:10px;text-transform:uppercase">
+              <th style="padding:6px 8px;text-align:left"></th>
+              <th style="padding:6px 8px;text-align:left">無料枠 (Free)</th>
+              <th style="padding:6px 8px;text-align:left">有料枠 (Tier 1〜3)</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td style="padding:6px 8px;color:${C.mid};border-top:1px solid ${C.border};white-space:nowrap">請求</td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border}">なし（請求先アカウント不要）</td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border}">請求先アカウントの紐付けが必要</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 8px;color:${C.mid};border-top:1px solid ${C.border};white-space:nowrap">送信内容の扱い</td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border};color:${C.red}">
+                  Googleが製品の改善・開発に利用。<b>人間のレビュアーが読む場合あり</b>（アカウント・APIキー・プロジェクトとは切り離した上で）
+                </td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border};color:${C.green}">
+                  製品改善には利用されない。ポリシー違反の検知と法令対応のため、一定期間ログに残るのみ
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:6px 8px;color:${C.mid};border-top:1px solid ${C.border};white-space:nowrap">レート制限</td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border}">厳しい</td>
+                <td style="padding:6px 8px;border-top:1px solid ${C.border}">Tierが上がるほど緩和</td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+          <div style="color:${C.mid};font-size:11.5px;margin-top:9px;line-height:1.7">
+            <b style="color:${C.red}">公式の利用規約は、無料枠について「機微情報・秘密情報・個人情報を送信しないこと」と明記しています。</b>
+            大量のブックマークを投げる前に、自分がどちらの枠かを確認してください。<br><br>
+            <b style="color:${C.hi}">Tierの上がり方</b>：Tier 1 = 請求先アカウントを紐付け（上限 $250）／
+            Tier 2 = 累計 $100 かつ初回支払いから3日（上限 $2,000）／
+            Tier 3 = 累計 $1,000 かつ30日（上限 $20,000〜）。
+            無料→Tier 1 は即時、以降は10分以内に反映されます。<br><br>
+            <b style="color:${C.hi}">レート制限の数値</b>は RPM（毎分リクエスト）・TPM（毎分入力トークン）・RPD（毎日リクエスト）の3軸ですが、
+            <b>モデル別の具体的な数値は公式ドキュメントに載らなくなり、AI Studio で自分のプロジェクトの値を見る方式</b>に変わりました。
+            予告なく変更されることがあります。RPD は太平洋時間の0時にリセットされます。<br><br>
+            <b style="color:${C.hi}">このアプリでの影響</b>：無料枠だと制限に当たりやすくなります。429 を受けた場合は
+            Gemini が返す待機秒数に従って自動で待ち、最大3回まで再送します。それでも落ちたチャンクは
+            レビュー画面の「失敗分だけ再実行」から送り直せます。<br><br>
+            <b style="color:${C.hi}">このアプリでの枠の切り替え</b>：AI設定にキーを2枠用意しています。
+            分類はまず<b>通常キー</b>で実行し、<b>無料枠の上限で止まったときだけ</b>、
+            「有料枠のキーで続けますか?」と確認したうえで残りを処理します。
+            黙って有料キーに切り替わることはありません。有料キーが未登録なら、その旨だけをお知らせします。<br>
+            枠はキー（プロジェクト）単位で決まるので、使い分けるには<b>別プロジェクトのキーが2本</b>必要です。
+            同じキーで待っても、日次の上限は当日中には解消しません。<br><br>
+            <b style="color:${C.amber}">注意</b>：承認ゲートの金額は単価表から計算しているだけなので、
+            通常キーを「無料枠」と申告している場合は<b>「参考コスト」として表示し、請求されない旨を併記</b>します。
+            未申告のままだと、課金の有無を正しく表示できません。
+          </div>`)}
+
+        ${section("送信前の承認ゲート", `
+          AI 分類は必ず見積もり画面を挟みます。<b>対象件数・API呼び出し回数・推定入力トークン・推定金額</b>を提示し、
+          「この内容で実行」を押すまで Gemini には何も送りません。<br>
+          モデルは実行時に選べ、<b>見積もりは選んだモデルの単価で計算</b>されます。設定画面の「既定モデル」はその初期値です。<br>
+          <span style="color:${C.mid};font-size:11.5px">送信する項目（タイトル / URL / タグ / 説明文）もオプション画面で選べます。説明文はトークン消費が大きく、見積もり額にもそのぶん反映されます。</span>`)}
+
+        ${section("分類材料と「該当なし」", `
+          オプション画面で、対象のタイトル・タグ・説明文がどれだけ埋まっているかを確認し、不足していれば警告します。<br>
+          3つとも空のブックマークは<b>ドメインとURLしか手がかりがなく</b>、分類できずに提案から漏れます。
+          全体の3割を超える場合は、実行前にもう一度確認を挟みます。<br>
+          <b style="color:${C.amber}">推奨順：タイトルをWebから取得 → 説明文をWebから取得 → 自動でタグを付ける → AI分類</b><br><br>
+          <span style="color:${C.mid};font-size:11.5px">
+            分類できなかったものは「該当なし」として<b>提案されず、その場に留まります</b>。
+            Misc / Others / Ungrouped / 未分類 のような受け皿フォルダは作りません。<br>
+            また<b>新しいフォルダは2件以上のときだけ</b>作ります（1件だけのために新規フォルダは作らない）。
+            既存フォルダへ入れる場合は1件でも提案されます。<br>
+            レビュー画面の見出しに「N件中M件に提案 · K件は該当なし」と出るので、漏れた件数はそこで分かります。
+          </span>`)}
+
+        ${section("見積もりに反映されていないもの", `
+          <div style="color:${C.mid};font-size:11.5px;margin-bottom:6px">
+            以下は models.json の注記としてだけ持っており、<b style="color:${C.amber}">推定金額の計算には入っていません</b>。
+            該当モデルを使うときは、表示額より高くなる場合があります。
+          </div>
+          ${cautionHtml}`)}
+
+        ${section("価格表のメンテナンス", `
+          ${row("価格表の最終更新", updated)}
+          ${row("価格表の読み込み元", models?.from_file === false ? "アプリ内蔵（models.json が見つからず）" : "config/models.json",
+                models?.from_file === false ? C.amber : C.hi)}
+          ${row("使用中の config.ini", status?.config_path ? escHtml(status.config_path) : "不明", C.mid)}
+          ${row("出典", `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noreferrer" style="color:${C.accent}">${escHtml(sourceUrl)}</a>`)}
+          ${row("登録モデル数", `${list.length} 件`)}
+          ${models?.error ? `<div style="color:${C.amber};font-size:11px;margin-top:6px">${escHtml(models.error)}</div>` : ""}
+          <div style="color:${C.mid};font-size:11.5px;margin-top:8px">
+            価格を更新するときは <code style="color:${C.accent}">config/models.json</code> を編集します。コードの変更もアプリの再起動も不要で、
+            次回の見積もりから反映されます（呼び出しのたびにファイルを読み直すため）。<br>
+            モデルIDは Google 側で変わることがあります（例: <code>gemini-3.1-pro</code> → <code>gemini-3.1-pro-preview</code>）。
+            IDが古いと呼び出しが 404 になるので、価格と一緒に確認してください。
+          </div>`)}
+
+        ${section("操作の対象（スコープ）", `
+          右パネル上部の「操作の対象」が、<b>整理する / 情報を補う / AI</b> のすべての実行範囲を決めます。<br>
+          <b>選択中</b>: 一覧やツリーで選んだブックマーク。<br>
+          <b>フォルダ</b>: ツリーで選んだフォルダ（サブフォルダを含む）。<br>
+          <b>全体</b>: 開いているファイルの全ブックマーク。<br>
+          <span style="color:${C.mid};font-size:11.5px">
+            対象は最後に選んだものへ自動で移ります（フォルダを選べば「フォルダ」、ブックマークを選べば「選択中」）。セグメントを押せば手動で上書きできます。<br>
+            「整理する」はフォルダ単位で動くため、対象が「選択中」のときは使えません。
+          </span>`)}
+
+        ${section("元に戻す・保存", `
+          ${kbd("Ctrl+Z")} / ${kbd("Ctrl+Y")} で元に戻す・やり直しができます。<b>AI 分類の適用も含めて</b>取り消せます。<br>
+          未保存の変更があるときは、上部の<b>保存ボタンが色づいて ● が付きます</b>。ファイルに書き込むまで元のHTMLは変わりません。<br>
+          <span style="color:${C.mid};font-size:11.5px">保存時にバックアップが作られます。「直前のバックアップに戻す」「バックアップ一覧から復元」から戻せます。</span>`)}
+
+        ${section("キーボード", `
+          ${kbd("Ctrl+O")} ファイルを開く　${kbd("Ctrl+S")} 保存　${kbd("Ctrl+Z")} 元に戻す　${kbd("Ctrl+Y")} やり直し　${kbd("F1")} このヘルプ<br>
+          <span style="color:${C.mid};font-size:11.5px">
+            一覧では ${kbd("Ctrl+クリック")} で個別に追加選択、${kbd("Shift+クリック")} で範囲選択。
+            フォルダやブックマークの右クリックでメニューが出ます。
+            ペインの境界線はドラッグで幅を変更、${kbd("ダブルクリック")}で既定の配分に戻ります。
+          </span>`)}
+
+      </div>
+
+      <div style="padding:10px 20px;border-top:1px solid ${C.border};flex:0 0 auto;display:flex;gap:8px;justify-content:flex-end">
+        <button id="help-ai-settings" style="padding:6px 16px;border-radius:5px;border:1px solid ${C.border};background:transparent;color:${C.mid};cursor:pointer;font-family:inherit">AI 設定を開く</button>
+        <button id="help-close" style="padding:6px 16px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600;font-family:inherit">閉じる</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  modal.querySelector("#help-close").addEventListener("click", close);
+  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+  modal.querySelector("#help-ai-settings").addEventListener("click", () => { close(); cmdAiSettings(); });
+  const onEsc = (e) => {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", onEsc); }
+  };
+  document.addEventListener("keydown", onEsc);
+}
+
 async function cmdAiSettings() {
   let status, models;
   try {
@@ -2222,19 +2774,23 @@ async function cmdAiSettings() {
     return toast(`設定の読込に失敗: ${e.message}`, "error");
   }
 
-  const C = { bg1:"#111111", bg3:"#1c1c1c", border:"#262626",
-              accent:"#7c9eff", hi:"#e8e8e8", mid:"#9a9a9a", lo:"#555555",
-              green:"#5bcea8", red:"#ff7c7c" };
+  const C = AI_C;
 
   const keyBadge = status.api_key_set
     ? `<span style="color:${C.green}">● 設定済み (${status.api_key_source === "env" ? "環境変数" : "config.ini"})</span>`
     : `<span style="color:${C.red}">● 未設定</span>`;
+  // 単価は models.json（モデルごと）→ config.ini（フォールバック）の順で解決される。
+  // どちらから来た値なのかを出さないと、config.ini が空でも実行できる理由が伝わらない。
+  const priceSrcLabel = { catalog: "models.json", config: "config.ini" }[status.pricing_source] || "";
   const priceBadge = status.pricing_set
-    ? `<span style="color:${C.green}">● 設定済み (入力 $${status.input_cost_per_1m}/1M, 出力 $${status.output_cost_per_1m}/1M)</span>`
-    : `<span style="color:${C.red}">● 未設定 — AI実行はブロックされます</span>`;
+    ? `<span style="color:${C.green}">● 入力 $${status.input_cost_per_1m}/1M, 出力 $${status.output_cost_per_1m}/1M（${priceSrcLabel} 由来）</span>`
+    : `<span style="color:${C.red}">● 「${escHtml(status.model)}」の単価が不明 — AI実行はブロックされます</span>`;
   const envNote = status.api_key_source === "env"
     ? `<div style="color:${C.lo};font-size:11px;margin-top:4px">環境変数が優先されています。ここで保存しても環境変数が使われます。</div>`
     : "";
+  const paidBadge = status.paid_key_set
+    ? `<span style="color:${C.green}">● 登録済み</span>`
+    : `<span style="color:${C.lo}">● 未登録（無料枠の上限で止まったとき、切り替え先がありません）</span>`;
 
   // モデル価格表（参照用）。models.json 由来。現在のモデルをハイライト。
   let modelTable = "";
@@ -2279,31 +2835,63 @@ async function cmdAiSettings() {
         <div style="color:${C.lo};font-size:11px;margin-top:3px">Gemini APIキーとコスト単価</div>
       </div>
       <div style="padding:14px 20px;display:flex;flex-direction:column;gap:16px">
-        <div>
-          <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">APIキー ${keyBadge}</div>
-          <input id="ais-key" type="password" placeholder="新しいキーを貼り付け（空欄なら変更なし）"
-            style="width:100%;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
-          <div style="color:${C.lo};font-size:11px;margin-top:4px">config/config.ini に保存されます（.gitignore 済み）。</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em">通常使うAPIキー ${keyBadge}</div>
+          <div style="display:flex;gap:8px">
+            <input id="ais-key" type="password" placeholder="新しいキーを貼り付け（空欄なら変更なし）"
+              style="flex:1;min-width:0;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
+            <button id="ais-save-key" style="padding:7px 14px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600;font-size:12px;white-space:nowrap;font-family:inherit">保存</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:${C.mid};font-size:11.5px">
+            <input type="checkbox" id="ais-free-tier" ${status.free_tier === true ? "checked" : ""}
+              style="cursor:pointer;accent-color:${C.accent};margin:0">
+            このキーは<b style="color:${C.hi}">無料枠</b>（請求先アカウント未設定のプロジェクト）
+          </label>
+          <div style="color:${C.lo};font-size:11px;line-height:1.6">
+            ${status.free_tier == null
+              ? `<span style="color:${C.amber}">未申告です。</span>申告すると、見積もり画面で課金の有無を正しく表示できます。`
+              : status.free_tier
+                ? `課金されません。ただし<b style="color:${C.amber}">送信内容はGoogleの製品改善に利用され、人間のレビュアーが読む場合があります</b>。`
+                : `有料枠として扱います。送信内容は製品改善には利用されません。`}
+          </div>
           ${envNote}
         </div>
+
+        <div style="display:flex;flex-direction:column;gap:6px;border:1px solid ${C.border};border-radius:7px;padding:11px 12px">
+          <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em">有料枠のAPIキー（任意） ${paidBadge}</div>
+          <div style="display:flex;gap:8px">
+            <input id="ais-paid-key" type="password" placeholder="請求先アカウントを紐付けたプロジェクトのキー"
+              style="flex:1;min-width:0;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
+            <button id="ais-save-paid-key" style="padding:7px 14px;border-radius:5px;border:1px solid ${C.border};background:transparent;color:${C.mid};cursor:pointer;font-size:12px;white-space:nowrap;font-family:inherit">保存</button>
+          </div>
+          <div style="color:${C.lo};font-size:11px;line-height:1.6">
+            分類はまず上の通常キーで実行し、<b style="color:${C.hi}">無料枠の上限で止まったときだけ</b>、確認のうえこちらのキーで残りを続行します。
+            勝手に切り替わることはありません。<br>
+            枠はキー（プロジェクト）ごとに決まるため、無料と有料を使い分けるには別プロジェクトのキーが2本必要です。
+          </div>
+        </div>
         <div>
-          <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">モデル・コスト単価 ${priceBadge}</div>
+          <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">既定モデル・コスト単価 ${priceBadge}</div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <input id="ais-model" type="text" value="${escHtml(status.model)}" placeholder="モデルID (例: gemini-2.5-flash-lite)"
               style="flex:1 1 200px;min-width:160px;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
             <label style="display:flex;align-items:center;gap:4px;color:${C.mid};font-size:11px">
               入力$/1M
-              <input id="ais-input-cost" type="number" step="0.001" min="0" value="${status.input_cost_per_1m ?? ""}"
+              <input id="ais-input-cost" type="number" step="0.001" min="0" value="${status.config_input_cost_per_1m ?? ""}"
                 style="width:80px;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
             </label>
             <label style="display:flex;align-items:center;gap:4px;color:${C.mid};font-size:11px">
               出力$/1M
-              <input id="ais-output-cost" type="number" step="0.001" min="0" value="${status.output_cost_per_1m ?? ""}"
+              <input id="ais-output-cost" type="number" step="0.001" min="0" value="${status.config_output_cost_per_1m ?? ""}"
                 style="width:80px;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:7px 9px;outline:none;font-family:inherit">
             </label>
             <button id="ais-save-pricing" style="padding:7px 14px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600;font-size:12px">単価を保存</button>
           </div>
-          <div style="color:${C.lo};font-size:11px;margin-top:4px">下のモデル一覧をクリックすると自動入力されます。未設定/0のままだとAI実行はブロックされます。</div>
+          <div style="color:${C.lo};font-size:11px;margin-top:4px;line-height:1.6">
+            単価は <b>models.json のモデル別価格が優先</b>されます。ここの入力欄は models.json に載っていないモデルを使うときのフォールバックです（下の一覧をクリックすると自動入力）。<br>
+            モデルは分類の実行時にも選べます。ここで指定するのはその既定値です。
+            <a id="ais-help" href="#" style="color:${C.accent};text-decoration:none">料金の扱いをヘルプで見る →</a>
+          </div>
         </div>
         <div>
           <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">利用可能なモデルと料金</div>
@@ -2311,28 +2899,52 @@ async function cmdAiSettings() {
         </div>
       </div>
       <div style="padding:10px 20px;border-top:1px solid ${C.border};display:flex;gap:8px;justify-content:flex-end">
-        <button id="ais-cancel" style="padding:6px 16px;border-radius:5px;border:1px solid ${C.border};background:transparent;color:${C.mid};cursor:pointer">閉じる</button>
-        <button id="ais-save" style="padding:6px 16px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600">キーを保存</button>
+        <button id="ais-cancel" style="padding:6px 16px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600">閉じる</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 
   const close = () => modal.remove();
   modal.querySelector("#ais-cancel").addEventListener("click", close);
+  modal.querySelector("#ais-help").addEventListener("click", (e) => {
+    e.preventDefault();
+    close();
+    cmdHelp();
+  });
   modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
-  modal.querySelector("#ais-save").addEventListener("click", async () => {
-    const key = modal.querySelector("#ais-key").value.trim();
+  // 2枠それぞれに保存ボタン。paid フラグで config.ini の保存先が分かれる。
+  const saveKey = async (inputId, paid) => {
+    const key = modal.querySelector(inputId).value.trim();
     if (!key) return toast("キーが入力されていません", "error");
     try {
       const res = await api("/config/api-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: key }),
+        body: JSON.stringify({ api_key: key, paid }),
       });
       if (res.ok) { toast(res.message); close(); }
       else toast(res.message, "error");
     } catch (e) {
       toast(`保存失敗: ${e.message}`, "error");
+    }
+  };
+  modal.querySelector("#ais-save-key").addEventListener("click", () => saveKey("#ais-key", false));
+  modal.querySelector("#ais-save-paid-key").addEventListener("click", () => saveKey("#ais-paid-key", true));
+
+  // 枠の申告。API からは問い合わせられないのでユーザーの自己申告。
+  modal.querySelector("#ais-free-tier").addEventListener("change", async (e) => {
+    const freeTier = e.target.checked;
+    try {
+      const res = await api("/config/ai-tier", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ free_tier: freeTier }),
+      });
+      if (res.ok) toast(res.message);
+      else { toast(res.message, "error"); e.target.checked = !freeTier; }
+    } catch (err) {
+      toast(`保存失敗: ${err.message}`, "error");
+      e.target.checked = !freeTier;
     }
   });
 
@@ -2368,11 +2980,16 @@ async function cmdAiSettings() {
 
 /// 実行前の見積もり承認モーダル。estimate を表示し、ユーザーが承認すれば true を resolve。
 /// can_run が false（キー/単価未設定）なら実行ボタンを無効化する。
-function openEstimateGate(est) {
+// AI 系モーダル共通のパレット。styles.css のトークンと同じ色に揃えてある。
+const AI_C = {
+  bg1: "#111111", bg2: "#161616", bg3: "#1c1c1c", surf: "#232323",
+  border: "#262626", accent: "#7c9eff", hi: "#e8e8e8", mid: "#9a9a9a",
+  lo: "#555555", green: "#5bcea8", red: "#e06c75", amber: "#e5c07b",
+};
+
+function openEstimateGate(est, model) {
   return new Promise((resolve) => {
-    const C = { bg1:"#111111", bg3:"#1c1c1c", border:"#262626",
-                accent:"#7c9eff", hi:"#e8e8e8", mid:"#9a9a9a", lo:"#555555",
-                green:"#5bcea8", red:"#ff7c7c" };
+    const C = AI_C;
     const c = est.cost;
     let usd = "コスト不明";
     if (c.input_cost_usd != null) {
@@ -2380,6 +2997,20 @@ function openEstimateGate(est) {
       const high = c.input_cost_usd + (c.output_cost_usd_high || 0);
       usd = `$${low.toFixed(4)} 〜 $${high.toFixed(4)}`;
     }
+    // 無料枠では単価表から出した金額は実際には請求されない。
+    // 金額だけを見せると判断材料として誤りになるので、扱いを明示する。
+    const free = est.free_tier === true;
+    const undeclared = est.free_tier == null;
+    const costLabel = free ? "参考コスト" : "推定コスト";
+    const costColor = free ? C.mid : C.green;
+    const costSuffix = free
+      ? `<div style="color:${C.green};font-size:11px;margin-top:2px">無料枠のため請求されません</div>`
+      : "";
+    const tierNote = free
+      ? `送信内容は Google の製品改善に利用され、人間のレビュアーが読む場合があります（無料枠）。`
+      : undeclared
+        ? `使用中の枠が未申告です。AI設定で申告すると、課金の有無を正しく表示できます。`
+        : `送信内容は製品改善には利用されません（有料枠）。`;
 
     const modal = document.createElement("div");
     modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit";
@@ -2391,11 +3022,16 @@ function openEstimateGate(est) {
           <div style="color:${C.lo};font-size:11px;margin-top:3px">この内容で Gemini に送信します。承認するまで送信しません。</div>
         </div>
         <div style="padding:14px 20px;display:flex;flex-direction:column;gap:8px;font-size:13px;color:${C.hi}">
+          ${model ? `<div style="display:flex;justify-content:space-between"><span style="color:${C.mid}">モデル</span><span>${escHtml(model)}</span></div>` : ""}
           <div style="display:flex;justify-content:space-between"><span style="color:${C.mid}">対象件数</span><span>${c.items.toLocaleString()} 件</span></div>
           <div style="display:flex;justify-content:space-between"><span style="color:${C.mid}">チャンク数（API呼び出し）</span><span>${c.chunks}</span></div>
           <div style="display:flex;justify-content:space-between"><span style="color:${C.mid}">入力トークン（推定）</span><span>~${c.input_tokens_est.toLocaleString()}</span></div>
           <div style="display:flex;justify-content:space-between"><span style="color:${C.mid}">出力トークン（推定）</span><span>${c.output_tokens_low.toLocaleString()} 〜 ${c.output_tokens_high.toLocaleString()}</span></div>
-          <div style="display:flex;justify-content:space-between;border-top:1px solid ${C.border};padding-top:8px;margin-top:4px"><span style="color:${C.mid}">推定コスト</span><span style="color:${C.green}">${usd}</span></div>
+          <div style="display:flex;justify-content:space-between;border-top:1px solid ${C.border};padding-top:8px;margin-top:4px">
+            <span style="color:${C.mid}">${costLabel}</span>
+            <span style="text-align:right"><span style="color:${costColor}">${usd}</span>${costSuffix}</span>
+          </div>
+          <div style="color:${undeclared ? C.amber : C.lo};font-size:11px;line-height:1.6;margin-top:6px">${tierNote}</div>
           ${blocked ? `<div style="color:${C.red};font-size:12px;margin-top:8px">${escHtml(est.blocked_reason || "実行できません")}</div>` : ""}
         </div>
         <div style="padding:10px 20px;border-top:1px solid ${C.border};display:flex;gap:8px;justify-content:flex-end">
@@ -2413,57 +3049,30 @@ function openEstimateGate(est) {
 
 // --- AI Classify -----------------------------------------------------------
 
-/// 操作対象のブックマークidを選ばせる共通モーダル（選択中1件 / 現在フォルダ全件 / 全件）。
-/// `title` は見出し（例: "AI 分類 — 対象を選択"）。キャンセル時は null を返す。
-/// URLからタイトル取得・説明文取得・自動タグ付け・AI分類で共用する。
-function pickScopeTarget(title) {
-  return new Promise((resolve) => {
-    const bm = state.selectedBookmark;
-    const allIds = state.bookmarks.map((b) => b.bookmark_id).filter(Boolean);
-    const folderBms = visibleBookmarks();
-    const folder = state.selectedFolder;
-
-    const options = [];
-    if (bm && bm.bookmark_id) options.push({ label: `選択中の1件「${bm.title || bm.url}」`, ids: [bm.bookmark_id] });
-    if (folderBms.length && folder != null) {
-      const name = folder === "" ? "ルート直下" : `「${folder}」`;
-      options.push({ label: `現在のフォルダ${name} 全件（${folderBms.length} 件）`, ids: folderBms.map((b) => b.bookmark_id).filter(Boolean) });
-    }
-    options.push({ label: `全ブックマーク（${allIds.length} 件）`, ids: allIds });
-
-    const modal = document.createElement("div");
-    modal.style.cssText =
-      "position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center";
-    const btns = options.map((o, i) =>
-      `<button data-i="${i}" style="display:block;width:100%;margin:6px 0;padding:10px 16px;border-radius:6px;border:1px solid #585b70;background:#313244;color:#cdd6f4;cursor:pointer;text-align:left;font-size:13px">${escHtml(o.label)}</button>`
-    ).join("");
-    modal.innerHTML = `
-      <div style="background:#1e1e2e;border-radius:12px;padding:24px;min-width:400px;display:flex;flex-direction:column;gap:8px">
-        <h2 style="margin:0 0 8px;color:#cdd6f4;font-size:15px">${escHtml(title)}</h2>
-        ${btns}
-        <button id="ct-cancel" style="margin-top:4px;padding:8px;border-radius:6px;border:1px solid #585b70;background:transparent;color:#a6adc8;cursor:pointer">キャンセル</button>
-      </div>`;
-    document.body.appendChild(modal);
-    const close = (v) => { modal.remove(); resolve(v); };
-    modal.querySelector("#ct-cancel").addEventListener("click", () => close(null));
-    modal.addEventListener("click", (e) => { if (e.target === modal) close(null); });
-    modal.querySelectorAll("[data-i]").forEach((btn) => {
-      btn.addEventListener("click", () => close(options[parseInt(btn.dataset.i)].ids));
-    });
-  });
-}
-
 async function cmdAiClassify() {
   if (!state.bookmarks.length) return toast("ブックマークがありません", "error");
 
-  // まず分類対象を選ばせる（選択フォルダだけ等）。
-  const ids = await pickScopeTarget("AI 分類 — 対象を選択");
-  if (!ids) return; // cancelled
+  // 対象はスコープバーで既に決まっている（訊き直さない）。
+  const ids = currentScope().ids;
   if (!ids.length) return toast("対象のブックマークがありません", "error");
 
-  // フィールド選択 + 追加指示をモーダルで受け取る
-  const opts = await openAiClassifyOptions(ids.length);
+  // フィールド選択・モデル・追加指示をモーダルで受け取る
+  const opts = await openAiClassifyOptions(ids.length, ids);
   if (!opts) return; // cancelled
+
+  await runAiClassify(ids, opts);
+}
+
+/// 見積もり承認 → 実行 → レビュー、の一連。失敗チャンクの再実行からも呼ぶ。
+async function runAiClassify(ids, opts) {
+  const payload = {
+    bookmark_ids: ids,
+    custom_prompt: opts.customPrompt || undefined,
+    fields: opts.fields,
+    model: opts.model,
+    chunk_size: opts.chunkSize,
+    use_paid_key: false,
+  };
 
   // 承認ゲート: 送信前にトークン量とコストを見積もり、ユーザーの承認を得る。
   let est;
@@ -2471,24 +3080,31 @@ async function cmdAiClassify() {
     est = await api("/classify/estimate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bookmark_ids: ids, custom_prompt: opts.customPrompt || undefined, fields: opts.fields }),
+      body: JSON.stringify(payload),
     });
   } catch (e) {
     return toast(`見積もりに失敗: ${e.message}`, "error");
   }
-  const approved = await openEstimateGate(est);
+  const approved = await openEstimateGate(est, opts.model);
   if (!approved) return; // ユーザーが承認するまで Gemini に送信しない
 
   // 承認後にのみ実行（SSE）。
-  const modal = openAiReviewModal(ids.length);
+  const modal = openAiReviewModal(ids.length, opts);
 
   try {
-    const moves = await runAiClassifySse(ids, opts.customPrompt || undefined, modal, opts.fields);
+    const moves = await runAiClassifySse(payload, modal);
     if (!moves || !moves.length) {
+      if (_aiReview.failedIds.length) {
+        // 全チャンクが落ちたケース。閉じずに再実行の導線を残す。
+        finishAiReviewModal([]);
+        await maybeOfferPaidFallback();
+        return;
+      }
       closeAiReviewModal();
       return toast("AI からの提案がありませんでした");
     }
-    populateAiReviewModal(moves);
+    finishAiReviewModal(moves);
+    await maybeOfferPaidFallback();
   } catch (e) {
     closeAiReviewModal();
     toast(`AI 分類失敗: ${e.message}`, "error");
@@ -2497,10 +3113,34 @@ async function cmdAiClassify() {
 
 /// AI分類の事前オプション（送信フィールド + 追加指示）をモーダルで選ばせる。
 /// resolve({ fields, customPrompt }) / キャンセル時は resolve(null)。
-function openAiClassifyOptions(count) {
+async function openAiClassifyOptions(count, ids) {
+  // モデル一覧は models.json（価格付き）から取る。実行時に選ばせないと
+  // config.ini の既定モデル1つしか使えず、カタログが死んでいた。
+  let catalog = null, currentModel = null;
+  try {
+    const res = await api("/config/models");
+    currentModel = res.current || null;
+    catalog = res.catalog?.models || null;
+  } catch (_) {}
+
+  // タイトル・説明文・タグが揃っていないと、モデルにはドメインとURLしか
+  // 渡らず、分類できない項目が大量に出る。送信前に実データで確認する。
+  let readiness = null;
+  try {
+    readiness = await api("/classify/readiness", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookmark_ids: ids || [] }),
+    });
+  } catch (_) {}
+
+  // 対象がフォルダなら、その中に結果を作るのが既定。
+  const defaultBase = aiDefaultBaseFolder();
+  const folderOptions = existingFolderPaths()
+    .map((p2) => `<option value="${escHtml(p2)}"></option>`).join("");
+
   return new Promise((resolve) => {
-    const C = { bg1:"#111111", bg3:"#1c1c1c", border:"#262626",
-                accent:"#7c9eff", hi:"#e8e8e8", mid:"#9a9a9a", lo:"#555555", green:"#5bcea8" };
+    const C = AI_C;
     const modal = document.createElement("div");
     modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit";
 
@@ -2519,8 +3159,32 @@ function openAiClassifyOptions(count) {
         </div>
         <div style="padding:14px 20px;display:flex;flex-direction:column;gap:14px">
           <div>
+            <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">新しいフォルダの作成先</div>
+            <input id="aico-base" list="aico-folder-list" value="${escHtml(defaultBase)}"
+              style="width:100%;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:6px 8px;outline:none;font-family:inherit">
+            <datalist id="aico-folder-list">${folderOptions}</datalist>
+            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.6">
+              AIが新しく作るフォルダは、ここの下にまとめられます。空欄にするとルート直下に作られます。<br>
+              AIが<b>既存のフォルダ</b>を指してきた場合は、作成先に関係なくそのフォルダへ統合されます。
+            </div>
+          </div>
+          <div id="aico-warn" style="display:none"></div>
+          <div>
+            <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">モデル</div>
+            <select id="aico-model" style="width:100%;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:6px 8px;outline:none;font-family:inherit"></select>
+            <div id="aico-model-note" style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5"></div>
+          </div>
+          <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">AIに渡す情報</div>
             <div id="aico-fields" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+          <div>
+            <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">1回のリクエストに含める件数</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <input id="aico-chunk" type="range" min="10" max="100" step="5" value="40" style="flex:1;accent-color:${C.accent}">
+              <span id="aico-chunk-n" style="color:${C.hi};font-size:12px;min-width:96px;text-align:right"></span>
+            </div>
+            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5">大きいほどAPI呼び出し回数とプロンプト再送分が減りますが、1回あたりの精度は落ちやすくなります。</div>
           </div>
           <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">追加指示（任意）</div>
@@ -2547,9 +3211,122 @@ function openAiClassifyOptions(count) {
       const txt = document.createElement("div");
       txt.innerHTML = `<span style="color:${C.hi};font-size:13px">${f.label}</span>
         <span style="color:${C.lo};font-size:11px;margin-left:6px">${f.hint}</span>`;
+      cb.addEventListener("change", renderWarning);
       row.append(cb, txt);
       fieldsEl.appendChild(row);
     }
+
+    // --- 素材不足の警告 ---
+    // 「何が足りないか」だけでなく「先に何を実行すればいいか」まで出す。
+    // 選んだフィールドに対してのみ警告する（説明文を送らないなら、
+    // 説明文が空でも問題にならない）。
+    const warnEl = modal.querySelector("#aico-warn");
+    function selectedFields() {
+      const f = {};
+      fieldsEl.querySelectorAll("input[type=checkbox]").forEach((cb) => { f[cb.dataset.key] = cb.checked; });
+      return f;
+    }
+    function renderWarning() {
+      if (!readiness || !readiness.total) { warnEl.style.display = "none"; return; }
+      const f = selectedFields();
+      const total = readiness.total;
+      const pct = (n) => Math.round((n / total) * 100);
+      const problems = [];
+
+      if (f.tags && readiness.with_tags < total) {
+        problems.push({
+          n: total - readiness.with_tags,
+          text: `タグ未取得 ${total - readiness.with_tags} 件（${100 - pct(readiness.with_tags)}%）`,
+          fix: "「自動でタグを付ける」",
+        });
+      }
+      if (f.title && readiness.with_title < total) {
+        problems.push({
+          n: total - readiness.with_title,
+          text: `タイトル空 ${total - readiness.with_title} 件（${100 - pct(readiness.with_title)}%）`,
+          fix: "「タイトルをWebから取得」",
+        });
+      }
+      if (f.description && readiness.with_description < total) {
+        problems.push({
+          n: total - readiness.with_description,
+          text: `説明文未取得 ${total - readiness.with_description} 件（${100 - pct(readiness.with_description)}%）`,
+          fix: "「説明文をWebから取得」",
+        });
+      }
+
+      if (!problems.length && !readiness.bare) { warnEl.style.display = "none"; return; }
+
+      // ドメインとURLしか手がかりがない件数。分類不能が出る直接の原因。
+      const severe = readiness.bare > total * 0.3;
+      const color = severe ? C.red : C.amber;
+      const barePart = readiness.bare
+        ? `<div style="color:${color};font-size:12px;font-weight:600;margin-bottom:5px">
+             ${readiness.bare} 件（${pct(readiness.bare)}%）は、タイトル・タグ・説明文がすべて空です
+           </div>
+           <div style="color:${C.mid};font-size:11px;line-height:1.6;margin-bottom:6px">
+             これらはドメインとURLだけで判断されるため、分類できず提案から漏れる可能性が高くなります。
+           </div>`
+        : "";
+      const listPart = problems.length
+        ? `<ul style="margin:0;padding-left:16px;color:${C.mid};font-size:11px;line-height:1.75">
+             ${problems.map((p) => `<li>${escHtml(p.text)} → 先に ${escHtml(p.fix)} を実行すると精度が上がります</li>`).join("")}
+           </ul>`
+        : "";
+
+      warnEl.innerHTML = `
+        <div style="border:1px solid ${color};border-radius:7px;padding:10px 12px;background:rgba(229,192,123,.06)">
+          <div style="color:${color};font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">
+            ⚠ 分類材料が不足しています
+          </div>
+          ${barePart}${listPart}
+          <div style="color:${C.lo};font-size:11px;line-height:1.6;margin-top:7px">
+            推奨順：タイトル取得 → 説明文取得 → 自動タグ付け → AI分類
+          </div>
+        </div>`;
+      warnEl.style.display = "block";
+    }
+    renderWarning();
+
+    // --- モデル選択 ---
+    const modelSel = modal.querySelector("#aico-model");
+    const modelNote = modal.querySelector("#aico-model-note");
+    const models = catalog && catalog.length
+      ? catalog
+      : [{ id: currentModel || "gemini-2.5-flash-lite", label: currentModel || "既定モデル", note: "models.json を読み込めませんでした。" }];
+    for (const m of models) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      if (m.recommended) opt.textContent += "（推奨）";
+      modelSel.appendChild(opt);
+    }
+    // 既定は config.ini の設定値、無ければ推奨、それも無ければ先頭。
+    modelSel.value =
+      (currentModel && models.some((m) => m.id === currentModel)) ? currentModel
+      : (models.find((m) => m.recommended) || models[0]).id;
+
+    const renderModelNote = () => {
+      const m = models.find((x) => x.id === modelSel.value);
+      if (!m) { modelNote.textContent = ""; return; }
+      const price = (m.input_per_1m != null && m.output_per_1m != null)
+        ? `　入力 $${m.input_per_1m}/1M・出力 $${m.output_per_1m}/1M`
+        : "　単価不明（見積もりできません）";
+      modelNote.textContent = `${m.note || ""}${price}`;
+    };
+    modelSel.addEventListener("change", renderModelNote);
+    renderModelNote();
+
+    // --- チャンクサイズ ---
+    const chunkEl = modal.querySelector("#aico-chunk");
+    const chunkNEl = modal.querySelector("#aico-chunk-n");
+    const renderChunk = () => {
+      const n = parseInt(chunkEl.value, 10);
+      const calls = Math.ceil(count / n);
+      chunkNEl.textContent = `${n} 件 × ${calls} 回`;
+    };
+    chunkEl.addEventListener("input", renderChunk);
+    renderChunk();
 
     const close = (result) => { modal.remove(); resolve(result); };
     modal.querySelector("#aico-cancel").addEventListener("click", () => close(null));
@@ -2563,20 +3340,38 @@ function openAiClassifyOptions(count) {
         return toast("少なくとも1つの情報を選んでください", "error");
       }
       const customPrompt = modal.querySelector("#aico-prompt").value.trim();
-      close({ fields, customPrompt });
+      const finish = () => close({
+        fields,
+        customPrompt,
+        model: modelSel.value,
+        chunkSize: parseInt(chunkEl.value, 10),
+        baseFolder: modal.querySelector("#aico-base").value.trim(),
+      });
+
+      // 材料が大きく欠けている場合だけ、明示的に確認を挟む。
+      // ブロックはしない（ドメインだけで分類したいこともある）。
+      if (readiness && readiness.total && readiness.bare > readiness.total * 0.3) {
+        confirmDialog(
+          `${readiness.bare} 件（全体の ${Math.round((readiness.bare / readiness.total) * 100)}%）は\n` +
+          `タイトル・タグ・説明文がすべて空です。\n\n` +
+          `このまま実行すると、多くが分類できず提案から漏れる見込みです。\n` +
+          `先に「タイトルをWebから取得」→「自動でタグを付ける」を実行することを推奨します。\n\n` +
+          `それでもこのまま実行しますか?`,
+          { okLabel: "このまま実行", cancelLabel: "戻る" }
+        ).then((ok) => { if (ok) finish(); });
+        return;
+      }
+      finish();
     });
   });
 }
 
-function runAiClassifySse(ids, customPrompt, modal, fields) {
+function runAiClassifySse(payload, modal) {
   return new Promise((resolve, reject) => {
-    const url = new URL(API_BASE + "/classify/ai");
-    const body = JSON.stringify({ bookmark_ids: ids, custom_prompt: customPrompt, fields });
-
-    fetch(url.toString(), {
+    fetch(API_BASE + "/classify/ai", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: JSON.stringify(payload),
     }).then(async (resp) => {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const reader = resp.body.getReader();
@@ -2594,11 +3389,10 @@ function runAiClassifySse(ids, customPrompt, modal, fields) {
           if (!line.startsWith("data:")) continue;
           const json = line.slice(5).trim();
           if (!json) continue;
-          try {
-            const ev = JSON.parse(json);
-            updateAiModalProgress(modal, ev);
-            if (ev.status === "done") finalMoves = ev.chunk_moves || [];
-          } catch (_) {}
+          let ev;
+          try { ev = JSON.parse(json); } catch (_) { continue; }
+          updateAiModalProgress(modal, ev);
+          if (ev.status === "done") finalMoves = ev.chunk_moves || [];
         }
       }
       resolve(finalMoves);
@@ -2607,48 +3401,270 @@ function runAiClassifySse(ids, customPrompt, modal, fields) {
 }
 
 // --- AI Review Modal -------------------------------------------------------
+//
+// 提案はフォルダ単位でまとめて見せる。フラットな1行リストでは「AIがどんな
+// 構成を作ろうとしているか」が読めず、263件が並ぶだけだった。
+// 提案は bookmark_id をキーに保持し、表示のたびにグループを導出する。
+// こうしておくと、途中経過の暫定表示・確定結果・失敗分の再実行が
+// すべて同じ Map への上書きで済み、重複が生じない。
 
 let _aiModal = null;
+let _aiReview = null;
 
-function openAiReviewModal(total) {
+function newAiReviewState(opts) {
+  return {
+    opts,
+    byId: new Map(),        // bookmark_id -> { folder, confidence, reason, checked, title, from }
+    failedIds: [],
+    quotaExhausted: false,  // 枠の上限で打ち切られたか
+    usingPaidKey: false,    // 有料枠のキーに切り替え済みか
+    expanded: new Set(),    // 展開中のフォルダ
+    query: "",
+    minConfidence: 0.7,
+    finished: false,
+    requested: 0,
+    base: "_AI",       // 新規フォルダの作成先
+  };
+}
+
+/// ツリー上に実在するフォルダのフルパス一覧（移動先の候補・統合先に使う）。
+function existingFolderPaths() {
+  const out = [];
+  const walk = (node, prefix) => {
+    for (const c of node.children || []) {
+      if (c.type !== "folder") continue;
+      const path = prefix ? `${prefix}/${c.title}` : c.title;
+      out.push(path);
+      walk(c, path);
+    }
+  };
+  if (state.treeRoot) walk(state.treeRoot, "");
+  return out;
+}
+
+/// 実行対象がフォルダなら、その中に結果を作る。「フォルダを選んで分類」は
+/// そのフォルダを整理する操作なので、離れた `_AI/` に積まれるのは想定外。
+/// 全体・選択中を対象にした場合は既存構造を壊さないよう `_AI/` に寄せる。
+function aiDefaultBaseFolder() {
+  const sc = currentScope();
+  if (sc.kind === "folder" && sc.folderPath) return sc.folderPath;
+  return "_AI";
+}
+
+/// AI が返したフォルダ名を実際の移動先パスに変換する。
+/// 既存フォルダをそのまま指してきた場合はその場所へ（＝統合）、
+/// 新しく考えた名前なら作成先ベースの下に作る。
+function aiInitialTarget(folder, existingSet) {
+  const clean = String(folder || "").replace(/^\/+|\/+$/g, "");
+  const base = (_aiReview?.base ?? "_AI").replace(/^\/+|\/+$/g, "");
+  if (!clean) return base ? `${base}/Unsorted` : "Unsorted";
+  if (existingSet.has(clean)) return clean;
+  return base ? `${base}/${clean}` : clean;
+}
+
+/// moves を取り込む。replace=true で総入れ替え（確定結果の反映）。
+function aiIngestMoves(moves, replace) {
+  if (!_aiReview) return;
+  if (replace) _aiReview.byId.clear();
+
+  const existingSet = new Set(existingFolderPaths());
+  const bmById = new Map(state.bookmarks.map((b) => [b.bookmark_id, b]));
+
+  for (const mv of moves || []) {
+    const bm = bmById.get(mv.bookmark_id);
+    const prev = _aiReview.byId.get(mv.bookmark_id);
+    _aiReview.byId.set(mv.bookmark_id, {
+      folder: aiInitialTarget(mv.folder, existingSet),
+      confidence: mv.confidence ?? 0,
+      reason: mv.reason || "",
+      title: bm ? (bm.title || bm.url || mv.bookmark_id) : mv.bookmark_id.slice(0, 8),
+      from: bm ? (bm.folder_path || "ルート") : "",
+      // ユーザーが触ったチェック状態は保持する
+      checked: prev ? prev.checked : (mv.confidence ?? 0) >= _aiReview.minConfidence,
+    });
+  }
+}
+
+/// byId からフォルダ単位のグループを導出する（件数の多い順）。
+function aiGroups() {
+  const byFolder = new Map();
+  for (const [id, m] of _aiReview.byId) {
+    if (!byFolder.has(m.folder)) byFolder.set(m.folder, []);
+    byFolder.get(m.folder).push({ id, ...m });
+  }
+  return [...byFolder.entries()]
+    .map(([folder, items]) => ({ folder, items }))
+    .sort((a, b) => b.items.length - a.items.length || a.folder.localeCompare(b.folder));
+}
+
+function openAiReviewModal(total, opts) {
   if (_aiModal) _aiModal.remove();
+  _aiReview = newAiReviewState(opts);
+  _aiReview.requested = total;
+  _aiReview.base = opts?.baseFolder || aiDefaultBaseFolder();
+
+  const C = AI_C;
   const div = document.createElement("div");
   div.id = "ai-review-modal";
   div.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center";
+    "position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:inherit";
   div.innerHTML = `
-    <div style="background:#1e1e2e;border-radius:12px;padding:24px;min-width:540px;max-width:760px;max-height:80vh;display:flex;flex-direction:column;gap:12px">
-      <h2 style="margin:0;color:#cdd6f4">AI 分類 — ${total} 件処理中…</h2>
-      <div id="ai-progress-bar" style="background:#313244;border-radius:4px;height:8px">
-        <div id="ai-progress-inner" style="background:#89b4fa;height:100%;width:0;border-radius:4px;transition:width .3s"></div>
+    <div style="background:${C.bg1};border:1px solid ${C.border};border-radius:10px;width:820px;max-width:95vw;height:82vh;display:flex;flex-direction:column;overflow:hidden">
+
+      <div style="padding:14px 20px 11px;border-bottom:1px solid ${C.border};flex:0 0 auto">
+        <div style="color:${C.hi};font-size:15px;font-weight:600">AI 分類の提案</div>
+        <div id="ai-sub" style="color:${C.lo};font-size:11px;margin-top:3px">${total.toLocaleString()} 件を送信します</div>
       </div>
-      <div id="ai-status" style="color:#a6adc8;font-size:13px">接続中…</div>
-      <div id="ai-cost-info" style="color:#a6e3a1;font-size:12px;display:none"></div>
-      <div id="ai-error-log" style="display:none;flex-direction:column;gap:3px;max-height:120px;overflow-y:auto;background:#11111b;border:1px solid #45475a;border-radius:6px;padding:8px;font-size:11px;color:#f38ba8"></div>
-      <div id="ai-review-list" style="overflow-y:auto;flex:1;display:none;flex-direction:column;gap:6px"></div>
-      <div id="ai-modal-actions" style="display:none;gap:8px;justify-content:space-between;align-items:center">
-        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:#a6adc8;font-size:12px">
-          <input type="checkbox" id="ai-prune-empty" style="cursor:pointer;accent-color:#89b4fa;margin:0">
+
+      <div id="ai-run-area" style="padding:12px 20px;border-bottom:1px solid ${C.border};flex:0 0 auto;display:flex;flex-direction:column;gap:8px">
+        <div style="background:${C.surf};border-radius:3px;height:4px;overflow:hidden">
+          <div id="ai-progress-inner" style="background:${C.accent};height:100%;width:0;border-radius:3px;transition:width .3s"></div>
+        </div>
+        <div id="ai-status" style="color:${C.mid};font-size:12px">接続中…</div>
+        <div id="ai-cost-info" style="color:${C.green};font-size:11px;display:none"></div>
+        <div id="ai-error-log" style="display:none;flex-direction:column;gap:3px;max-height:96px;overflow-y:auto;background:${C.bg1};border:1px solid ${C.border};border-radius:5px;padding:7px;font-size:11px;color:${C.red}"></div>
+      </div>
+
+      <div id="ai-toolbar" style="display:none;padding:9px 20px;border-bottom:1px solid ${C.border};flex:0 0 auto;align-items:center;gap:8px;flex-wrap:wrap">
+        <input id="ai-search" placeholder="タイトル・フォルダで絞り込み"
+          style="flex:1;min-width:150px;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:5px 8px;outline:none;font-family:inherit">
+        <select id="ai-conf" style="background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.mid};font-size:11px;padding:5px 6px;outline:none;font-family:inherit">
+          <option value="0.9">信頼度 90% 以上を選択</option>
+          <option value="0.7" selected>信頼度 70% 以上を選択</option>
+          <option value="0.5">信頼度 50% 以上を選択</option>
+          <option value="0">すべて選択</option>
+        </select>
+        <button id="ai-uncheck-all" style="background:transparent;border:1px solid ${C.border};border-radius:5px;color:${C.mid};font-size:11px;padding:5px 10px;cursor:pointer;font-family:inherit">全解除</button>
+        <button id="ai-toggle-expand" style="background:transparent;border:1px solid ${C.border};border-radius:5px;color:${C.mid};font-size:11px;padding:5px 10px;cursor:pointer;font-family:inherit">すべて展開</button>
+        <label style="display:flex;align-items:center;gap:6px;color:${C.mid};font-size:11px;white-space:nowrap">
+          新規フォルダの作成先
+          <input id="ai-base" list="ai-folder-list" title="ここを変えると、新しく作るフォルダの置き場所をまとめて付け替えます"
+            style="width:190px;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:11px;padding:4px 7px;outline:none;font-family:inherit">
+        </label>
+      </div>
+
+      <div id="ai-retry" style="display:none;padding:9px 20px;border-bottom:1px solid ${C.border};flex:0 0 auto;align-items:center;justify-content:space-between;gap:10px;background:rgba(224,108,117,.07)">
+        <span id="ai-retry-msg" style="color:${C.red};font-size:12px"></span>
+        <button id="ai-retry-btn" style="background:transparent;border:1px solid ${C.red};border-radius:5px;color:${C.red};font-size:11px;padding:5px 12px;cursor:pointer;white-space:nowrap;font-family:inherit">失敗分だけ再実行</button>
+      </div>
+
+      <div id="ai-review-list" style="flex:1 1 0;overflow-y:auto;padding:10px 20px;display:none;flex-direction:column;gap:6px"></div>
+
+      <div id="ai-modal-actions" style="display:none;padding:11px 20px;border-top:1px solid ${C.border};flex:0 0 auto;align-items:center;justify-content:space-between;gap:12px">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:${C.mid};font-size:11px">
+          <input type="checkbox" id="ai-prune-empty" style="cursor:pointer;accent-color:${C.accent};margin:0">
           空になった元フォルダを削除
         </label>
-        <div style="display:flex;gap:8px">
-          <button id="ai-btn-cancel" style="padding:8px 16px;border-radius:6px;border:1px solid #585b70;background:transparent;color:#cdd6f4;cursor:pointer">キャンセル</button>
-          <button id="ai-btn-apply-selected" style="padding:8px 16px;border-radius:6px;border:none;background:#89b4fa;color:#1e1e2e;cursor:pointer;font-weight:600">選択した提案を適用</button>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span id="ai-selected-count" style="color:${C.mid};font-size:11px"></span>
+          <button id="ai-btn-cancel" style="padding:7px 16px;border-radius:5px;border:1px solid ${C.border};background:transparent;color:${C.mid};cursor:pointer;font-family:inherit">キャンセル</button>
+          <button id="ai-btn-apply-selected" style="padding:7px 16px;border-radius:5px;border:none;background:${C.accent};color:#050810;cursor:pointer;font-weight:600;font-family:inherit">選択した提案を適用</button>
         </div>
       </div>
+
+      <datalist id="ai-folder-list"></datalist>
     </div>`;
   document.body.appendChild(div);
   _aiModal = div;
-  div.querySelector("#ai-btn-cancel")?.addEventListener("click", closeAiReviewModal);
+
+  const list = document.getElementById("ai-folder-list");
+  for (const p of existingFolderPaths()) {
+    const o = document.createElement("option");
+    o.value = p;
+    list.appendChild(o);
+  }
+
+  div.querySelector("#ai-btn-cancel").addEventListener("click", closeAiReviewModal);
+  div.querySelector("#ai-search").addEventListener("input", (e) => {
+    _aiReview.query = e.target.value.trim().toLowerCase();
+    renderAiReview();
+  });
+  div.querySelector("#ai-conf").addEventListener("change", (e) => {
+    const th = parseFloat(e.target.value);
+    _aiReview.minConfidence = th;
+    for (const m of _aiReview.byId.values()) m.checked = m.confidence >= th;
+    renderAiReview();
+  });
+  div.querySelector("#ai-uncheck-all").addEventListener("click", () => {
+    for (const m of _aiReview.byId.values()) m.checked = false;
+    renderAiReview();
+  });
+  div.querySelector("#ai-toggle-expand").addEventListener("click", (e) => {
+    const groups = aiGroups();
+    const allOpen = groups.length > 0 && groups.every((g) => _aiReview.expanded.has(g.folder));
+    _aiReview.expanded = allOpen ? new Set() : new Set(groups.map((g) => g.folder));
+    e.target.textContent = allOpen ? "すべて展開" : "すべて閉じる";
+    renderAiReview();
+  });
+  const baseInput = div.querySelector("#ai-base");
+  if (baseInput) {
+    baseInput.value = _aiReview.base;
+    // 作成先を変えたら、まだそのベースの下にいるグループだけ付け替える。
+    // 個別に編集済みのグループや、既存フォルダへの統合はそのまま残す。
+    baseInput.addEventListener("change", () => {
+      const oldBase = _aiReview.base.replace(/^\/+|\/+$/g, "");
+      const newBase = baseInput.value.trim().replace(/^\/+|\/+$/g, "");
+      if (newBase === oldBase) return;
+      const prefix = oldBase ? oldBase + "/" : "";
+      for (const m of _aiReview.byId.values()) {
+        if (!prefix || m.folder.startsWith(prefix)) {
+          const rest = prefix ? m.folder.slice(prefix.length) : m.folder;
+          m.folder = newBase ? `${newBase}/${rest}` : rest;
+        }
+      }
+      _aiReview.base = newBase;
+      _aiReview.expanded = new Set();
+      renderAiReview();
+      toast(newBase ? `新規フォルダの作成先: ${newBase}` : "新規フォルダをルート直下に作ります");
+    });
+  }
+
+  div.querySelector("#ai-retry-btn").addEventListener("click", () => {
+    if (_aiReview?.quotaExhausted && !_aiReview.usingPaidKey) maybeOfferPaidFallback();
+    else retryFailedChunks();
+  });
+  div.querySelector("#ai-btn-apply-selected").addEventListener("click", applyAiReview);
+
   return div;
 }
 
 function closeAiReviewModal() {
   if (_aiModal) { _aiModal.remove(); _aiModal = null; }
+  _aiReview = null;
+}
+
+function showAiRunArea(on) {
+  const area = _aiModal?.querySelector("#ai-run-area");
+  if (area) area.style.display = on ? "flex" : "none";
+}
+
+/// 実行完了。確定した moves で総入れ替えし、レビューUIを出す。
+function finishAiReviewModal(moves) {
+  if (!_aiModal || !_aiReview) return;
+  _aiReview.finished = true;
+  aiIngestMoves(moves, true);
+
+  const proposed = _aiReview.byId.size;
+  const requested = _aiReview.requested || proposed;
+  const skipped = Math.max(0, requested - proposed - _aiReview.failedIds.length);
+  const sub = _aiModal.querySelector("#ai-sub");
+  if (sub) {
+    const parts = [`${requested.toLocaleString()} 件中 ${proposed.toLocaleString()} 件に提案`];
+    // 「該当なし」はエラーではない。材料不足か、既存構成に馴染まなかったか。
+    if (skipped) parts.push(`${skipped.toLocaleString()} 件は該当なし（移動しません）`);
+    if (_aiReview.failedIds.length) parts.push(`${_aiReview.failedIds.length.toLocaleString()} 件は未処理`);
+    sub.textContent = parts.join(" · ");
+  }
+  showAiRunArea(_aiReview.failedIds.length > 0);
+  _aiModal.querySelector("#ai-toolbar").style.display = "flex";
+  _aiModal.querySelector("#ai-review-list").style.display = "flex";
+  _aiModal.querySelector("#ai-modal-actions").style.display = "flex";
+  renderAiReview();
 }
 
 function updateAiModalProgress(modal, ev) {
   if (!modal) return;
+  const C = AI_C;
   const pct = ev.total ? Math.round((ev.processed / ev.total) * 100) : 0;
   const inner = modal.querySelector("#ai-progress-inner");
   if (inner) inner.style.width = pct + "%";
@@ -2658,12 +3674,32 @@ function updateAiModalProgress(modal, ev) {
     else if (ev.status === "progress") status.textContent = `処理中 ${ev.processed}/${ev.total} 件`;
     else if (ev.status === "waiting") status.textContent = `⏳ ${ev.error}`;
     else if (ev.status === "chunk_error") status.textContent = `エラー (一部スキップ): ${ev.error}`;
+    else if (ev.status === "quota_exhausted") status.textContent = `⛔ ${ev.error}`;
     else if (ev.status === "done") status.textContent = "完了 — 提案を確認してください";
     else if (ev.status === "error") status.textContent = `エラー: ${ev.error}`;
   }
+
+  // 途中経過を暫定表示する。SSE ではチャンクごとに結果が届いているのに、
+  // 完了までリストが空のままで、数十秒〜数分ただ待つ画面になっていた。
+  if (ev.status === "progress" && ev.chunk_moves && ev.chunk_moves.length && _aiReview) {
+    aiIngestMoves(ev.chunk_moves, false);
+    const listEl = modal.querySelector("#ai-review-list");
+    if (listEl) listEl.style.display = "flex";
+    renderAiReview();
+  }
+
+  // 失敗チャンク・枠切れの id を控えておき、再実行の導線を出す。
+  if ((ev.status === "chunk_error" || ev.status === "quota_exhausted") && ev.failed_ids && _aiReview) {
+    for (const id of ev.failed_ids) {
+      if (!_aiReview.failedIds.includes(id)) _aiReview.failedIds.push(id);
+    }
+    if (ev.status === "quota_exhausted") _aiReview.quotaExhausted = true;
+    renderAiRetryBar();
+  }
+
   // チャンクエラーはステータス行だと次の進捗で上書きされて消えてしまうため、
   // 専用のログ欄に積み上げて完了後も読めるようにする。
-  if (ev.status === "chunk_error" || ev.status === "error") {
+  if (ev.status === "chunk_error" || ev.status === "error" || ev.status === "quota_exhausted") {
     const log = modal.querySelector("#ai-error-log");
     if (log) {
       log.style.display = "flex";
@@ -2673,85 +3709,326 @@ function updateAiModalProgress(modal, ev) {
       log.scrollTop = log.scrollHeight;
     }
   }
+
   if (ev.cost_estimate) {
     const info = modal.querySelector("#ai-cost-info");
     if (info) {
       const c = ev.cost_estimate;
-      let usd = "";
+      let usd;
       if (c.input_cost_usd != null) {
-        const total_low = (c.input_cost_usd + (c.output_cost_usd_low || 0));
-        const total_high = (c.input_cost_usd + (c.output_cost_usd_high || 0));
-        usd = ` | 推定コスト: $${total_low.toFixed(4)}〜$${total_high.toFixed(4)}`;
+        const low = c.input_cost_usd + (c.output_cost_usd_low || 0);
+        const high = c.input_cost_usd + (c.output_cost_usd_high || 0);
+        usd = ` | 推定コスト: $${low.toFixed(4)}〜$${high.toFixed(4)}`;
       } else {
-        usd = " | コスト不明 (config.ini [AI].input_cost_per_1m_tokens 未設定)";
+        usd = " | コスト不明";
       }
-      info.textContent = `入力 ~${c.input_tokens_est.toLocaleString()} tokens | チャンク: ${c.chunks}${usd}`;
+      info.textContent = `入力 ~${c.input_tokens_est.toLocaleString()} tokens | ${c.chunks} 回の呼び出し${usd}`;
       info.style.display = "block";
     }
   }
-  const h2 = modal.querySelector("h2");
-  if (h2 && ev.total) h2.textContent = `AI 分類 — ${ev.total} 件`;
+
+  const sub = modal.querySelector("#ai-sub");
+  if (sub && ev.total) {
+    sub.textContent = ev.status === "done"
+      ? `${ev.total.toLocaleString()} 件を処理しました`
+      : `${ev.total.toLocaleString()} 件を処理中`;
+  }
+  if (status) {
+    status.style.color = (ev.status === "error" || ev.status === "quota_exhausted") ? C.red : C.mid;
+  }
 }
 
-function populateAiReviewModal(moves) {
-  if (!_aiModal) return;
+/// 再実行バーの文面は、単発の送信失敗か枠切れかで変える。
+function renderAiRetryBar() {
+  if (!_aiModal || !_aiReview) return;
+  const bar = _aiModal.querySelector("#ai-retry");
+  const msg = _aiModal.querySelector("#ai-retry-msg");
+  const btn = _aiModal.querySelector("#ai-retry-btn");
+  if (!bar || !msg || !btn) return;
+  if (!_aiReview.failedIds.length) { bar.style.display = "none"; return; }
 
+  const n = _aiReview.failedIds.length;
+  if (_aiReview.quotaExhausted && !_aiReview.usingPaidKey) {
+    msg.textContent = `無料枠の上限に達したため中断しました（未処理 ${n} 件）`;
+    btn.textContent = "有料枠のキーで続ける";
+  } else {
+    msg.textContent = `${n} 件が分類できませんでした（チャンクの送信に失敗）`;
+    btn.textContent = _aiReview.usingPaidKey ? "失敗分を再実行（有料枠）" : "失敗分だけ再実行";
+  }
+  bar.style.display = "flex";
+}
+
+/// 枠切れで打ち切られたとき、有料枠のキーで続けるかを尋ねる。
+/// 枠はプロジェクト単位で決まるため、続行には有料枠プロジェクトのキーが要る。
+async function maybeOfferPaidFallback() {
+  if (!_aiReview || !_aiReview.quotaExhausted || _aiReview.usingPaidKey) return;
+  const n = _aiReview.failedIds.length;
+  if (!n) return;
+
+  let status = null;
+  try { status = await api("/config/ai-status"); } catch (_) {}
+
+  if (!status?.paid_key_set) {
+    const open = await confirmDialog(
+      `無料枠の上限に達したため、${n} 件が未処理のまま中断しました。
+
+` +
+      `続けるには、請求先アカウントを紐付けたプロジェクトのAPIキー（有料枠のキー）が必要です。
+` +
+      `枠はキー（プロジェクト）ごとに決まるため、同じキーで待っても当日中は解消しません。
+
+` +
+      `AI設定を開いて有料枠のキーを登録しますか?`,
+      { okLabel: "AI設定を開く", cancelLabel: "あとで" }
+    );
+    if (open) cmdAiSettings();
+    return;
+  }
+
+  const go = await confirmDialog(
+    `無料枠の上限に達したため、${n} 件が未処理のまま中断しました。
+
+` +
+    `登録済みの有料枠のキーで残りを処理しますか?
+` +
+    `※ こちらは実際に課金されます。送信前にもう一度、見積もりを確認できます。`,
+    { okLabel: "有料枠で続ける", cancelLabel: "中断したままにする" }
+  );
+  if (!go) return;
+  await retryFailedChunks({ usePaidKey: true });
+}
+
+// --- Review rendering ------------------------------------------------------
+
+function renderAiReview() {
+  if (!_aiModal || !_aiReview) return;
+  const C = AI_C;
   const listEl = _aiModal.querySelector("#ai-review-list");
-  const actionsEl = _aiModal.querySelector("#ai-modal-actions");
-  if (!listEl || !actionsEl) return;
+  if (!listEl) return;
+
+  const q = _aiReview.query;
+  const matches = (it, folder) =>
+    !q || it.title.toLowerCase().includes(q) || folder.toLowerCase().includes(q);
 
   listEl.innerHTML = "";
-  listEl.style.display = "flex";
-  actionsEl.style.display = "flex";
+  const groups = aiGroups();
 
-  moves.forEach((mv) => {
-    const row = document.createElement("label");
-    row.style.cssText =
-      "display:flex;align-items:center;gap:10px;padding:8px 10px;background:#313244;border-radius:6px;cursor:pointer";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = mv.confidence >= 0.7;
-    cb.dataset.bookmarkId = mv.bookmark_id;
-    cb.dataset.folderPath = `/_AI/${mv.folder}`;
-    const pct = Math.round(mv.confidence * 100);
-    const titleEl = state.bookmarks.find((b) => b.bookmark_id === mv.bookmark_id);
-    const title = titleEl ? titleEl.title : mv.bookmark_id.slice(0, 8);
-    row.innerHTML = `
-      <span style="color:#cdd6f4;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(title)}">${escHtml(title)}</span>
-      <span style="color:#89b4fa;white-space:nowrap">→ ${escHtml(mv.folder)}</span>
-      <span style="color:#a6e3a1;font-size:11px;white-space:nowrap">${pct}%</span>`;
-    row.prepend(cb);
-    if (mv.reason) {
-      row.title = mv.reason;
-    }
-    listEl.appendChild(row);
-  });
-
-  const applyBtn = _aiModal.querySelector("#ai-btn-apply-selected");
-  if (applyBtn) {
-    applyBtn.onclick = async () => {
-      const checked = listEl.querySelectorAll("input[type=checkbox]:checked");
-      const applyMoves = Array.from(checked).map((cb) => ({
-        bookmark_id: cb.dataset.bookmarkId,
-        folder_path: cb.dataset.folderPath,
-      }));
-      if (!applyMoves.length) return toast("チェックされた項目がありません");
-      const pruneEmpty = !!_aiModal.querySelector("#ai-prune-empty")?.checked;
-      try {
-        const res = await api("/classify/ai-apply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ moves: applyMoves, prune_empty_source: pruneEmpty }),
-        });
-        closeAiReviewModal();
-        await reload();
-        const prunedMsg = res.pruned ? `、空フォルダ ${res.pruned} 件削除` : "";
-        toast(`${res.applied} 件移動しました (スキップ: ${res.skipped})${prunedMsg}`);
-      } catch (e) {
-        toast(`適用失敗: ${e.message}`, "error");
-      }
-    };
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.style.cssText = `color:${C.lo};font-size:12px;padding:20px;text-align:center`;
+    empty.textContent = _aiReview.finished ? "提案はありませんでした。" : "提案を待っています…";
+    listEl.appendChild(empty);
+    updateAiSelectedCount();
+    return;
   }
+
+  for (const g of groups) {
+    const shown = g.items.filter((it) => matches(it, g.folder));
+    if (!shown.length) continue;
+
+    const box = document.createElement("div");
+    box.style.cssText = `border:1px solid ${C.border};border-radius:7px;overflow:hidden`;
+
+    // --- グループ見出し: フォルダ名は編集でき、既存フォルダ名を入れれば統合される ---
+    const head = document.createElement("div");
+    head.style.cssText = `display:flex;align-items:center;gap:9px;padding:8px 10px;background:${C.bg2}`;
+
+    const groupCb = document.createElement("input");
+    groupCb.type = "checkbox";
+    groupCb.style.cssText = `cursor:pointer;accent-color:${C.accent};margin:0;flex:0 0 auto`;
+    const checkedN = g.items.filter((it) => it.checked).length;
+    groupCb.checked = checkedN === g.items.length;
+    groupCb.indeterminate = checkedN > 0 && checkedN < g.items.length;
+    groupCb.addEventListener("change", () => {
+      for (const it of g.items) _aiReview.byId.get(it.id).checked = groupCb.checked;
+      renderAiReview();
+    });
+
+    const caret = document.createElement("button");
+    const open = _aiReview.expanded.has(g.folder);
+    caret.textContent = open ? "▾" : "▸";
+    caret.title = open ? "閉じる" : "中身を見る";
+    caret.style.cssText = `background:none;border:none;color:${C.mid};cursor:pointer;font-size:12px;padding:0 2px;flex:0 0 auto;font-family:inherit`;
+    caret.addEventListener("click", () => {
+      if (open) _aiReview.expanded.delete(g.folder);
+      else _aiReview.expanded.add(g.folder);
+      renderAiReview();
+    });
+
+    const nameInput = document.createElement("input");
+    nameInput.value = g.folder;
+    nameInput.setAttribute("list", "ai-folder-list");
+    nameInput.title = "移動先。既存フォルダのパスを入れるとそのフォルダに統合されます。";
+    nameInput.style.cssText =
+      `flex:1;min-width:0;background:transparent;border:1px solid transparent;border-radius:4px;color:${C.hi};font-size:12.5px;padding:3px 6px;outline:none;font-family:inherit`;
+    nameInput.addEventListener("focus", () => {
+      nameInput.style.background = C.bg3;
+      nameInput.style.borderColor = C.accent;
+    });
+    nameInput.addEventListener("blur", () => {
+      nameInput.style.background = "transparent";
+      nameInput.style.borderColor = "transparent";
+      const next = nameInput.value.trim().replace(/^\/+|\/+$/g, "");
+      if (!next || next === g.folder) { nameInput.value = g.folder; return; }
+      for (const it of g.items) _aiReview.byId.get(it.id).folder = next;
+      if (_aiReview.expanded.delete(g.folder)) _aiReview.expanded.add(next);
+      renderAiReview();
+    });
+    nameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); nameInput.blur(); }
+      if (e.key === "Escape") { nameInput.value = g.folder; nameInput.blur(); }
+    });
+
+    const avg = Math.round(
+      (g.items.reduce((s, it) => s + it.confidence, 0) / g.items.length) * 100
+    );
+    const meta = document.createElement("span");
+    meta.style.cssText = `color:${C.lo};font-size:11px;white-space:nowrap;flex:0 0 auto`;
+    meta.textContent = `${g.items.length} 件 · 平均 ${avg}%`;
+
+    head.append(groupCb, caret, nameInput, meta);
+    box.appendChild(head);
+
+    // --- 中身（既定は閉じている。まず構成を俯瞰できるように） ---
+    if (open || q) {
+      const body = document.createElement("div");
+      body.style.cssText = "display:flex;flex-direction:column";
+      for (const it of shown) {
+        const row = document.createElement("label");
+        row.style.cssText =
+          `display:grid;grid-template-columns:auto 1fr auto;gap:4px 9px;align-items:center;padding:6px 10px 6px 30px;border-top:1px solid ${C.border};cursor:pointer`;
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = it.checked;
+        cb.style.cssText = `cursor:pointer;accent-color:${C.accent};margin:0`;
+        cb.addEventListener("change", () => {
+          _aiReview.byId.get(it.id).checked = cb.checked;
+          updateAiSelectedCount();
+          // 見出しの三状態チェックだけ更新すれば足りるので全再描画はしない
+          const n = g.items.filter((x) => _aiReview.byId.get(x.id).checked).length;
+          groupCb.checked = n === g.items.length;
+          groupCb.indeterminate = n > 0 && n < g.items.length;
+        });
+
+        const title = document.createElement("div");
+        title.style.cssText = `color:${C.hi};font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`;
+        title.textContent = it.title;
+        title.title = it.title;
+
+        const pct = document.createElement("span");
+        const conf = Math.round(it.confidence * 100);
+        pct.style.cssText =
+          `font-size:11px;white-space:nowrap;color:${conf >= 70 ? C.green : conf >= 50 ? C.amber : C.red}`;
+        pct.textContent = `${conf}%`;
+
+        row.append(cb, title, pct);
+
+        // 理由はツールチップではなく本文に出す。判断材料が隠れていた。
+        const sub = document.createElement("div");
+        sub.style.cssText = `grid-column:2 / span 2;color:${C.lo};font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap`;
+        sub.textContent = it.reason ? `${it.from} → ${it.reason}` : `元: ${it.from}`;
+        sub.title = it.reason || "";
+        row.appendChild(sub);
+
+        body.appendChild(row);
+      }
+      box.appendChild(body);
+    }
+
+    listEl.appendChild(box);
+  }
+
+  updateAiSelectedCount();
+}
+
+function updateAiSelectedCount() {
+  if (!_aiModal || !_aiReview) return;
+  let n = 0;
+  for (const m of _aiReview.byId.values()) if (m.checked) n++;
+  const label = _aiModal.querySelector("#ai-selected-count");
+  if (label) label.textContent = `${n} 件を選択中`;
+  const apply = _aiModal.querySelector("#ai-btn-apply-selected");
+  if (apply) {
+    apply.disabled = n === 0;
+    apply.style.opacity = n === 0 ? ".4" : "1";
+    apply.style.cursor = n === 0 ? "not-allowed" : "pointer";
+  }
+}
+
+async function applyAiReview() {
+  if (!_aiReview) return;
+  const moves = [];
+  for (const [id, m] of _aiReview.byId) {
+    if (m.checked) moves.push({ bookmark_id: id, folder_path: m.folder });
+  }
+  if (!moves.length) return toast("チェックされた項目がありません");
+
+  const pruneEmpty = !!_aiModal?.querySelector("#ai-prune-empty")?.checked;
+  try {
+    const res = await api("/classify/ai-apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ moves, prune_empty_source: pruneEmpty }),
+    });
+    closeAiReviewModal();
+    await reload();
+    try {
+      const h = await api("/edit/history");
+      updateUndoRedoButtons(h.undo_count, h.redo_count);
+    } catch (_) {}
+    const prunedMsg = res.pruned ? `、空フォルダ ${res.pruned} 件削除` : "";
+    toast(`${res.applied} 件移動しました (スキップ: ${res.skipped})${prunedMsg} — Ctrl+Z で取り消せます`);
+  } catch (e) {
+    toast(`適用失敗: ${e.message}`, "error");
+  }
+}
+
+/// 落ちたチャンクの分だけ再送する。以前は 40 件まとめて捨てられ、
+/// ログに残るだけで手の打ちようがなかった。
+async function retryFailedChunks({ usePaidKey = false } = {}) {
+  if (!_aiReview || !_aiReview.failedIds.length) return;
+  const ids = _aiReview.failedIds.slice();
+  const opts = _aiReview.opts;
+  const paid = usePaidKey || _aiReview.usingPaidKey;
+  const payload = {
+    bookmark_ids: ids,
+    custom_prompt: opts.customPrompt || undefined,
+    fields: opts.fields,
+    model: opts.model,
+    chunk_size: opts.chunkSize,
+    use_paid_key: paid,
+  };
+
+  let est;
+  try {
+    est = await api("/classify/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    return toast(`見積もりに失敗: ${e.message}`, "error");
+  }
+  if (!(await openEstimateGate(est, opts.model))) return;
+
+  _aiReview.failedIds = [];
+  _aiReview.quotaExhausted = false;
+  if (paid) _aiReview.usingPaidKey = true;
+  const bar = _aiModal?.querySelector("#ai-retry");
+  if (bar) bar.style.display = "none";
+  showAiRunArea(true);
+
+  try {
+    const moves = await runAiClassifySse(payload, _aiModal);
+    // 総入れ替えではなく上書きマージ。既存の提案とユーザーの選択を壊さない。
+    aiIngestMoves(moves || [], false);
+  } catch (e) {
+    toast(`再実行に失敗: ${e.message}`, "error");
+  }
+  showAiRunArea(_aiReview.failedIds.length > 0);
+  renderAiRetryBar();
+  renderAiReview();
 }
 
 function escHtml(s) {
@@ -2783,6 +4060,7 @@ async function boot() {
   setupDetailInlineEdit();
   restoreView();
   restoreSplit();
+  refreshContext();
   if (!API_BASE) {
     setStatus("API 未設定");
     toast("API ベース URL が設定されていません", "error");
@@ -2968,10 +4246,13 @@ document.addEventListener("keydown", (e) => {
   const tag = document.activeElement?.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
+  if (e.key === "F1") { e.preventDefault(); cmdHelp(); return; }
+
   if (e.ctrlKey || e.metaKey) {
     if (e.key === "z" && !e.shiftKey) { e.preventDefault(); cmdUndo(); }
     if (e.key === "y" || (e.key === "z" && e.shiftKey)) { e.preventDefault(); cmdRedo(); }
     if (e.key === "s") { e.preventDefault(); cmdSave(); }
+    if (e.key === "o") { e.preventDefault(); cmdOpen(); }
   }
 });
 

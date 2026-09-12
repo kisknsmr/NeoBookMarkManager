@@ -18,6 +18,10 @@ rusqlite.workspace = true
 regex.workspace = true
 once_cell.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
+# Charset sniffing for fetched pages (Shift_JIS / EUC-JP bookmarks are common).
+encoding_rs = "0.8"
+# Only the timer, for the retry backoff in `fetch`.
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 anyhow.workspace = true

@@ -21,12 +21,17 @@ You will receive a JSON object with:
 3. **Phase 2: Intelligent Thematic Grouping:**
    - For remaining bookmarks, identify specific, professional themes.
    - **Specific over General:** Prefer "Cloud Infrastructure" over "Tech", or "Machine Learning" over "AI".
-   - **Minimum Group Size:** Only create a folder if it will contain **2 or more** bookmarks.
-   - If a bookmark is unique and doesn't fit a group of at least 2, leave it as "ungrouped".
+   - **Minimum Group Size:** Only create a NEW folder if it will contain **2 or more** bookmarks.
+     (Filing a single bookmark into a folder that already exists is fine.)
+   - If a bookmark does not fit any group, **OMIT IT FROM THE OUTPUT ENTIRELY**.
+     Do NOT invent a catch-all folder for it. Returning fewer moves is correct
+     and expected — a bookmark with no move simply stays where it is.
 
 4. **Naming Conventions:**
    - Keep names concise (e.g., "Python" instead of "Python Resources").
-   - Avoid junk names: "Misc", "Others", "Links", "Work", "General".
+   - NEVER use these names: "Misc", "Others", "Other", "Links", "Work", "General",
+     "Ungrouped", "Unsorted", "Uncategorized", "未分類", "その他". A bookmark that
+     would land in one of these must be omitted from the output instead.
 
 **CRITICAL OUTPUT RULES:**
 - OUTPUT VALID JSON ONLY.

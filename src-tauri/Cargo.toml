@@ -18,12 +18,17 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 camino.workspace = true
-tauri = { version = "2", features = [] }
+# `devtools` keeps the inspector available in release builds too, so a
+# failure that only reproduces in the packaged exe can still be read off the
+# console instead of guessed at.
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2.7.1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
-name = "nbm-tauri"
+# The distributable is a single portable exe, so the binary carries the product
+# name directly instead of the crate name.
+name = "NeoBookMarkManager"
 path = "src/main.rs"

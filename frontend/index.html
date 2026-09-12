@@ -6,25 +6,43 @@
   <title>NeoBookMarkManager</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
-<body data-view="list" data-dual="false">
+<body data-view="list" data-dual="false" data-loaded="false" data-dirty="false" data-scope="all">
   <div id="toast" class="toast hidden"></div>
 
+  <!-- ══ TopBar: 主動線（開く → 編集 → 保存）をここに集約 ══ -->
   <header class="topbar">
     <div class="brand">
       <span class="brand-icon">📚</span>
       <span class="brand-name">NeoBookMarkManager</span>
-      <span class="brand-version">v0.1</span>
     </div>
+
+    <div class="topbar-actions">
+      <button class="tb-btn tb-accent" data-cmd="file.open" title="ブックマークHTMLを開く (Ctrl+O)">
+        <span class="tb-ico">📂</span><span class="tb-label">開く</span>
+      </button>
+      <button id="tbSave" class="tb-btn tb-save" data-cmd="file.save" data-need="dirty"
+              data-hint="保存が必要な変更はありません" title="保存 (Ctrl+S)">
+        <span class="tb-ico">💾</span><span class="tb-label">保存</span><span class="tb-dot"></span>
+      </button>
+      <span class="tb-sep"></span>
+      <button id="btnUndo" class="tb-btn tb-icon-only" data-cmd="edit.undo" data-need="undo"
+              data-hint="元に戻せる操作がありません" title="元に戻す (Ctrl+Z)">↩<span class="tb-badge" id="undoBadge"></span></button>
+      <button id="btnRedo" class="tb-btn tb-icon-only" data-cmd="edit.redo" data-need="redo"
+              data-hint="やり直せる操作がありません" title="やり直す (Ctrl+Y)">↪<span class="tb-badge" id="redoBadge"></span></button>
+    </div>
+
     <div class="topbar-search">
       <span class="topbar-search-icon">⌕</span>
-      <input id="searchInput" type="search" placeholder="検索..." autocomplete="off" />
+      <input id="searchInput" type="search" placeholder="タイトル・URL・フォルダを検索..." autocomplete="off" />
       <button id="searchClearBtn" class="ghost-btn">クリア</button>
     </div>
+
     <div class="topbar-tools">
-      <button id="dualPaneBtn" class="ghost-btn" aria-pressed="false">2画面モード</button>
-      <button id="faviconPrivacyBtn" class="ghost-btn" aria-pressed="false" title="ONにするとfaviconをGoogleから取得しません">favicon OFF</button>
+      <span class="file-chip" id="fileChip" title="開いているファイル">ファイル未選択</span>
+      <button id="dualPaneBtn" class="ghost-btn" aria-pressed="false" title="ツリーを2画面に分けて、フォルダ間の移動をしやすくします">2画面</button>
+      <button id="faviconPrivacyBtn" class="ghost-btn" aria-pressed="false" title="ONにするとfaviconをGoogleから取得しません">favicon</button>
+      <button id="helpBtn" class="ghost-btn" data-cmd="help.open" title="使い方とAPI料金の扱い (F1)">?</button>
       <span class="status-chip" id="statusChip">起動中…</span>
-      <span class="view-chip" id="viewChip">表示: List</span>
     </div>
   </header>
 
@@ -33,7 +51,6 @@
     <!-- 左カラム: 上段ツリー + 下段リスト -->
     <div class="col-left">
 
-      <!-- 上段: ツリーA (+ 2画面時にスプリッターとツリーBが隣に並ぶ) -->
       <div class="pane-upper">
 
         <!-- Tree A -->
@@ -42,14 +59,21 @@
             <h2 class="pane-title" id="treeALabel">Tree</h2>
             <span class="count-badge" id="treeCount">0</span>
             <div class="view-toggle">
-              <button class="ghost-btn" id="treeExpandAllBtn">展開</button>
-              <button class="ghost-btn" id="treeCollapseAllBtn">縮小</button>
+              <button class="ghost-btn" id="treeExpandAllBtn" title="すべてのフォルダを開く">展開</button>
+              <button class="ghost-btn" id="treeCollapseAllBtn" title="すべてのフォルダを閉じる">縮小</button>
             </div>
           </header>
           <div class="tree-scroll" id="treeContainerA"></div>
+          <div class="empty-state" data-empty="tree">
+            <div class="empty-icon">📂</div>
+            <div class="empty-title">ブックマークファイルが開かれていません</div>
+            <div class="empty-body">ブラウザから書き出した bookmarks.html を開くと、<br />ここにフォルダツリーが表示されます。</div>
+            <button class="act-btn accent empty-cta" data-cmd="file.open">
+              <span class="act-ico">📂</span><span class="act-label">ファイルを開く</span>
+            </button>
+          </div>
         </section>
 
-        <!-- 2画面時のみ表示: スプリッターとツリーB -->
         <div class="splitter-h" id="dualTreeSplitter" data-target="dual-tree"></div>
         <section class="pane-tree" id="paneTreB" aria-label="フォルダツリーB">
           <header class="pane-header">
@@ -64,7 +88,6 @@
 
       </div><!-- /.pane-upper -->
 
-      <!-- 上下スプリッター -->
       <div class="splitter-v" data-target="upper-lower"></div>
 
       <!-- 下段: リスト/カード -->
@@ -72,6 +95,7 @@
         <header class="pane-header">
           <h2 class="pane-title">Workspace</h2>
           <span class="count-badge" id="listCount">0</span>
+          <span class="pane-scope" id="listScopeLabel"></span>
           <div class="view-toggle">
             <button class="ghost-btn" id="viewListBtn" aria-pressed="true">List</button>
             <button class="ghost-btn" id="viewCardBtn" aria-pressed="false">Card</button>
@@ -84,67 +108,138 @@
 
     </div><!-- /.col-left -->
 
-    <!-- 左右スプリッター -->
-    <div class="splitter-h" data-target="main-cols"></div>
+    <div class="splitter-h" data-target="main-cols" data-fixed="next" title="ドラッグで幅を調整 / ダブルクリックで既定に戻す"></div>
 
-    <!-- 右: アクションパネル -->
+    <!-- ══ 右: 操作パネル + Detail列 ══ -->
+    <div class="col-right">
+
     <aside class="pane-actions" aria-label="操作パネル">
+
+      <!-- スコープ: Organize / Enrich / AI すべてがこの1か所を参照する -->
+      <section class="scope-bar" id="scopeBar">
+        <div class="scope-head">
+          <span class="scope-head-label">操作の対象</span>
+          <span class="scope-head-hint" title="下の「整理する」「情報を補う」「AI」は、ここで選んだ範囲に対して実行されます">?</span>
+        </div>
+        <div class="scope-seg" role="radiogroup" aria-label="操作の対象">
+          <button class="scope-opt" data-scope="selection" role="radio" aria-checked="false">
+            <span class="scope-opt-name">選択中</span><span class="scope-opt-n" id="scopeNSelection">0</span>
+          </button>
+          <button class="scope-opt" data-scope="folder" role="radio" aria-checked="false">
+            <span class="scope-opt-name">フォルダ</span><span class="scope-opt-n" id="scopeNFolder">0</span>
+          </button>
+          <button class="scope-opt" data-scope="all" role="radio" aria-checked="true">
+            <span class="scope-opt-name">全体</span><span class="scope-opt-n" id="scopeNAll">0</span>
+          </button>
+        </div>
+        <div class="scope-target" id="scopeTarget">ファイルを開いてください</div>
+      </section>
+
       <section class="action-group" data-group="file">
-        <h3 class="action-group-title">File</h3>
+        <h3 class="action-group-title">ファイル</h3>
         <div class="action-grid">
-          <button class="primary-btn" data-cmd="file.open">開く</button>
-          <button class="primary-btn" data-cmd="file.save">保存</button>
-          <button class="primary-btn" data-cmd="file.save-as">名前を付けて保存</button>
-          <button class="tonal-btn" data-cmd="backup.restore">バックアップから復元</button>
-          <button class="tonal-btn" data-cmd="backup.undo-latest">直前バックアップに戻す</button>
+          <button class="act-btn tonal" data-cmd="file.save-as" data-need="file" data-hint="先にファイルを開いてください">
+            <span class="act-ico">📄</span><span class="act-label">名前を付けて保存</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="backup.undo-latest" data-need="file" data-hint="先にファイルを開いてください">
+            <span class="act-ico">⏪</span><span class="act-label">直前のバックアップに戻す</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="backup.restore" data-need="file" data-hint="先にファイルを開いてください">
+            <span class="act-ico">🗂</span><span class="act-label">バックアップ一覧から復元</span>
+          </button>
         </div>
       </section>
 
       <section class="action-group" data-group="edit">
-        <h3 class="action-group-title">Edit</h3>
+        <h3 class="action-group-title">追加・編集</h3>
         <div class="action-grid">
-          <button class="primary-btn" data-cmd="edit.new-folder">新規フォルダ</button>
-          <button class="primary-btn" data-cmd="edit.new-bookmark">新規ブックマーク</button>
-          <button class="tonal-btn" data-cmd="edit.move-up">上へ移動</button>
-          <button class="danger-btn" data-cmd="edit.delete">削除</button>
-          <button class="ghost-btn" data-cmd="edit.undo" id="btnUndo" title="Ctrl+Z">↩ Undo</button>
-          <button class="ghost-btn" data-cmd="edit.redo" id="btnRedo" title="Ctrl+Y">↪ Redo</button>
+          <button class="act-btn tonal" data-cmd="edit.new-folder" data-need="file" data-hint="先にファイルを開いてください">
+            <span class="act-ico">📁</span><span class="act-label">新規フォルダ</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="edit.new-bookmark" data-need="file" data-hint="先にファイルを開いてください">
+            <span class="act-ico">🔖</span><span class="act-label">新規ブックマーク</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="edit.rename-folder" data-need="folder" data-hint="ツリーでフォルダを選択してください">
+            <span class="act-ico">✏️</span><span class="act-label">フォルダ名を変更</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="edit.move-up" data-need="bookmark" data-hint="ブックマークを選択してください">
+            <span class="act-ico">⬆</span><span class="act-label">選択中を上へ移動</span>
+          </button>
+          <button class="act-btn danger" data-cmd="edit.delete" data-need="bookmark" data-hint="ブックマークを選択してください">
+            <span class="act-ico">🗑</span><span class="act-label">選択中を削除</span>
+          </button>
         </div>
       </section>
 
       <section class="action-group" data-group="organize">
-        <h3 class="action-group-title">Organize <span class="action-group-scope" id="organizeScope">（全体）</span></h3>
+        <h3 class="action-group-title">整理する<span class="action-group-note">フォルダ構成を組み替えます</span></h3>
         <div class="action-grid">
-          <button class="tonal-btn" data-cmd="organize.dedupe">重複削除</button>
-          <button class="tonal-btn" data-cmd="organize.merge-dup-folders">重複フォルダ統合</button>
-          <button class="tonal-btn" data-cmd="organize.sort-by-domain">ドメイン順ソート</button>
-          <button class="tonal-btn" data-cmd="organize.consolidate-domain">ドメイン統合</button>
-          <button class="tonal-btn" data-cmd="organize.domain-keyword">ドメイン×キーワード</button>
+          <button class="act-btn tonal" data-cmd="organize.dedupe" data-need="scope-folder" data-hint="対象を「フォルダ」か「全体」にしてください">
+            <span class="act-ico">🧹</span><span class="act-label">重複ブックマークを削除</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="organize.merge-dup-folders" data-need="scope-folder" data-hint="対象を「フォルダ」か「全体」にしてください">
+            <span class="act-ico">📚</span><span class="act-label">同名フォルダを統合</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="organize.sort-by-domain" data-need="scope-folder" data-hint="対象を「フォルダ」か「全体」にしてください">
+            <span class="act-ico">🔤</span><span class="act-label">ドメイン順に並べ替え</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="organize.consolidate-domain" data-need="scope-folder" data-hint="対象を「フォルダ」か「全体」にしてください">
+            <span class="act-ico">🌐</span><span class="act-label">ドメインごとにフォルダ分け</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="organize.domain-keyword" data-need="scope-folder" data-hint="対象を「フォルダ」か「全体」にしてください">
+            <span class="act-ico">🧩</span><span class="act-label">ドメイン×キーワードで分類</span>
+          </button>
         </div>
       </section>
 
       <section class="action-group" data-group="enrich">
-        <h3 class="action-group-title">Enrich <span class="action-group-scope" id="enrichScope">（全体）</span></h3>
+        <h3 class="action-group-title">情報を補う<span class="action-group-note">Webに接続して各項目を埋めます</span></h3>
         <div class="action-grid">
-          <button class="tonal-btn" data-cmd="network.fix-titles">URLからタイトル更新</button>
-          <button class="tonal-btn" data-cmd="network.fetch-preview">説明文を取得</button>
-          <button class="tonal-btn" data-cmd="autotag.offline">自動タグ付け</button>
-          <button class="tonal-btn" data-cmd="network.link-check">リンク切れチェック</button>
-          <button class="ghost-btn" data-cmd="network.proxy-check">Proxy確認</button>
+          <button class="act-btn tonal" data-cmd="network.fix-titles" data-need="scope-any" data-hint="対象のブックマークがありません">
+            <span class="act-ico">📝</span><span class="act-label">タイトルをWebから取得</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="network.fetch-preview" data-need="scope-any" data-hint="対象のブックマークがありません">
+            <span class="act-ico">📃</span><span class="act-label">説明文をWebから取得</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="autotag.offline" data-need="scope-any" data-hint="対象のブックマークがありません">
+            <span class="act-ico">🏷</span><span class="act-label">自動でタグを付ける</span>
+          </button>
+          <button class="act-btn tonal" data-cmd="network.link-check" data-need="scope-any" data-hint="対象のブックマークがありません">
+            <span class="act-ico">🔗</span><span class="act-label">リンク切れをチェック</span>
+          </button>
+          <button class="act-btn ghost" data-cmd="network.proxy-check">
+            <span class="act-ico">🛰</span><span class="act-label">Proxy設定を確認</span>
+          </button>
         </div>
       </section>
 
       <section class="action-group" data-group="ai">
-        <h3 class="action-group-title">AI</h3>
+        <h3 class="action-group-title">AI<span class="action-group-note">送信前に件数とコストを確認します</span></h3>
         <div class="action-grid">
-          <button class="primary-btn" data-cmd="classify.ai">AI 分類</button>
-          <button class="ghost-btn" data-cmd="ai.settings">⚙ AI 設定</button>
+          <button class="act-btn accent" data-cmd="classify.ai" data-need="scope-any" data-hint="対象のブックマークがありません">
+            <span class="act-ico">✨</span><span class="act-label">AIでフォルダ分類</span>
+          </button>
+          <button class="act-btn ghost" data-cmd="ai.settings">
+            <span class="act-ico">⚙</span><span class="act-label">AI設定 (APIキー・モデル)</span>
+          </button>
         </div>
       </section>
 
-      <section class="detail-panel" id="detailPanel">
-        <h3 class="action-group-title">Detail</h3>
-        <div id="detailEmpty" class="detail-empty">ブックマークを選択してください。</div>
+    </aside>
+
+    <div class="splitter-h" id="detailSplitter" data-target="detail-col" data-fixed="next" title="ドラッグで幅を調整 / ダブルクリックで既定に戻す"></div>
+
+    <!-- ══ Detail: 選択中の1件を見る・編集する専用列 ══ -->
+    <aside class="pane-detail" id="detailPanel" aria-label="選択中のブックマーク">
+      <header class="pane-header">
+        <h2 class="pane-title">Detail</h2>
+        <span class="pane-scope" id="detailFolderLabel"></span>
+      </header>
+      <div class="detail-scroll">
+        <div id="detailEmpty" class="detail-empty">
+          <div class="empty-icon">🔖</div>
+          <div>一覧かツリーでブックマークをクリックすると、<br />ここで編集できます。</div>
+        </div>
         <div id="detailCard" class="detail-card hidden">
           <input id="detailTitle" class="detail-field detail-title-input" placeholder="タイトル" />
           <div id="detailFetchedTitle" class="detail-fetched-title hidden"></div>
@@ -159,14 +254,17 @@
             <textarea id="detailDescription" class="detail-field detail-desc-input" placeholder="説明" rows="3"></textarea>
           </div>
           <div class="detail-actions">
-            <button class="ghost-btn" data-cmd="detail.edit-tags">タグ編集</button>
-            <button class="ghost-btn" data-cmd="detail.copy-url">URLコピー</button>
-            <button class="ghost-btn" data-cmd="detail.move">移動</button>
-            <button class="danger-btn" data-cmd="detail.delete">削除</button>
+            <button class="ghost-btn" data-cmd="detail.open">🌐 ブラウザで開く</button>
+            <button class="ghost-btn" data-cmd="detail.copy-url">📋 URLコピー</button>
+            <button class="ghost-btn" data-cmd="detail.edit-tags">🏷 タグ編集</button>
+            <button class="ghost-btn" data-cmd="detail.move">📂 移動</button>
+            <button class="danger-btn" data-cmd="detail.delete">🗑 削除</button>
           </div>
         </div>
-      </section>
+      </div>
     </aside>
+
+    </div><!-- /.col-right -->
 
   </main>
 

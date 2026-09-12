@@ -1,43 +1,76 @@
 {
-  "_comment": "Gemini モデルの価格・特徴一覧（USD / 1M tokens）。価格はコードを触らず本ファイルで更新可能。AI設定画面の参照リストに表示される。default は config.ini [AI].model で選択。",
-  "_updated": "2026-06-10",
+  "_comment": "Gemini モデルの価格・特徴一覧（USD / 1M tokens、有料ティアのテキスト入力単価）。価格はコードを触らず本ファイルで更新可能。コスト承認ゲートはここの input_per_1m / output_per_1m を第一の情報源として使う（載っていないモデルのみ config.ini [AI] の単価にフォールバック）。config.ini [AI].model は分類実行時の既定選択。安い順に並べてある。",
+  "_source": "https://ai.google.dev/gemini-api/docs/pricing",
+  "_updated": "2026-08-29",
   "models": [
     {
       "id": "gemini-2.5-flash-lite",
       "label": "Gemini 2.5 Flash-Lite",
-      "note": "コスト最優先。文書仕分けや単純な抽出タスクで圧倒的なコスパを誇る超軽量最新モデル。",
+      "note": "最安。文書仕分けや単純な抽出タスクで圧倒的なコスパ。ブックマーク分類の既定。",
       "input_per_1m": 0.10,
       "output_per_1m": 0.40,
       "recommended": true
     },
     {
-      "id": "gemini-2.5-flash",
-      "label": "Gemini 2.5 Flash",
-      "note": "速度・価格・精度のバランス型。マルチモーダル（画像や動画）の処理が必要な場合に。",
-      "input_per_1m": 0.30,
-      "output_per_1m": 2.50,
-      "recommended": false
-    },
-    {
-      "id": "gemini-2.5-pro",
-      "label": "Gemini 2.5 Pro",
-      "note": "高度な推論用。複雑な長文読解、高度なロジックが必要な仕分けに。※20万トークン超は料金2倍。",
-      "input_per_1m": 1.25,
-      "output_per_1m": 10.00,
-      "recommended": false
-    },
-    {
       "id": "gemini-3.1-flash-lite",
-      "label": "Gemini 3.1 Flash-Lite (Preview)",
-      "note": "次世代3.1世代の最速軽量モデル。プレビュー版として公開中。",
+      "label": "Gemini 3.1 Flash-Lite",
+      "note": "3.1世代の軽量モデル。2.5 Flash-Lite より賢く、2.5 Flash より安い。プレビューを終えて正式版に。",
       "input_per_1m": 0.25,
       "output_per_1m": 1.50,
       "recommended": false
     },
     {
-      "id": "gemini-3.1-pro",
+      "id": "gemini-2.5-flash",
+      "label": "Gemini 2.5 Flash",
+      "note": "速度・価格・精度のバランス型。枯れた世代で挙動が安定している。",
+      "input_per_1m": 0.30,
+      "output_per_1m": 2.50,
+      "recommended": false
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "label": "Gemini 3.5 Flash-Lite",
+      "note": "3.5世代の軽量モデル。2.5 Flash と同単価でより新しい。",
+      "input_per_1m": 0.30,
+      "output_per_1m": 2.50,
+      "recommended": false
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "label": "Gemini 3.6 Flash",
+      "note": "※導入価格。2026-12-31 までは入力$0.75/出力$3.75、以降は入力$1.50/出力$7.50に戻ります。",
+      "input_per_1m": 0.75,
+      "output_per_1m": 3.75,
+      "recommended": false
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "label": "Gemini 3.7 Flash",
+      "note": "最新かつ最も高性能な Flash。複雑なコーディングや多段の実行向け。※導入価格：2026-12-31 までは入力$0.75/出力$3.75、以降は入力$1.50/出力$7.50。",
+      "input_per_1m": 0.75,
+      "output_per_1m": 3.75,
+      "recommended": false
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "label": "Gemini 2.5 Pro",
+      "note": "高度な推論用。複雑な長文読解や難しい仕分けに。※20万トークン超は入力$2.50/出力$15.00（見積もりには未反映）。",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.00,
+      "recommended": false
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "label": "Gemini 3.5 Flash",
+      "note": "3.5世代の標準 Flash。エージェント的な多段タスク向けで、Flash としては高価格帯。",
+      "input_per_1m": 1.50,
+      "output_per_1m": 9.00,
+      "recommended": false
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
       "label": "Gemini 3.1 Pro (Preview)",
-      "note": "次世代3.1世代の最高峰モデル。複雑な文脈理解の精度がさらに向上。※20万トークン超は料金2倍。",
+      "note": "最高峰の文脈理解。プレビュー版のため予告なく変更・終了の可能性あり。※20万トークン超は入力$4.00/出力$18.00（見積もりには未反映）。",
       "input_per_1m": 2.00,
       "output_per_1m": 12.00,
       "recommended": false

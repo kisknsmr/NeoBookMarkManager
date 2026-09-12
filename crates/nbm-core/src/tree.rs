@@ -213,7 +213,7 @@ fn new_uuid_hex() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0) as u128;
+        .unwrap_or(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut hi = (nanos as u64) ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut lo = ((nanos >> 64) as u64) ^ counter.rotate_left(31);
@@ -400,6 +400,14 @@ pub fn move_bookmark(
     if parent_path == target_folder {
         return Ok(());
     }
+    // Resolve the destination BEFORE detaching. Removing first and only then
+    // looking the target up meant a missing destination returned
+    // FolderNotFound with the bookmark already gone — it was deleted, not
+    // moved. Callers that ignore the error (bulk move, AI apply) lost
+    // bookmarks that way.
+    if find_folder(root, target_folder).is_none() {
+        return Err(TreeError::FolderNotFound(target_folder.to_string()));
+    }
     let bm = {
         let parent = find_folder_mut(root, &parent_path)
             .ok_or_else(|| TreeError::FolderNotFound(parent_path.clone()))?;
@@ -465,6 +473,13 @@ pub fn move_node(
                 "cannot move a folder into itself or its descendant".into(),
             ));
         }
+    }
+
+    // Resolve the destination BEFORE detaching, for the same reason as
+    // `move_bookmark`: a missing target used to leave the node detached and
+    // unreferenced, i.e. deleted.
+    if find_folder(root, target_parent_path).is_none() {
+        return Err(TreeError::FolderNotFound(target_parent_path.to_string()));
     }
 
     // Detach
@@ -629,5 +644,36 @@ mod tests {
         let bar = find_folder(&root, "Bar").unwrap();
         assert_eq!(bar.children[0].bookmark_id, "id-b");
         assert_eq!(bar.children[1].bookmark_id, "id-a");
+    }
+
+    #[test]
+    fn a_failed_move_does_not_lose_the_bookmark() {
+        let mut root = sample();
+        let before = root.count_bookmarks();
+
+        let e = move_bookmark(&mut root, "id-a", "NoSuchFolder").unwrap_err();
+        assert!(matches!(e, TreeError::FolderNotFound(_)));
+        assert_eq!(
+            root.count_bookmarks(),
+            before,
+            "the bookmark must stay put when the destination is missing"
+        );
+        assert_eq!(locate_bookmark(&root, "id-a").unwrap().0, "Bar");
+    }
+
+    #[test]
+    fn a_failed_node_move_does_not_lose_the_subtree() {
+        let mut root = sample();
+        ensure_node_ids(&mut root);
+        let sub_id = find_folder(&root, "Bar/Sub").unwrap().node_id.clone();
+        let before = root.count_bookmarks();
+
+        let e = move_node(&mut root, &sub_id, "NoSuchFolder", None).unwrap_err();
+        assert!(matches!(e, TreeError::FolderNotFound(_)));
+        assert_eq!(root.count_bookmarks(), before);
+        assert!(
+            find_folder(&root, "Bar/Sub").is_some(),
+            "the folder must still be attached where it was"
+        );
     }
 }

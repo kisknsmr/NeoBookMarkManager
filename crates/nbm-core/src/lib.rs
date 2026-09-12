@@ -1,8 +1,11 @@
 pub mod ai_classify;
+pub mod ai_client;
 pub mod autotag;
 pub mod backup;
 pub mod config;
 pub mod db;
+pub mod fetch;
+pub mod html_meta;
 pub mod model;
 pub mod netscape;
 pub mod organize;

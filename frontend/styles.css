@@ -60,7 +60,7 @@ button { font-family: inherit; }
 .topbar {
   flex: 0 0 44px;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   align-items: center;
   gap: 16px;
   padding: 0 14px;
@@ -100,6 +100,72 @@ button { font-family: inherit; }
 .topbar-search-icon { color: var(--text-lo); font-size: 12px; }
 
 .topbar-tools { display: flex; align-items: center; gap: 6px; }
+
+/* ── TopBar: 主動線（開く / 保存 / Undo・Redo） ──────────── */
+
+.topbar-actions { display: flex; align-items: center; gap: 4px; }
+
+.tb-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  background: transparent;
+  color: var(--text-mid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 80ms, border-color 80ms, color 80ms;
+}
+.tb-btn:hover:not(:disabled) { color: var(--text-hi); border-color: var(--accent); }
+.tb-ico { font-size: 13px; line-height: 1; }
+.tb-icon-only { padding: 0 9px; font-size: 15px; gap: 3px; }
+.tb-sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+
+.tb-accent {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.tb-accent:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+/* 未保存インジケータ: dirty のときだけ保存ボタン自体が色づく。
+   タイトルバーの ● だけでは破壊的な一括操作の直後に気づけないため。 */
+.tb-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+body[data-dirty="true"] .tb-save {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+body[data-dirty="true"] .tb-save .tb-dot { display: block; }
+body[data-dirty="true"] .tb-save:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.tb-badge { font-size: 10px; color: var(--text-lo); font-variant-numeric: tabular-nums; }
+
+.file-chip {
+  font-size: 11px;
+  color: var(--text-lo);
+  max-width: 190px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+body[data-loaded="true"] .file-chip { color: var(--text-hi); border-color: var(--surface-3); }
 
 .status-chip, .view-chip {
   font-size: 11px;
@@ -153,13 +219,57 @@ button { font-family: inherit; }
   background: var(--surface-0);
 }
 
+/* 右カラム全体。操作パネルと Detail を横に並べる器。
+   幅は main-cols スプリッターで、内訳は detail-col スプリッターで決まる。 */
+.col-right {
+  flex: 0 0 620px;
+  display: flex;
+  flex-direction: row;
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+}
+
 .pane-actions {
-  flex: 0 0 256px;
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   overflow-y: auto;
   background: var(--surface-0);
-  border-left: 1px solid var(--border);
+}
+
+/* Detail は1件を見る・編集する専用列。一括操作とは性質が違うので、
+   操作パネルに積むのをやめて独立させた（縦に伸びすぎる原因でもあった）。 */
+.pane-detail {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0; min-height: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+}
+.detail-scroll {
+  flex: 1 1 0;
+  overflow-y: auto;
+  padding: 12px;
+  min-height: 0;
+}
+
+/* 3列が窮屈になる幅では、右カラムを縦積みに切り替える。
+   ドラッグで付いたインラインの flex を打ち消す必要があるので !important。 */
+@media (max-width: 1280px) {
+  .col-right {
+    flex-direction: column;
+    flex: 0 0 300px !important;
+  }
+  .col-right > .splitter-h { display: none; }
+  .pane-actions { flex: 1 1 auto !important; }
+  .pane-detail {
+    flex: 0 0 auto !important;
+    max-height: 46%;
+    border-top: 1px solid var(--border);
+  }
 }
 
 /* ── Splitters ───────────────────────────────────────────── */
@@ -185,6 +295,9 @@ button { font-family: inherit; }
 body[data-dual="true"] #dualTreeSplitter { display: flex; flex: 0 0 3px; }
 body[data-dual="true"] #paneTreB         { display: flex; }
 
+/* 2画面をOFFに戻したとき、ツリーAに残った固定幅が余白を作らないようにする */
+body[data-dual="false"] #paneTreeA { flex: 1 1 0 !important; }
+
 /* ── Pane header ─────────────────────────────────────────── */
 
 .pane-header {
@@ -209,6 +322,12 @@ body[data-dual="true"] #paneTreB         { display: flex; }
   background: var(--surface-2);
   padding: 1px 7px;
   border-radius: 999px;
+}
+.pane-scope {
+  font-size: 11px;
+  color: var(--accent);
+  max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .view-toggle { margin-left: auto; display: flex; gap: 4px; }
 .view-toggle .ghost-btn[aria-pressed="true"] {
@@ -422,6 +541,16 @@ body[data-view="card"] .bm-card-url { grid-area: url; color: var(--text-lo); fon
   color: var(--text-lo);
   margin: 0 0 7px;
 }
+/* グループの見出し下に置く一行説明。ラベルだけでは何をするか伝わらないため。 */
+.action-group-note {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-lo);
+}
 .action-group-scope {
   font-weight: 400;
   letter-spacing: 0;
@@ -429,13 +558,155 @@ body[data-view="card"] .bm-card-url { grid-area: url; color: var(--text-lo); fon
   color: var(--accent);
   font-size: 10px;
 }
+
+/* 1列。日本語ラベルは2列（実効107px）に収まらず、はみ出す原因だった。 */
 .action-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
+/* ── Scope bar ───────────────────────────────────────────
+   Organize / Enrich / AI の対象は、必ずここ1か所で決まる。
+   （以前は Organize=暗黙のフォルダ選択、Enrich/AI=毎回モーダル と二重だった） */
+
+.scope-bar {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px 9px;
+  background: var(--surface-1);
+}
+.scope-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+.scope-head-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-lo);
+}
+.scope-head-hint {
+  width: 14px; height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-lo);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+  cursor: help;
+}
+.scope-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+.scope-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 2px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-mid);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms, color 80ms;
+}
+.scope-opt:hover:not(:disabled) { color: var(--text-hi); border-color: var(--accent); }
+.scope-opt[aria-checked="true"] {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.scope-opt-name { font-size: 11px; }
+.scope-opt-n { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.scope-target {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--text-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ファイル未読込のあいだは操作パネル全体を沈める */
+body[data-loaded="false"] .action-group,
+body[data-loaded="false"] .scope-bar,
+body[data-loaded="false"] .pane-detail { opacity: .45; }
+
+/* ── Empty state ─────────────────────────────────────────── */
+
+.empty-state {
+  display: none;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 24px;
+  text-align: center;
+}
+body[data-loaded="false"] #paneTreeA .empty-state { display: flex; }
+body[data-loaded="false"] #paneTreeA .tree-scroll { display: none; }
+.empty-icon  { font-size: 34px; opacity: .5; }
+.empty-title { font-size: 13px; font-weight: 600; color: var(--text-mid); }
+.empty-body  { font-size: 11.5px; color: var(--text-lo); line-height: 1.75; }
+.empty-state .empty-cta { width: auto; flex: 0 0 auto; margin-top: 4px; padding: 8px 18px; }
+
 /* ── Buttons ─────────────────────────────────────────────── */
+
+/* 操作パネルの主役ボタン。アイコン + 左寄せラベルの1行で、
+   「重複ブックマークを削除」級の日本語ラベルが折り返さずに収まる。 */
+.act-btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.35;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms, color 80ms;
+}
+.act-ico   { flex: 0 0 16px; font-size: 14px; line-height: 1; text-align: center; }
+.act-label { flex: 1 1 auto; min-width: 0; }
+
+.act-btn.accent {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.act-btn.accent:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* tonal: 面を持つ（実行系）。ghost: 面を持たない（確認・設定系）。
+   以前は両者が同一定義で、重要度の差が画面に出ていなかった。 */
+.act-btn.tonal {
+  background: var(--surface-2);
+  color: var(--text-hi);
+  border-color: var(--border);
+}
+.act-btn.tonal:hover:not(:disabled) { background: var(--surface-3); border-color: var(--accent); }
+
+.act-btn.ghost {
+  background: transparent;
+  color: var(--text-mid);
+  border-color: transparent;
+}
+.act-btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text-hi); }
+
+.act-btn.danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--border);
+}
+.act-btn.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--danger-on);
+  border-color: var(--danger);
+}
+
+/* ── 小さめの補助ボタン（ペインヘッダー / 詳細パネル） ──── */
 
 .primary-btn, .tonal-btn, .ghost-btn, .danger-btn {
   height: 28px;
@@ -453,34 +724,51 @@ body[data-view="card"] .bm-card-url { grid-area: url; color: var(--text-lo); fon
   color: var(--on-accent);
   font-weight: 600;
 }
-.primary-btn:hover { background: var(--accent-hover); }
+.primary-btn:hover:not(:disabled) { background: var(--accent-hover); }
 
-/* tonal は ghost と同一 */
-.tonal-btn, .ghost-btn {
+.tonal-btn {
+  background: var(--surface-2);
+  color: var(--text-hi);
+  border-color: var(--border);
+}
+.tonal-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--accent); }
+
+.ghost-btn {
   background: transparent;
   color: var(--text-mid);
   border-color: var(--border);
 }
-.tonal-btn:hover, .ghost-btn:hover {
-  border-color: var(--accent);
-  color: var(--text-hi);
-}
+.ghost-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-hi); }
 
 .danger-btn {
   background: transparent;
   color: var(--danger);
   border-color: var(--border);
 }
-.danger-btn:hover { background: var(--danger); color: var(--danger-on); border-color: var(--danger); }
+.danger-btn:hover:not(:disabled) { background: var(--danger); color: var(--danger-on); border-color: var(--danger); }
+
+/* ── Disabled ────────────────────────────────────────────
+   これまで :disabled のスタイルが無く、押せないボタンが
+   押せるボタンと同じ見た目のままだった。 */
+button:disabled {
+  opacity: .32;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
 
 /* ── Detail panel ────────────────────────────────────────── */
 
-.detail-panel {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
+.detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-lo);
+  font-size: 12px;
+  line-height: 1.7;
 }
-.detail-empty { color: var(--text-lo); font-size: 12px; }
 .detail-title { font-weight: 600; margin-bottom: 3px; }
 
 /* Inline edit fields in detail pane */
@@ -501,7 +789,7 @@ body[data-view="card"] .bm-card-url { grid-area: url; color: var(--text-lo); fon
 .detail-field:focus { border-color: var(--accent); background: var(--surface-2); }
 .detail-title-input { font-size: 14px; font-weight: 600; }
 .detail-url-input   { font-size: 12px; color: var(--accent); word-break: break-all; }
-.detail-desc-input  { font-size: 12px; resize: vertical; min-height: 48px; }
+.detail-desc-input  { font-size: 12px; resize: vertical; min-height: 140px; }
 
 .detail-fetched-title {
   font-size: 11px;
@@ -525,11 +813,12 @@ body[data-view="card"] .bm-card-url { grid-area: url; color: var(--text-lo); fon
 .detail-section-label { font-size: 11px; color: var(--text-lo); margin-bottom: 3px; }
 .detail-description, .detail-tags { font-size: 12px; color: var(--text-hi); white-space: pre-wrap; }
 .detail-actions {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
+.detail-actions button { flex: 0 1 auto; }
 
 /* ── Drag and drop ───────────────────────────────────────── */
 

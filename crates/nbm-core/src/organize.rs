@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{Node, NodeKind};
+use crate::tree::{find_folder, find_folder_mut};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrganizeError {
@@ -98,7 +99,7 @@ pub fn merge_duplicate_folders(root: &mut Node, parent_path: &str) -> Result<usi
         }
     }
     // Process in reverse order so indices stay stable.
-    to_merge.sort_by(|a, b| b.0.cmp(&a.0));
+    to_merge.sort_by_key(|&(dup_idx, _)| std::cmp::Reverse(dup_idx));
     let count = to_merge.len();
     for (dup_idx, target_idx) in to_merge {
         let dup_children: Vec<Node> = std::mem::take(&mut parent.children[dup_idx].children);
@@ -182,7 +183,7 @@ pub fn consolidate_by_domain(
     };
 
     // Validate scope exists.
-    if !target_parent_path.is_empty() && find_folder_mut(root, &target_parent_path).is_none() {
+    if !target_parent_path.is_empty() && find_folder(root, &target_parent_path).is_none() {
         return Err(OrganizeError::FolderNotFound(target_parent_path.clone()));
     }
 
@@ -193,26 +194,29 @@ pub fn consolidate_by_domain(
         format!("{}/{}", target_parent_path, target_folder_name)
     };
 
-    // Clone the scope subtree so we can analyse it without borrow conflicts.
-    let scope_clone = {
-        let scope = find_folder_mut(root, &target_parent_path).unwrap();
-        scope.clone()
-    };
-
     // Collect items to pull into the target folder.
     // Each entry is either:
     //   Ok(node_id)  → move this entire child node of the scope into target
     //   Err(bm_id)   → move this bookmark (nested) into target
+    //
+    // The analysis only needs to read the scope, so it borrows it immutably.
+    // This used to clone the entire subtree "so we can analyse it without
+    // borrow conflicts" — there was no conflict to avoid, because what comes
+    // back is a list of owned ids that borrows nothing.
     let mut items_to_move: Vec<Result<String, String>> = Vec::new();
-    collect_domain_items(
-        &scope_clone,
-        &domain_norm,
-        &target_name_lower,
-        kw_lower.as_deref(),
-        tags_map,
-        &exclude_lower,
-        &mut items_to_move,
-    );
+    {
+        let scope = find_folder(root, &target_parent_path)
+            .ok_or_else(|| OrganizeError::FolderNotFound(target_parent_path.clone()))?;
+        collect_domain_items(
+            scope,
+            &domain_norm,
+            &target_name_lower,
+            kw_lower.as_deref(),
+            tags_map,
+            &exclude_lower,
+            &mut items_to_move,
+        );
+    }
 
     if items_to_move.is_empty() {
         return Ok(0);
@@ -220,7 +224,8 @@ pub fn consolidate_by_domain(
 
     // Ensure target folder exists inside the scope parent.
     {
-        let parent = find_folder_mut(root, &target_parent_path).unwrap();
+        let parent = find_folder_mut(root, &target_parent_path)
+            .ok_or_else(|| OrganizeError::FolderNotFound(target_parent_path.clone()))?;
         if !parent.children.iter().any(|c| c.is_folder() && c.title.to_lowercase() == target_name_lower) {
             parent.children.insert(0, Node::new_folder(target_folder_name));
         }
@@ -229,51 +234,94 @@ pub fn consolidate_by_domain(
     let mut moved = 0;
 
     for item in items_to_move {
-        match item {
-            // Move an entire child node of the scope by node_id.
+        // Each move is detach-then-attach. Both halves resolve their own path,
+        // and `attach_to_named_child` hands the node back rather than dropping
+        // it if the target disappeared, so a failed attach cannot lose data.
+        let (node, weight) = match item {
+            // An entire child node of the scope, addressed by node_id.
             Ok(node_id) => {
-                let parent = find_folder_mut(root, &target_parent_path).unwrap();
-                if let Some(pos) = parent.children.iter().position(|c| c.node_id == node_id) {
-                    let child = parent.children.remove(pos);
-                    let bm_count = count_bookmarks(&child);
-                    // Re-find target after removal (same parent, so re-borrow is fine).
-                    let parent2 = find_folder_mut(root, &target_parent_path).unwrap();
-                    let target = parent2.children.iter_mut()
-                        .find(|c| c.is_folder() && c.title.to_lowercase() == target_name_lower)
-                        .unwrap();
-                    target.children.push(child);
-                    moved += bm_count;
+                match detach_child_by_node_id(root, &target_parent_path, &node_id) {
+                    Some(child) => {
+                        let bm_count = count_bookmarks(&child);
+                        (child, bm_count)
+                    }
+                    None => continue,
                 }
             }
-            // Move a single bookmark by bookmark_id.
+            // A single bookmark, addressed by bookmark_id.
             Err(bm_id) => {
-                if let Some((src_path, idx)) = crate::tree::locate_bookmark(root, &bm_id) {
-                    // Skip if already inside the target folder.
-                    if src_path.to_lowercase() == target_full_path.to_lowercase() {
-                        continue;
-                    }
-                    let sf = find_folder_mut(root, &src_path).unwrap();
-                    if idx < sf.children.len() {
-                        let bm_node = sf.children.remove(idx);
-                        let target_parent = find_folder_mut(root, &target_parent_path).unwrap();
-                        let target = target_parent.children.iter_mut()
-                            .find(|c| c.is_folder() && c.title.to_lowercase() == target_name_lower)
-                            .unwrap();
-                        target.children.push(bm_node);
-                        moved += 1;
-                    }
+                let Some((src_path, idx)) = crate::tree::locate_bookmark(root, &bm_id) else {
+                    continue;
+                };
+                // Skip if already inside the target folder.
+                if src_path.to_lowercase() == target_full_path.to_lowercase() {
+                    continue;
+                }
+                match detach_child_at(root, &src_path, idx) {
+                    Some(bm_node) => (bm_node, 1),
+                    None => continue,
+                }
+            }
+        };
+
+        match attach_to_named_child(root, &target_parent_path, &target_name_lower, node) {
+            Ok(()) => moved += weight,
+            // The target folder was created above and nothing removes it, so
+            // this is unreachable in practice; putting the node back where it
+            // came from is still better than dropping it on the floor.
+            Err(orphan) => {
+                if let Some(parent) = find_folder_mut(root, &target_parent_path) {
+                    parent.children.push(*orphan);
                 }
             }
         }
     }
 
     // Remove empty folders left inside the scope (but not the target folder itself).
-    remove_empty_folders(
-        find_folder_mut(root, &target_parent_path).unwrap(),
-        &target_name_lower,
-    );
+    if let Some(scope) = find_folder_mut(root, &target_parent_path) {
+        remove_empty_folders(scope, &target_name_lower);
+    }
 
     Ok(moved)
+}
+
+/// Detach the direct child of `parent_path` whose `node_id` matches.
+fn detach_child_by_node_id(root: &mut Node, parent_path: &str, node_id: &str) -> Option<Node> {
+    let parent = find_folder_mut(root, parent_path)?;
+    let pos = parent.children.iter().position(|c| c.node_id == node_id)?;
+    Some(parent.children.remove(pos))
+}
+
+/// Detach the child at `idx` under `parent_path`.
+fn detach_child_at(root: &mut Node, parent_path: &str, idx: usize) -> Option<Node> {
+    let parent = find_folder_mut(root, parent_path)?;
+    (idx < parent.children.len()).then(|| parent.children.remove(idx))
+}
+
+/// Append `node` to the folder named `name_lower` (compared case-insensitively)
+/// directly under `parent_path`. Creates nothing; if that folder is not there,
+/// `node` comes back untouched so the caller can decide what to do with it.
+/// (Boxed on the way back only because a whole subtree is a large `Err`.)
+fn attach_to_named_child(
+    root: &mut Node,
+    parent_path: &str,
+    name_lower: &str,
+    node: Node,
+) -> Result<(), Box<Node>> {
+    let Some(parent) = find_folder_mut(root, parent_path) else {
+        return Err(Box::new(node));
+    };
+    let target = parent
+        .children
+        .iter_mut()
+        .find(|c| c.is_folder() && c.title.to_lowercase() == name_lower);
+    match target {
+        Some(folder) => {
+            folder.children.push(node);
+            Ok(())
+        }
+        None => Err(Box::new(node)),
+    }
 }
 
 fn collect_domain_items(
@@ -319,7 +367,7 @@ fn bm_matches(bm: &Node, domain: &str, keyword: Option<&str>, extra_tags: Option
         bm.title.to_lowercase().contains(kw)
             || bm.description.to_lowercase().contains(kw)
             || bm.url.to_lowercase().contains(kw)
-            || extra_tags.map_or(false, |t| t.to_lowercase().contains(kw))
+            || extra_tags.is_some_and(|t| t.to_lowercase().contains(kw))
     } else {
         true
     }
@@ -370,45 +418,14 @@ fn count_bookmarks(node: &Node) -> usize {
 
 // --- Internal helpers ------------------------------------------------------
 
-fn find_folder_mut<'a>(root: &'a mut Node, path: &str) -> Option<&'a mut Node> {
-    if path.is_empty() {
-        return Some(root);
-    }
-    let mut cur = root;
-    for part in path.split('/') {
-        if part.is_empty() {
-            continue;
-        }
-        let idx = cur.children.iter().position(|c| c.is_folder() && c.title == part)?;
-        cur = &mut cur.children[idx];
-    }
-    Some(cur)
-}
+// Path lookup lives in `tree` (see the import at the top of the file); this
+// module used to carry its own byte-identical copy of `find_folder_mut`.
 
 fn walk_bookmarks<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
     for child in &node.children {
         match child.kind {
             NodeKind::Bookmark => f(child),
             NodeKind::Folder => walk_bookmarks(child, f),
-        }
-    }
-}
-
-/// Walk bookmarks, skipping the root-level folder whose title.lowercase() == skip_folder.
-fn walk_bookmarks_skip<'a>(
-    node: &'a Node,
-    skip_folder_lower: &str,
-    f: &mut impl FnMut(&'a Node),
-) {
-    for child in &node.children {
-        match child.kind {
-            NodeKind::Bookmark => f(child),
-            NodeKind::Folder => {
-                if child.title.to_lowercase() == skip_folder_lower {
-                    continue;
-                }
-                walk_bookmarks(child, f);
-            }
         }
     }
 }
@@ -421,7 +438,7 @@ mod tests {
     fn sample() -> Node {
         let mut root = Node::new_root();
         let mut f1 = Node::new_folder("Work");
-        let mut bm = |title: &str, url: &str| {
+        let bm = |title: &str, url: &str| {
             let mut b = Node::new_bookmark(title, url);
             b.bookmark_id = crate::tree::ensure_bookmark_ids_return(title);
             b
@@ -587,7 +604,7 @@ mod tests {
     fn sort_by_domain_orders_bookmarks() {
         let mut root = Node::new_root();
         let mut folder = Node::new_folder("Mixed");
-        let mut bm = |title: &str, url: &str| {
+        let bm = |title: &str, url: &str| {
             let mut b = Node::new_bookmark(title, url);
             b.bookmark_id = crate::tree::ensure_bookmark_ids_return(title);
             b

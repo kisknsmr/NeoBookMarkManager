@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rust-lsp": {
+      "command": "node",
+      "args": [".claude/lsp/rust-lsp-mcp.js"],
+      "env": {
+        "RUST_LSP_INDEX_TIMEOUT_MS": "300000"
+      }
+    }
+  }
+}

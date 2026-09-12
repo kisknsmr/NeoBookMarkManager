@@ -70,3 +70,13 @@ target/
 # Tauri build artifacts
 src-tauri/gen/
 
+
+# .claude/skills is a directory junction to .agents/skills (see .claude/CLAUDE.md).
+# Ignore it so git does not commit a second copy of the rust-skills pack.
+/.claude/skills/
+/.claude/settings.local.json
+
+# 個人のブックマークエクスポート。リポジトリは public なので新規分は追加しない。
+# ※ 既にトラッキング済みの Bookmark/bookmarks_2026_05_29*.html は
+#    この指定の影響を受けず、これまでどおり追跡されます。
+/Bookmark/

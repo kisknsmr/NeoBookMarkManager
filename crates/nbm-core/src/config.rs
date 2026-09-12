@@ -93,5 +93,5 @@ fn is_valid_proxy_url(s: &str) -> bool {
     }
     let lower = s.to_ascii_lowercase();
     (lower.starts_with("http://") || lower.starts_with("https://"))
-        && s.split_once("://").map_or(false, |(_, rest)| !rest.is_empty())
+        && s.split_once("://").is_some_and(|(_, rest)| !rest.is_empty())
 }
