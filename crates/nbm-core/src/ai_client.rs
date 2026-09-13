@@ -208,6 +208,21 @@ pub fn is_quota_error(msg: &str) -> bool {
         || msg.to_lowercase().contains("quota")
 }
 
+/// A model id Gemini no longer serves for this call — retired, renamed, or
+/// never valid to begin with. Google periodically changes its Gemini lineup,
+/// so whatever model config.ini names today can stop resolving with no
+/// warning.
+///
+/// Distinct from a transient failure: every remaining chunk in the run would
+/// hit the exact same 404, so the caller stops the whole run here instead of
+/// working through the batch one identical failure at a time.
+pub fn is_model_unavailable_error(msg: &str) -> bool {
+    msg.contains("404")
+        || msg.contains("NOT_FOUND")
+        || msg.to_lowercase().contains("is not found for api")
+        || msg.to_lowercase().contains("not supported for generatecontent")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +232,19 @@ mod tests {
         assert!(is_quota_error("HTTP 429: rate limited"));
         assert!(is_quota_error("RESOURCE_EXHAUSTED: too many requests"));
         assert!(is_quota_error("You exceeded your current Quota"));
+    }
+
+    #[test]
+    fn model_unavailable_errors_are_recognised() {
+        // The exact message Gemini returns for a retired/renamed model id.
+        assert!(is_model_unavailable_error(
+            "HTTP 404: models/gemini-1.0-pro is not found for API version              v1beta, or is not supported for generateContent."
+        ));
+        assert!(is_model_unavailable_error("NOT_FOUND"));
+        // A quota rejection must not be misread as a dead model — they take
+        // different recovery paths (wait/switch key vs. pick another model).
+        assert!(!is_model_unavailable_error("HTTP 429: rate limited"));
+        assert!(!is_model_unavailable_error("HTTP 400: API key not valid"));
     }
 
     #[test]

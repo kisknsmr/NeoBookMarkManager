@@ -3417,6 +3417,7 @@ function newAiReviewState(opts) {
     byId: new Map(),        // bookmark_id -> { folder, confidence, reason, checked, title, from }
     failedIds: [],
     quotaExhausted: false,  // 枠の上限で打ち切られたか
+    modelUnavailable: false, // モデルが利用不可で打ち切られたか（再送では直らない）
     usingPaidKey: false,    // 有料枠のキーに切り替え済みか
     expanded: new Set(),    // 展開中のフォルダ
     query: "",
@@ -3620,7 +3621,8 @@ function openAiReviewModal(total, opts) {
   }
 
   div.querySelector("#ai-retry-btn").addEventListener("click", () => {
-    if (_aiReview?.quotaExhausted && !_aiReview.usingPaidKey) maybeOfferPaidFallback();
+    if (_aiReview?.modelUnavailable) cmdAiSettings();
+    else if (_aiReview?.quotaExhausted && !_aiReview.usingPaidKey) maybeOfferPaidFallback();
     else retryFailedChunks();
   });
   div.querySelector("#ai-btn-apply-selected").addEventListener("click", applyAiReview);
@@ -3675,6 +3677,7 @@ function updateAiModalProgress(modal, ev) {
     else if (ev.status === "waiting") status.textContent = `⏳ ${ev.error}`;
     else if (ev.status === "chunk_error") status.textContent = `エラー (一部スキップ): ${ev.error}`;
     else if (ev.status === "quota_exhausted") status.textContent = `⛔ ${ev.error}`;
+    else if (ev.status === "model_unavailable") status.textContent = `⛔ ${ev.error}`;
     else if (ev.status === "done") status.textContent = "完了 — 提案を確認してください";
     else if (ev.status === "error") status.textContent = `エラー: ${ev.error}`;
   }
@@ -3689,17 +3692,26 @@ function updateAiModalProgress(modal, ev) {
   }
 
   // 失敗チャンク・枠切れの id を控えておき、再実行の導線を出す。
-  if ((ev.status === "chunk_error" || ev.status === "quota_exhausted") && ev.failed_ids && _aiReview) {
+  if (
+    (ev.status === "chunk_error" || ev.status === "quota_exhausted" || ev.status === "model_unavailable") &&
+    ev.failed_ids && _aiReview
+  ) {
     for (const id of ev.failed_ids) {
       if (!_aiReview.failedIds.includes(id)) _aiReview.failedIds.push(id);
     }
     if (ev.status === "quota_exhausted") _aiReview.quotaExhausted = true;
+    // A same-model retry cannot succeed here — the model itself is gone —
+    // so this is tracked separately from quotaExhausted, which does retry.
+    if (ev.status === "model_unavailable") _aiReview.modelUnavailable = true;
     renderAiRetryBar();
   }
 
   // チャンクエラーはステータス行だと次の進捗で上書きされて消えてしまうため、
   // 専用のログ欄に積み上げて完了後も読めるようにする。
-  if (ev.status === "chunk_error" || ev.status === "error" || ev.status === "quota_exhausted") {
+  if (
+    ev.status === "chunk_error" || ev.status === "error" ||
+    ev.status === "quota_exhausted" || ev.status === "model_unavailable"
+  ) {
     const log = modal.querySelector("#ai-error-log");
     if (log) {
       log.style.display = "flex";
@@ -3734,7 +3746,9 @@ function updateAiModalProgress(modal, ev) {
       : `${ev.total.toLocaleString()} 件を処理中`;
   }
   if (status) {
-    status.style.color = (ev.status === "error" || ev.status === "quota_exhausted") ? C.red : C.mid;
+    status.style.color =
+      (ev.status === "error" || ev.status === "quota_exhausted" || ev.status === "model_unavailable")
+        ? C.red : C.mid;
   }
 }
 
@@ -3748,7 +3762,13 @@ function renderAiRetryBar() {
   if (!_aiReview.failedIds.length) { bar.style.display = "none"; return; }
 
   const n = _aiReview.failedIds.length;
-  if (_aiReview.quotaExhausted && !_aiReview.usingPaidKey) {
+  if (_aiReview.modelUnavailable) {
+    // Retrying with the same model would just reproduce the same 404 — point
+    // at AI settings instead of offering a retry that cannot work.
+    const model = _aiReview.opts?.model || "";
+    msg.textContent = `モデル「${model}」が利用できないため中断しました（未処理 ${n} 件）`;
+    btn.textContent = "AI設定を開く";
+  } else if (_aiReview.quotaExhausted && !_aiReview.usingPaidKey) {
     msg.textContent = `無料枠の上限に達したため中断しました（未処理 ${n} 件）`;
     btn.textContent = "有料枠のキーで続ける";
   } else {

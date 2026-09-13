@@ -12,7 +12,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use futures_util::stream::Stream;
 use nbm_core::ai_classify::{self, AiMove, ClassifyProgress, CostEstimate, FieldSelection};
-use nbm_core::ai_client::{call_gemini_batch, is_quota_error, parse_retry_after_secs};
+use nbm_core::ai_client::{
+    call_gemini_batch, is_model_unavailable_error, is_quota_error, parse_retry_after_secs,
+};
 use nbm_core::tree;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -542,6 +544,27 @@ impl ClassifyRun {
                         )),
                         failed_ids: Some(remaining),
                         ..progress("quota_exhausted", processed, total)
+                    })
+                    .await;
+                    break;
+                }
+                // Gemini periodically retires or renames model ids, so
+                // config.ini can point at a model that has simply stopped
+                // resolving. Every remaining chunk would hit the identical
+                // 404, so stop here instead of repeating the same failure
+                // across the whole batch — the UI points at AI settings
+                // rather than offering a same-model retry that cannot work.
+                Err(e) if is_model_unavailable_error(&e) => {
+                    let remaining = self.remaining_ids(chunk_index);
+                    self.emit(ClassifyProgress {
+                        error: Some(format!(
+                            "モデル「{}」は利用できません（Gemini側で廃止・変更された可能性があります）。\
+                             AI設定で別のモデルに切り替えてください（残り {} 件は未処理）: {e}",
+                            self.model,
+                            remaining.len()
+                        )),
+                        failed_ids: Some(remaining),
+                        ..progress("model_unavailable", processed, total)
                     })
                     .await;
                     break;
