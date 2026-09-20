@@ -4,13 +4,11 @@
 //! snapshot, the dirty flag and the write lock. That leaves each handler as
 //! just its own request shape plus the one `tree::` call it is about.
 
-use std::path::PathBuf;
 
 use axum::extract::{Path, Query, State};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use camino::Utf8PathBuf;
-use nbm_core::backup::BackupTargets;
 use nbm_core::storage::save_bookmarks;
 use nbm_core::tree;
 use serde::{Deserialize, Serialize};
@@ -356,9 +354,9 @@ async fn edit_save(
         }
     }
 
-    // Best-effort backup before overwriting — failures are logged but never
-    // block the save. If all 3 backup targets exist, we snapshot; otherwise skip.
-    let backup_path = pre_save_backup(&state, &target).await;
+    // Snapshot before overwriting. If the backup itself fails we stop: saving
+    // over the only copy without a safety net is what the backup is there for.
+    let backup_path = state.backup_before(target.as_std_path())?;
 
     {
         let root = state.inner.root.read().await;
@@ -400,19 +398,3 @@ fn record_save_fingerprint(state: &AppState, target: &Utf8PathBuf) {
     }
 }
 
-async fn pre_save_backup(state: &AppState, target: &Utf8PathBuf) -> Option<PathBuf> {
-    let bm = state.inner.backup_mgr.clone()?;
-    let db_path = state.inner.db.as_ref()?.path.clone();
-    let cfg_path = state.inner.config_ini_path.clone()?;
-    let html_path = target.as_std_path().to_path_buf();
-    // Skip if any target is missing — backup requires all 3 files to exist.
-    if !html_path.exists() || !db_path.exists() || !cfg_path.exists() {
-        return None;
-    }
-    let targets = BackupTargets {
-        bookmarks_html: html_path,
-        user_data_db: db_path,
-        config_ini: cfg_path,
-    };
-    bm.create_backup(&targets).ok()
-}

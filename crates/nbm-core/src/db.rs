@@ -70,11 +70,40 @@ impl Db {
         Ok(())
     }
 
+    /// Run pending migrations. A database that already holds data (version >= 1)
+    /// is copied to `<db>.bak-v<N>` first; if a step fails the copy is put back
+    /// and the error is returned, so a half-migrated file never survives.
     fn migrate(&self) -> Result<(), DbError> {
+        let ver = {
+            let conn = self.connect()?;
+            conn.query_row("SELECT version FROM schema_version LIMIT 1;", [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        if ver >= CURRENT_VERSION {
+            return Ok(());
+        }
+        let backup = if ver >= 1 {
+            let mut name = self.path.as_os_str().to_owned();
+            name.push(format!(".bak-v{ver}"));
+            let bak = PathBuf::from(name);
+            std::fs::copy(&self.path, &bak)?;
+            Some(bak)
+        } else {
+            None
+        };
+        match self.run_migrations(ver) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if let Some(bak) = backup {
+                    let _ = std::fs::copy(&bak, &self.path);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn run_migrations(&self, mut ver: i64) -> Result<(), DbError> {
         let conn = self.connect()?;
-        let mut ver: i64 = conn
-            .query_row("SELECT version FROM schema_version LIMIT 1;", [], |r| r.get(0))
-            .unwrap_or(0);
         while ver < CURRENT_VERSION {
             match (ver, ver + 1) {
                 (0, 1) => migrate_0_to_1(&conn)?,
@@ -379,6 +408,21 @@ fn iso_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrating_an_existing_db_leaves_a_pre_migration_copy() {
+        let tmp = tempfile_path();
+        {
+            let db = Db::open(&tmp).unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute("DELETE FROM schema_version;", []).unwrap();
+            conn.execute("INSERT INTO schema_version(version) VALUES (1);", []).unwrap();
+        }
+        Db::open(&tmp).unwrap();
+        let mut bak = tmp.as_os_str().to_owned();
+        bak.push(".bak-v1");
+        assert!(std::path::Path::new(&bak).exists());
+    }
 
     #[test]
     fn migrate_and_round_trip() {

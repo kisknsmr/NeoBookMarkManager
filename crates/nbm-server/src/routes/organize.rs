@@ -47,6 +47,7 @@ async fn organize_dedupe(
     Json(body): Json<DedupeBody>,
 ) -> ApiResult<OrganizeResp> {
     let exclude = settings::dedupe_exclude_urls(&state);
+    state.backup_before_batch().await?;
     let count = state
         .edit(|root| organize::dedupe_folder(root, &body.folder_path, &exclude))
         .await?;
@@ -62,6 +63,7 @@ async fn organize_merge_dup_folders(
     State(state): State<AppState>,
     Json(body): Json<MergeDupFoldersBody>,
 ) -> ApiResult<OrganizeResp> {
+    state.backup_before_batch().await?;
     let count = state
         .edit(|root| organize::merge_duplicate_folders(root, &body.parent_path))
         .await?;
@@ -114,6 +116,7 @@ async fn organize_consolidate_domain(
         Some(db) => db.get_all_tags_map().unwrap_or_default(),
         None => std::collections::HashMap::new(),
     };
+    state.backup_before_batch().await?;
     let count = state
         .edit(|root| {
             organize::consolidate_by_domain(
@@ -139,6 +142,7 @@ async fn organize_sort_by_domain(
     State(state): State<AppState>,
     Json(body): Json<SortByDomainBody>,
 ) -> ApiResult<OrganizeResp> {
+    state.backup_before_batch().await?;
     let count = state
         .edit(|root| organize::sort_by_domain(root, &body.folder_path))
         .await?;

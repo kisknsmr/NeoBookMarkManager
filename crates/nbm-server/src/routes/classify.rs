@@ -749,6 +749,9 @@ async fn classify_ai_apply(
         return Ok(Json(ClassifyApplyResp { ok: true, applied: 0, skipped: 0, pruned: 0, archived: 0 }));
     }
 
+    // Backup gate: no backup, no bulk move.
+    state.backup_before_batch().await?;
+
     let resp = state
         .edit_infallible(|root| {
             let mut applied = 0usize;

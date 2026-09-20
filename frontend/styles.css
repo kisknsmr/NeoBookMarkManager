@@ -167,6 +167,14 @@ body[data-dirty="true"] .tb-save:hover:not(:disabled) {
 }
 body[data-loaded="true"] .file-chip { color: var(--text-hi); border-color: var(--surface-3); }
 
+.brand-ver {
+  font-size: 10.5px;
+  color: var(--text-lo, var(--text-mid));
+  margin-left: 6px;
+  align-self: flex-end;
+  padding-bottom: 2px;
+}
+
 .status-chip, .view-chip {
   font-size: 11px;
   color: var(--text-mid);

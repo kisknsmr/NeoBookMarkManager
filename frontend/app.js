@@ -2606,7 +2606,7 @@ async function cmdHelp() {
     <div style="background:${C.bg1};border:1px solid ${C.border};border-radius:10px;width:720px;max-width:94vw;height:84vh;display:flex;flex-direction:column;overflow:hidden">
 
       <div style="padding:15px 20px 11px;border-bottom:1px solid ${C.border};flex:0 0 auto">
-        <div style="color:${C.hi};font-size:15px;font-weight:600">ヘルプ</div>
+        <div style="color:${C.hi};font-size:15px;font-weight:600">ヘルプ <span style="color:${C.lo};font-size:11px;font-weight:400;margin-left:6px">NeoBookMarkManager ${appVersion ? "v" + escHtml(appVersion) : ""}</span></div>
         <div style="color:${C.lo};font-size:11px;margin-top:3px">この画面の内容は、いま読み込まれている設定から生成しています。</div>
       </div>
 
@@ -4152,6 +4152,8 @@ function restoreView() {
   } catch (_) {}
 }
 
+let appVersion = "";
+
 async function boot() {
   setupDetailInlineEdit();
   restoreView();
@@ -4166,6 +4168,9 @@ async function boot() {
   try {
     const health = await api("/health");
     setStatus(`接続済 v${health.version}`);
+    appVersion = health.version;
+    const bv = document.getElementById("brandVer");
+    if (bv) bv.textContent = `v${health.version}`;
   } catch (e) {
     setStatus("接続失敗");
     toast(`/health 失敗: ${e.message}`, "error");

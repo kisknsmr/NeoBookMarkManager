@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
-use nbm_core::backup::BackupManager;
+use nbm_core::backup::{BackupError, BackupManager, BackupTargets};
 use nbm_core::db::Db;
 use nbm_core::fetch::build_http_client;
 use nbm_core::model::Node;
@@ -105,6 +105,36 @@ impl AppState {
     /// successful save, open, or backup restore.
     pub async fn mark_clean(&self) {
         *self.inner.dirty.write().await = false;
+    }
+
+    /// Safety gate for destructive batches (AI apply, bulk tidy, save): snapshot
+    /// bookmarks HTML + DB + config into a new backup generation first.
+    ///
+    /// `Ok(None)` means there is nothing on disk to snapshot (no backup manager,
+    /// or one of the three files does not exist yet). An `Err` means the backup
+    /// itself failed, and the caller must abort rather than carry on unprotected.
+    pub fn backup_before(&self, html: &std::path::Path) -> Result<Option<PathBuf>, BackupError> {
+        let Some(bm) = self.inner.backup_mgr.as_ref() else { return Ok(None) };
+        let Some(db) = self.inner.db.as_ref() else { return Ok(None) };
+        let Some(cfg) = self.inner.config_ini_path.as_ref() else { return Ok(None) };
+        if !html.exists() || !db.path.exists() || !cfg.exists() {
+            return Ok(None);
+        }
+        let targets = BackupTargets {
+            bookmarks_html: html.to_path_buf(),
+            user_data_db: db.path.clone(),
+            config_ini: cfg.clone(),
+        };
+        bm.create_backup(&targets).map(Some)
+    }
+
+    /// [`AppState::backup_before`] for the file currently open.
+    pub async fn backup_before_batch(&self) -> Result<Option<PathBuf>, BackupError> {
+        let current = self.inner.current_file.read().await.clone();
+        match current {
+            Some(f) => self.backup_before(f.as_std_path()),
+            None => Ok(None),
+        }
     }
 
     pub async fn is_dirty(&self) -> bool {
