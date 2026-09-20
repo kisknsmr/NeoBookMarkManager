@@ -977,8 +977,16 @@ fn sanitize_destination(raw: &str) -> Option<String> {
 }
 
 /// Delete every folder in `source_paths` that is now empty (no bookmarks,
-/// recursively). Skips the root. Returns the count removed. Deepest paths are
+/// recursively), then the parents that emptying them left with no bookmarks
+/// anywhere below. Skips the root. Returns the count removed. Deepest paths are
 /// processed first so emptying a child can cascade up.
+///
+/// The parent step matters because a folder such as `OTHER/Music/Lyrics` only
+/// ever *held* bookmarks in its leaf: `OTHER` and `OTHER/Music` are never move
+/// sources themselves, so without walking up they were left behind as empty
+/// shells with meaningless names. Only ancestors of a folder that was really
+/// emptied are considered — an empty folder elsewhere is not this run's
+/// business.
 ///
 /// The caller is responsible for excluding folders that were also move
 /// destinations — since destinations are no longer forced under `_AI`, a
@@ -997,6 +1005,18 @@ fn prune_empty_source_folders(
             .unwrap_or(false);
         if is_empty && tree::delete_folder(root, p).is_ok() {
             pruned += 1;
+            // Now that `p` is gone, its parents may hold nothing at all.
+            let mut parent = p.rsplit_once('/').map(|(head, _)| head.to_string());
+            while let Some(path) = parent.filter(|q| !q.is_empty()) {
+                let empty = tree::find_folder(root, &path)
+                    .map(|f| f.count_bookmarks() == 0)
+                    .unwrap_or(false);
+                if !(empty && tree::delete_folder(root, &path).is_ok()) {
+                    break;
+                }
+                pruned += 1;
+                parent = path.rsplit_once('/').map(|(head, _)| head.to_string());
+            }
         }
     }
     pruned
@@ -1074,6 +1094,36 @@ mod tests {
         assert_eq!(prune_empty_source_folders(&mut root, &sources), 1);
         assert_eq!(count_children_named(&root, "Old"), 0, "empty source removed");
         assert_eq!(count_children_named(&root, "Keep"), 1, "non-empty source kept");
+    }
+
+    #[test]
+    fn prune_also_removes_parents_left_with_nothing() {
+        let mut root = Node::new_root();
+        // OTHER/Music/Lyrics held the only bookmark, now moved out. OTHER and
+        // OTHER/Music were never sources, but are empty shells now.
+        find_or_create_folder(&mut root, "OTHER/Music/Lyrics");
+        // OTHER/Keep still holds a bookmark, so OTHER itself must survive.
+        find_or_create_folder(&mut root, "OTHER/Keep");
+        tree::find_folder_mut(&mut root, "OTHER/Keep")
+            .unwrap()
+            .children
+            .push(Node::new_bookmark("y", "https://y.test/"));
+        // An unrelated empty folder must be left alone.
+        root.children.push(Node::new_folder("Unrelated"));
+
+        let sources: HashSet<String> = ["OTHER/Music/Lyrics".to_string()].into_iter().collect();
+        assert_eq!(prune_empty_source_folders(&mut root, &sources), 2);
+        assert!(tree::find_folder(&root, "OTHER/Music").is_none(), "empty parent removed");
+        assert!(tree::find_folder(&root, "OTHER/Keep").is_some());
+        assert!(tree::find_folder(&root, "OTHER").is_some(), "parent with content kept");
+        assert_eq!(count_children_named(&root, "Unrelated"), 1);
+
+        // And when the whole branch is empty, the top goes too.
+        let mut root = Node::new_root();
+        find_or_create_folder(&mut root, "OTHER/Music/Lyrics");
+        let sources: HashSet<String> = ["OTHER/Music/Lyrics".to_string()].into_iter().collect();
+        assert_eq!(prune_empty_source_folders(&mut root, &sources), 3);
+        assert_eq!(count_children_named(&root, "OTHER"), 0);
     }
 
     #[test]
