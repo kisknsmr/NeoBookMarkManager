@@ -15,7 +15,12 @@ struct GeminiResponse {
 
 #[derive(serde::Deserialize)]
 struct GeminiCandidate {
-    content: GeminiContent,
+    #[serde(default)]
+    content: Option<GeminiContent>,
+    /// "STOP" on a complete answer. "MAX_TOKENS" means the JSON was cut off
+    /// mid-way, which used to surface only as an unexplained parse failure.
+    #[serde(rename = "finishReason", default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -123,12 +128,44 @@ async fn post_generate(
     }
 
     let text = resp.text().await.map_err(|e| PostErr::Soft(e.to_string()))?;
-    Ok(serde_json::from_str::<GeminiResponse>(&text)
+    let Some(candidate) = serde_json::from_str::<GeminiResponse>(&text)
         .ok()
         .and_then(|g| g.candidates.into_iter().next())
-        .and_then(|c| c.content.parts.into_iter().next())
+    else {
+        // Not the shape we know — hand the body on and let the JSON step report.
+        return Ok(text);
+    };
+    if let Some(reason) = candidate.finish_reason.as_deref() {
+        if let Some(msg) = unfinished_reason(reason) {
+            return Err(PostErr::Fatal(msg));
+        }
+    }
+    Ok(candidate
+        .content
+        .and_then(|c| c.parts.into_iter().next())
         .map(|p| p.text)
         .unwrap_or(text))
+}
+
+/// Explain a `finishReason` that means the answer is not usable, or `None` when
+/// the model finished normally.
+///
+/// Retrying an identical request would be cut off at exactly the same place, so
+/// these are reported rather than retried — the caller hands the ids back and
+/// the UI offers to re-run just those.
+pub fn unfinished_reason(reason: &str) -> Option<String> {
+    match reason {
+        "STOP" | "" => None,
+        "MAX_TOKENS" => Some(
+            "応答が長すぎて途中で切れました（finishReason=MAX_TOKENS）。\
+             AI設定で「1回のリクエストに含める件数」を減らして再実行してください。"
+                .to_string(),
+        ),
+        "SAFETY" | "PROHIBITED_CONTENT" | "BLOCKLIST" | "SPII" => Some(format!(
+            "送信内容がGemini側の安全フィルタでブロックされました（finishReason={reason}）。"
+        )),
+        other => Some(format!("モデルが応答を完了できませんでした（finishReason={other}）。")),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -279,6 +316,16 @@ pub fn is_model_unavailable_error(msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_off_answer_is_reported_instead_of_parsed() {
+        assert!(unfinished_reason("STOP").is_none());
+        assert!(unfinished_reason("").is_none());
+        let msg = unfinished_reason("MAX_TOKENS").unwrap();
+        assert!(msg.contains("件数"), "{msg}");
+        assert!(unfinished_reason("SAFETY").unwrap().contains("ブロック"));
+        assert!(unfinished_reason("WHATEVER").unwrap().contains("WHATEVER"));
+    }
 
     #[test]
     fn quota_errors_are_recognised() {

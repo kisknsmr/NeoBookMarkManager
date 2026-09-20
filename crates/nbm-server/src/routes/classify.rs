@@ -43,6 +43,29 @@ fn bool_true() -> bool { true }
 /// Bounded so a large tree cannot crowd the bookmarks out of the prompt.
 const KNOWN_FOLDER_LIMIT: usize = 60;
 
+/// Total folder paths the vocabulary may hold. Larger than
+/// [`KNOWN_FOLDER_LIMIT`] so a full folder plan cannot use up the whole budget
+/// and leave no room for names the chunks settle on afterwards.
+const VOCAB_LIMIT: usize = KNOWN_FOLDER_LIMIT + ai_classify::PLAN_MAX_FOLDERS;
+
+/// Runs smaller than this are not worth the extra planning request.
+const PLAN_MIN_ITEMS: usize = 10;
+
+/// Whether to settle the folder structure before filing anything.
+///
+/// Either reason is enough. The run is split into chunks, so the chunks have to
+/// agree on folder names; or the model gets no folder vocabulary at all (the
+/// "rebuild from scratch" mode withholds the tree's own folders), in which case
+/// the plan is the only thing standing between a lone bookmark of a recognised
+/// kind — one price-comparison site, one guitar blog — and the catch-all.
+///
+/// The second case used to be missed: planning was gated on chunk count alone,
+/// so raising the default batch size to 150 quietly turned the whole two-stage
+/// design off for any library that fits in one request.
+fn wants_plan(items: usize, chunk_size: usize, has_vocabulary: bool) -> bool {
+    items >= PLAN_MIN_ITEMS && (items > chunk_size || !has_vocabulary)
+}
+
 /// Attempts per chunk before it is reported as failed.
 const CHUNK_ATTEMPTS: u32 = 3;
 
@@ -355,6 +378,13 @@ struct ClassifyRun {
     /// Grows as chunks complete, so later chunks reuse the folder names earlier
     /// ones settled on instead of inventing synonyms.
     known_folders: Vec<String>,
+    /// The folders that exist in the user's tree, regardless of mode. Not shown
+    /// to the model in fresh mode, but still needed to tell a real folder named
+    /// "General" from the model using that word to mean "I gave up".
+    tree_folders: Vec<String>,
+    /// Settled in `prepare` so the cost estimate and the run cannot disagree
+    /// about whether the planning request happens.
+    plan_wanted: bool,
     /// "選んだブックマークだけを見て、フォルダ構成を一から作り直す" mode —
     /// see the field doc on `ClassifyAiBody::fresh`.
     fresh: bool,
@@ -405,10 +435,12 @@ impl ClassifyRun {
         // Fresh mode ("選んだブックマークだけを見て、フォルダ構成を一から
         // 作り直す") withholds the existing tree's vocabulary entirely, so the
         // model never sees a "reuse this exactly" instruction for it.
-        let known_folders = if body.fresh { Vec::new() } else { known_folders(state).await };
+        let tree_folders = known_folders(state).await;
+        let known_folders = if body.fresh { Vec::new() } else { tree_folders.clone() };
         let priority_terms = settings::priority_terms(state);
         let chunk_size = body.chunk_size.max(1);
         let fresh = body.fresh;
+        let plan_wanted = wants_plan(items.len(), chunk_size, !known_folders.is_empty());
 
         let cost = ai_classify::estimate_cost(
             &items,
@@ -422,12 +454,13 @@ impl ClassifyRun {
         );
 
         let mut cost = cost;
-        if items.len() > chunk_size {
+        if plan_wanted {
             // The folder-planning request sends the whole list once more.
             let plan_prompt = ai_classify::build_plan_prompt(
                 &priority_terms,
                 body.custom_prompt.as_deref(),
                 &known_folders,
+                items.len(),
             );
             let extra = ai_classify::estimate_plan_input_tokens(
                 &items,
@@ -444,9 +477,10 @@ impl ClassifyRun {
         let log_dir = ai_log::dir_from_config_path(state.inner.config_ini_path.as_deref());
         ai_log::append(log_dir.as_deref(), &format!(
             "==== {} classify run start ==== model={} fresh={} items={} chunk_size={} chunks={} \
-             fields(title={} url={} tags={} description={}) known_folders={}",
+             fields(title={} url={} tags={} description={}) known_folders={} plan={}",
             ai_log::timestamp(), body.model, fresh, items.len(), chunk_size, cost.chunks,
             fields.title, fields.url, fields.tags, fields.description, known_folders.len(),
+            plan_wanted,
         ));
 
         Ok(Self {
@@ -460,6 +494,8 @@ impl ClassifyRun {
             chunk_size,
             items,
             known_folders,
+            tree_folders,
+            plan_wanted,
             fresh,
             use_paid_key: body.use_paid_key,
             cost,
@@ -555,6 +591,7 @@ impl ClassifyRun {
             &self.priority_terms,
             self.custom_prompt.as_deref(),
             &self.known_folders,
+            self.items.len(),
         );
         let fields = ai_classify::plan_fields(self.fields);
         let outcome = self
@@ -594,7 +631,7 @@ impl ClassifyRun {
     /// Fold newly invented folder names into the vocabulary for later chunks.
     fn learn_folders(&mut self, moves: &[AiMove]) {
         for m in moves {
-            if self.known_folders.len() < KNOWN_FOLDER_LIMIT
+            if self.known_folders.len() < VOCAB_LIMIT
                 && !self.known_folders.iter().any(|f| f == &m.folder)
             {
                 self.known_folders.push(m.folder.clone());
@@ -624,9 +661,10 @@ impl ClassifyRun {
         let batches: Vec<Vec<ai_classify::BookmarkItem>> =
             self.items.chunks(self.chunk_size).map(<[_]>::to_vec).collect();
 
-        // More than one chunk: settle the folder structure from the whole list
-        // first, so the result does not depend on where the chunks were cut.
-        if batches.len() > 1 {
+        // Settle the folder structure from the whole list first, so the result
+        // does not depend on where the chunks were cut — and so a single-request
+        // run has a vocabulary at all.
+        if self.plan_wanted {
             self.plan_folders().await;
         }
 
@@ -754,12 +792,18 @@ impl ClassifyRun {
             // Full reorganization: nothing gets dropped, undersized/unsorted
             // moves are redirected to the catch-all instead.
             ai_classify::enforce_min_group_size_or_catchall(
-                ai_classify::canonicalize_folder_names(ai_classify::redirect_unsorted_sentinels(all_moves)),
+                ai_classify::canonicalize_folder_names(ai_classify::redirect_unsorted_sentinels(
+                    all_moves,
+                    &self.tree_folders,
+                )),
                 &existing_folders,
             )
         } else {
             ai_classify::enforce_min_group_size(
-                ai_classify::canonicalize_folder_names(ai_classify::drop_unsorted_sentinels(all_moves)),
+                ai_classify::canonicalize_folder_names(ai_classify::drop_unsorted_sentinels(
+                    all_moves,
+                    &self.tree_folders,
+                )),
                 &existing_folders,
             )
         };
@@ -1066,6 +1110,19 @@ mod tests {
         let ai = tree::find_folder(&root, "_AI").unwrap();
         assert_eq!(count_children_named(ai, "Dev"), 1);
         assert_eq!(count_children_named(ai, "News"), 1);
+    }
+
+    #[test]
+    fn the_plan_runs_whenever_it_can_change_the_outcome() {
+        // One request, but no vocabulary (rebuild-from-scratch): the plan is the
+        // only thing that can keep a lone bookmark out of the catch-all.
+        assert!(wants_plan(131, 150, false));
+        // One request and the tree's folders already in hand: nothing to settle.
+        assert!(!wants_plan(131, 150, true));
+        // Split across requests: the chunks must agree on names either way.
+        assert!(wants_plan(400, 150, true));
+        // Too small to be worth an extra call.
+        assert!(!wants_plan(9, 150, false));
     }
 
     #[test]

@@ -110,20 +110,31 @@ impl AppState {
     /// Safety gate for destructive batches (AI apply, bulk tidy, save): snapshot
     /// bookmarks HTML + DB + config into a new backup generation first.
     ///
-    /// `Ok(None)` means there is nothing on disk to snapshot (no backup manager,
-    /// or one of the three files does not exist yet). An `Err` means the backup
-    /// itself failed, and the caller must abort rather than carry on unprotected.
+    /// `Ok(None)` means there was genuinely nothing to protect: no backup
+    /// manager configured (tests), or the bookmarks file has never been written
+    /// to disk. Anything else — a database that should be there and is not, a
+    /// copy that fails — is an `Err`, and the caller must abort rather than
+    /// carry on unprotected. This used to return `Ok(None)` for those too, so a
+    /// missing `config.ini` silently disabled the safety net for every batch.
     pub fn backup_before(&self, html: &std::path::Path) -> Result<Option<PathBuf>, BackupError> {
         let Some(bm) = self.inner.backup_mgr.as_ref() else { return Ok(None) };
-        let Some(db) = self.inner.db.as_ref() else { return Ok(None) };
-        let Some(cfg) = self.inner.config_ini_path.as_ref() else { return Ok(None) };
-        if !html.exists() || !db.path.exists() || !cfg.exists() {
+        if !html.exists() {
             return Ok(None);
+        }
+        let Some(db) = self.inner.db.as_ref() else {
+            return Err(BackupError::MissingTarget(
+                "user_data.db（データベースを開けていないため、バックアップを作成できません）".into(),
+            ));
+        };
+        if !db.path.exists() {
+            return Err(BackupError::MissingTarget(db.path.display().to_string()));
         }
         let targets = BackupTargets {
             bookmarks_html: html.to_path_buf(),
             user_data_db: db.path.clone(),
-            config_ini: cfg.clone(),
+            // Optional on purpose: an install with no config.ini still gets the
+            // bookmarks file and the database protected.
+            config_ini: self.inner.config_ini_path.clone().filter(|p| p.exists()),
         };
         bm.create_backup(&targets).map(Some)
     }

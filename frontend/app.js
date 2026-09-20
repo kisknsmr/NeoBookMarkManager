@@ -3599,12 +3599,19 @@ function aiFreshDefaultBaseFolder() {
 /// AI が返したフォルダ名を実際の移動先パスに変換する。
 /// 既存フォルダをそのまま指してきた場合はその場所へ（＝統合）、
 /// 新しく考えた名前なら作成先ベースの下に作る。
+/// AI が新しく作ってよい階層数（作成先ベースの下で数える）。
+/// サーバ側でも同じ上限で切っているが、ここでも切って二重に担保する。
+const AI_MAX_NEW_DEPTH = 2;
+
 function aiInitialTarget(folder, existingSet) {
   const clean = String(folder || "").replace(/^\/+|\/+$/g, "");
   const base = (_aiReview?.base ?? "_AI").replace(/^\/+|\/+$/g, "");
   if (!clean) return base ? `${base}/Unsorted` : "Unsorted";
+  // 既存フォルダをそのまま指してきた場合は、その場所へ統合する（深さは既存のまま）。
   if (existingSet.has(clean)) return clean;
-  return base ? `${base}/${clean}` : clean;
+  const parts = clean.split("/").filter(Boolean).slice(0, AI_MAX_NEW_DEPTH);
+  const path = parts.join("/");
+  return base ? `${base}/${path}` : path;
 }
 
 /// moves を取り込む。replace=true で総入れ替え（確定結果の反映）。

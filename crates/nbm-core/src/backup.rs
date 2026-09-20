@@ -1,7 +1,7 @@
 //! Generational backup with pre-restore safety snapshots.
 //!
 //! Mirrors `OriginalPythonCodes/core/UtilBackupManager.py`. Each generation is
-//! `backups/YYYYMMDD_HHMMSS/` containing the three target files atomically
+//! `backups/YYYYMMDD_HHMMSS/` containing the target files atomically
 //! moved from a temp dir. Before a restore, we dump the current state into
 //! `backups/_pre_restore_safety/YYYYMMDD_HHMMSS/`.
 
@@ -23,16 +23,19 @@ pub enum BackupError {
 pub struct BackupTargets {
     pub bookmarks_html: PathBuf,
     pub user_data_db: PathBuf,
-    pub config_ini: PathBuf,
+    /// `None` on an install that has no `config.ini`. A missing config must not
+    /// be a reason to protect nothing at all, so the other two are still
+    /// captured and the generation simply has two files instead of three.
+    pub config_ini: Option<PathBuf>,
 }
 
 impl BackupTargets {
-    fn paths(&self) -> [&Path; 3] {
-        [
-            self.bookmarks_html.as_path(),
-            self.user_data_db.as_path(),
-            self.config_ini.as_path(),
-        ]
+    fn paths(&self) -> Vec<&Path> {
+        let mut paths = vec![self.bookmarks_html.as_path(), self.user_data_db.as_path()];
+        if let Some(cfg) = &self.config_ini {
+            paths.push(cfg.as_path());
+        }
+        paths
     }
 }
 

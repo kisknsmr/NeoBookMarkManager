@@ -309,7 +309,9 @@ pub fn build_prompt(
              `/`-separated paths — reuse the full path when you reuse one:\n\
              {list}\n\
              - If a bookmark fits one of these, you MUST reuse the entry EXACTLY as written.\n\
-             - Invent a new folder name only when none of the above is a reasonable fit.\n\
+             - Invent a new folder name only when none of the above is a reasonable fit, AND at\n\
+               least 2 bookmarks in THIS batch need it. For a single bookmark, always pick the\n\
+               closest listed entry instead.\n\
              - NEVER create a near-duplicate of a listed entry (e.g. \"Dev Tools\" or\n\
                \"Programming\" when \"Development\" is already listed).\n\
              - A listed entry may be a two-level \"Parent/Child\" path. You MAY add a new\n\
@@ -350,11 +352,20 @@ pub fn plan_fields(fields: FieldSelection) -> FieldSelection {
     FieldSelection { title: fields.title, url: false, tags: fields.tags, description: false }
 }
 
+/// Folder count a list of this size deserves. Left to itself the model answers
+/// with roughly one folder per bookmark (97 distinct folders for 131 bookmarks
+/// in a real run), which is not an organization at all.
+pub fn plan_target_folders(item_count: usize) -> usize {
+    (item_count / 8).clamp(5, PLAN_MAX_FOLDERS)
+}
+
 pub fn build_plan_prompt(
     priority_terms: &[String],
     custom_prompt: Option<&str>,
     existing_folders: &[String],
+    item_count: usize,
 ) -> String {
+    let target = plan_target_folders(item_count);
     let terms = priority_terms
         .iter()
         .map(|t| format!("\"{t}\""))
@@ -379,7 +390,8 @@ sizeable children. Never nest deeper.\n\
 - NEVER use these names: \"Misc\", \"Others\", \"Other\", \"Links\", \"Work\", \"General\", \
 \"Ungrouped\", \"Unsorted\", \"Uncategorized\", \"未分類\", \"その他\".\n\
 - Priority terms, if any bookmark matches one, MUST be folders (exact spelling, case-sensitive): [{terms}]\n\
-- At most {PLAN_MAX_FOLDERS} folders.\n"
+- Aim for about {target} folders in total, and never more than {PLAN_MAX_FOLDERS}. Broad enough \
+that each folder earns its place; a folder per bookmark is not an organization.\n"
     );
     if !existing_folders.is_empty() {
         let list = existing_folders.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n");
@@ -512,6 +524,28 @@ fn is_unsorted_sentinel(folder: &str) -> bool {
     )
 }
 
+/// Sentinel names that are only junk because the prompt forbids them. Unlike
+/// "unsorted" or "その他" they are perfectly ordinary folder names, so when the
+/// user's tree really has one, a move there is a destination rather than the
+/// model giving up.
+fn is_borrowed_word(folder: &str) -> bool {
+    let leaf = folder.rsplit('/').next().unwrap_or(folder);
+    matches!(folder_key(leaf).as_str(), "general" | "links")
+}
+
+/// [`is_unsorted_sentinel`], except a borrowed word that names a folder the user
+/// actually has is left alone.
+fn is_unsorted_sentinel_unless_real(folder: &str, existing: &[String]) -> bool {
+    if !is_unsorted_sentinel(folder) {
+        return false;
+    }
+    if !is_borrowed_word(folder) {
+        return true;
+    }
+    let key = folder_key(folder);
+    !existing.iter().any(|f| folder_key(f) == key)
+}
+
 /// Drop moves whose destination is a "could not classify" marker.
 ///
 /// The prompt asks the model to leave unclassifiable bookmarks as "ungrouped",
@@ -519,17 +553,23 @@ fn is_unsorted_sentinel(folder: &str) -> bool {
 /// ordinary folder name, so a run would end up proposing a large `ungrouped`
 /// folder. A bookmark the model could not place should simply get no
 /// suggestion.
-pub fn drop_unsorted_sentinels(moves: Vec<AiMove>) -> Vec<AiMove> {
-    moves.into_iter().filter(|m| !is_unsorted_sentinel(&m.folder)).collect()
+pub fn drop_unsorted_sentinels(moves: Vec<AiMove>, existing_folders: &[String]) -> Vec<AiMove> {
+    moves
+        .into_iter()
+        .filter(|m| !is_unsorted_sentinel_unless_real(&m.folder, existing_folders))
+        .collect()
 }
 
 /// Fresh-mode counterpart of [`drop_unsorted_sentinels`]: a "could not
 /// classify" marker is redirected to [`FRESH_CATCHALL`] instead of dropped, so
 /// the bookmark still ends up somewhere rather than being silently left in
 /// its original location.
-pub fn redirect_unsorted_sentinels(mut moves: Vec<AiMove>) -> Vec<AiMove> {
+pub fn redirect_unsorted_sentinels(
+    mut moves: Vec<AiMove>,
+    existing_folders: &[String],
+) -> Vec<AiMove> {
     for m in &mut moves {
-        if is_unsorted_sentinel(&m.folder) {
+        if is_unsorted_sentinel_unless_real(&m.folder, existing_folders) {
             m.folder = FRESH_CATCHALL.to_string();
         }
     }
@@ -711,6 +751,31 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_the_user_really_has_is_not_treated_as_giving_up() {
+        let moves = vec![mv("a", "General"), mv("b", "Unsorted"), mv("c", "Links")];
+        // Nothing like it in the tree: both are the model giving up.
+        assert_eq!(drop_unsorted_sentinels(moves.clone(), &[]).len(), 0);
+        // "General" exists for real, so that move stands; "Unsorted" never does.
+        let kept = drop_unsorted_sentinels(moves.clone(), &["General".to_string()]);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].folder, "General");
+        // The catch-all family is never rescued, even if such a folder exists.
+        let out = redirect_unsorted_sentinels(moves, &["その他".to_string(), "General".into()]);
+        let folder = |id: &str| out.iter().find(|m| m.bookmark_id == id).unwrap().folder.clone();
+        assert_eq!(folder("a"), "General");
+        assert_eq!(folder("b"), FRESH_CATCHALL);
+    }
+
+    #[test]
+    fn the_plan_asks_for_a_sane_number_of_folders() {
+        assert_eq!(plan_target_folders(131), 16);
+        assert_eq!(plan_target_folders(8), 5, "tiny lists still get a floor");
+        assert_eq!(plan_target_folders(100_000), PLAN_MAX_FOLDERS);
+        let p = build_plan_prompt(&[], None, &[], 131);
+        assert!(p.contains("about 16 folders"), "{p}");
+    }
+
+    #[test]
     fn folders_the_ai_invents_never_go_past_two_levels() {
         let moves = vec![
             mv("a", "Guitar/Gear/Amps"),
@@ -805,7 +870,7 @@ mod tests {
             mv("e", "その他"),
             mv("f", "Development"),
         ];
-        let result = drop_unsorted_sentinels(moves);
+        let result = drop_unsorted_sentinels(moves, &[]);
         assert_eq!(result.len(), 1, "{result:?}");
         assert_eq!(result[0].folder, "Development");
     }
@@ -813,7 +878,7 @@ mod tests {
     #[test]
     fn real_folder_names_survive_sentinel_filter() {
         let moves = vec![mv("a", "Other Tools"), mv("b", "General Aviation"), mv("c", "Linkedin")];
-        assert_eq!(drop_unsorted_sentinels(moves).len(), 3);
+        assert_eq!(drop_unsorted_sentinels(moves, &[]).len(), 3);
     }
 
     fn sample_items(n: usize) -> Vec<BookmarkItem> {
@@ -895,12 +960,12 @@ mod tests {
 
     #[test]
     fn plan_prompt_states_the_rules_and_reuses_existing_folders() {
-        let p = build_plan_prompt(&["Python".into()], None, &["Development".into()]);
+        let p = build_plan_prompt(&["Python".into()], None, &["Development".into()], 40);
         assert!(p.contains("COMPLETE list"));
         assert!(p.contains("\"Python\""));
         assert!(p.contains("- Development"));
         assert!(p.contains("{\"folders\""));
-        let none = build_plan_prompt(&[], Some("focus on work"), &[]);
+        let none = build_plan_prompt(&[], Some("focus on work"), &[], 40);
         assert!(none.starts_with("USER OVERRIDE INSTRUCTIONS:
 focus on work"));
         assert!(!none.contains("ALREADY EXIST"));
@@ -943,7 +1008,7 @@ focus on work"));
             mv("b", "_AI/unsorted"),
             mv("c", "Development"),
         ];
-        let result = redirect_unsorted_sentinels(moves);
+        let result = redirect_unsorted_sentinels(moves, &[]);
         assert_eq!(result.len(), 3, "no bookmark should be dropped: {result:?}");
         assert_eq!(result[0].folder, FRESH_CATCHALL);
         assert_eq!(result[1].folder, FRESH_CATCHALL);

@@ -81,11 +81,10 @@ async fn restore_from(state: &AppState, dir: &std::path::Path) -> Result<(), Api
 async fn current_targets(state: &AppState) -> Option<BackupTargets> {
     let bookmarks = state.inner.current_file.read().await.clone()?;
     let db = state.inner.db.as_ref()?.path.clone();
-    let cfg = state.inner.config_ini_path.clone()?;
     Some(BackupTargets {
         bookmarks_html: bookmarks.as_std_path().to_path_buf(),
         user_data_db: db,
-        config_ini: cfg,
+        config_ini: state.inner.config_ini_path.clone().filter(|p| p.exists()),
     })
 }
 
