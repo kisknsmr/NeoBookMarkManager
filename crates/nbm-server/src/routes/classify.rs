@@ -33,7 +33,10 @@ pub fn routes() -> Router<AppState> {
         .route("/classify/ai-apply", post(classify_ai_apply))
 }
 
-fn default_chunk_size() -> usize { 40 }
+// Larger requests let the model see the whole picture, so folder names stay
+// consistent and one-off bookmarks find an existing folder instead of falling
+// into a catch-all. Output is ~40-120 tokens per bookmark, well inside limits.
+fn default_chunk_size() -> usize { 150 }
 fn bool_true() -> bool { true }
 
 /// How many existing folder paths to show the model as reusable vocabulary.
@@ -725,6 +728,12 @@ struct ClassifyApplyBody {
     /// unrelated remaining contents swept away.
     #[serde(default)]
     archive_scope_paths: Vec<String>,
+    /// Where those leftovers go — the same catch-all folder ("その他") the AI's
+    /// own unclassifiable group lands in, so "unsorted" lives in one place.
+    /// Without it nothing is swept, and a scope folder that still has contents
+    /// is simply kept.
+    #[serde(default)]
+    leftover_folder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -734,7 +743,7 @@ struct ClassifyApplyResp {
     skipped: usize,
     /// Number of now-empty source folders removed (0 when toggle off).
     pruned: usize,
-    /// Bookmarks swept into the timestamped Archive folder (0 unless a scope
+    /// Bookmarks swept into the timestamped leftover folder (0 unless a scope
     /// folder in `archive_scope_paths` still had leftovers).
     archived: usize,
 }
@@ -789,21 +798,16 @@ async fn classify_ai_apply(
                 let scope: std::collections::HashSet<&String> =
                     body.archive_scope_paths.iter().collect();
                 let mut archived = 0usize;
-                let mut archive_folder: Option<String> = None;
+                let leftover_path = body.leftover_folder.as_deref().and_then(sanitize_destination);
                 for path in prunable.iter().filter(|p| scope.contains(p)) {
+                    let Some(archive_path) = leftover_path.clone() else { break };
                     let Some(folder) = tree::find_folder(root, path) else { continue };
                     let mut leftover_ids = Vec::new();
                     collect_bookmark_ids_recursive(folder, &mut leftover_ids);
                     if leftover_ids.is_empty() {
                         continue;
                     }
-                    let archive_path = archive_folder
-                        .get_or_insert_with(|| {
-                            let name = format!("{} Archive", archive_timestamp());
-                            find_or_create_folder(root, &name);
-                            name
-                        })
-                        .clone();
+                    find_or_create_folder(root, &archive_path);
                     for id in &leftover_ids {
                         if tree::move_bookmark(root, id, &archive_path).is_ok() {
                             archived += 1;
@@ -824,7 +828,7 @@ async fn classify_ai_apply(
 }
 
 /// Every bookmark id under `node`, recursing into sub-folders. Used to sweep
-/// a to-be-deleted scope folder's leftovers into the Archive folder before
+/// a to-be-deleted scope folder's leftovers into the leftover folder before
 /// pruning it.
 fn collect_bookmark_ids_recursive(node: &nbm_core::Node, out: &mut Vec<String>) {
     for child in &node.children {
@@ -834,44 +838,6 @@ fn collect_bookmark_ids_recursive(node: &nbm_core::Node, out: &mut Vec<String>) 
             out.push(child.bookmark_id.clone());
         }
     }
-}
-
-/// UTC "YYYYMMDD HHMMSS" for the Archive folder name. Hand-rolled (no chrono
-/// dependency) to match `nbm_core::db`'s epoch-seconds-only convention
-/// elsewhere in this codebase, just formatted as a calendar date instead of
-/// a raw integer.
-fn archive_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
-    format_timestamp(secs)
-}
-
-fn format_timestamp(epoch_secs: i64) -> String {
-    let days = epoch_secs.div_euclid(86400);
-    let time_of_day = epoch_secs.rem_euclid(86400);
-    let (y, m, d) = civil_from_days(days);
-    let hh = time_of_day / 3600;
-    let mm = (time_of_day % 3600) / 60;
-    let ss = time_of_day % 60;
-    format!("{y:04}{m:02}{d:02} {hh:02}{mm:02}{ss:02}")
-}
-
-/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 (UTC) -> (year,
-/// month, day). http://howardhinnant.github.io/date_algorithms.html
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 }.div_euclid(146097);
-    let doe = (z - era * 146097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 /// Normalise a destination path from the review UI, or `None` when it names no
@@ -1035,20 +1001,6 @@ mod tests {
     }
 
     #[test]
-    fn civil_from_days_matches_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        // 1700000000s (a widely-cited reference epoch value) is 2023-11-14 UTC.
-        assert_eq!(civil_from_days(1_700_000_000 / 86400), (2023, 11, 14));
-        assert_eq!(civil_from_days(365), (1971, 1, 1));
-    }
-
-    #[test]
-    fn format_timestamp_renders_date_and_time() {
-        // 1700000000 = 2023-11-14 22:13:20 UTC.
-        assert_eq!(format_timestamp(1_700_000_000), "20231114 221320");
-    }
-
-    #[test]
     fn collect_bookmark_ids_recurses_into_subfolders() {
         let mut root = Node::new_root();
         let mut folder = Node::new_folder("Scope");
@@ -1105,6 +1057,7 @@ mod tests {
             ],
             prune_empty_source: true,
             archive_scope_paths: vec!["Untidy".into()],
+            leftover_folder: Some("Misc".into()),
         };
 
         let mut applied = 0usize;
@@ -1125,7 +1078,6 @@ mod tests {
         let prunable: HashSet<String> = sources.difference(&targets).cloned().collect();
         let scope: HashSet<&String> = body.archive_scope_paths.iter().collect();
         let mut archived = 0usize;
-        let mut archive_folder: Option<String> = None;
         for path in prunable.iter().filter(|p| scope.contains(p)) {
             let folder = tree::find_folder(&root, path).unwrap();
             let mut leftover_ids = Vec::new();
@@ -1133,13 +1085,8 @@ mod tests {
             if leftover_ids.is_empty() {
                 continue;
             }
-            let archive_path = archive_folder
-                .get_or_insert_with(|| {
-                    let name = format!("{} Archive", archive_timestamp());
-                    find_or_create_folder(&mut root, &name);
-                    name
-                })
-                .clone();
+            let archive_path = "Misc".to_string();
+            find_or_create_folder(&mut root, &archive_path);
             for id in &leftover_ids {
                 if tree::move_bookmark(&mut root, id, &archive_path).is_ok() {
                     archived += 1;
@@ -1162,6 +1109,6 @@ mod tests {
             "the leftover bookmark must still exist somewhere (archived, not deleted)"
         );
         let (archive_path, _) = tree::locate_bookmark(&root, "left").unwrap();
-        assert!(archive_path.ends_with("Archive"), "got {archive_path:?}");
+        assert_eq!(archive_path, "Misc");
     }
 }

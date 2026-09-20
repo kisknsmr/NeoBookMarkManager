@@ -942,3 +942,17 @@ mark.search-hl {
   border-radius: 2px;
   padding: 0 1px;
 }
+
+/* ── 情報を補う: 取得状況ダッシュボード ───────────────────── */
+.enrich-dash {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; margin-bottom: 8px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+}
+.enrich-row { display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
+.enrich-name { color: var(--text-mid); }
+.enrich-bar { height: 6px; border-radius: 999px; background: var(--surface-3, #2a2a2a); overflow: hidden; }
+.enrich-bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+.enrich-row.done .enrich-bar > i { background: #7bd88f; }
+.enrich-n { color: var(--text-hi); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+.enrich-dash.stale .enrich-n { color: var(--text-lo); }

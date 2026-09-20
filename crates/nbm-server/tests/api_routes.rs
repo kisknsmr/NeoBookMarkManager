@@ -28,6 +28,7 @@ fn endpoints() -> Vec<(Method, &'static str, Option<serde_json::Value>)> {
         (Method::GET, "/search", None),
         (Method::GET, "/meta/some-id", None),
         (Method::GET, "/tags/some-id", None),
+        (Method::POST, "/enrich/status", Some(ids.clone())),
         (Method::POST, "/tags/update", Some(json!({ "bookmark_id": "x", "tags": [] }))),
         // Edit
         (Method::POST, "/edit/undo", Some(json!({}))),

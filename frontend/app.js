@@ -613,6 +613,48 @@ function updateEnablement() {
 function refreshContext() {
   renderScopeBar();
   updateEnablement();
+  scheduleEnrichStatus();
+}
+
+// --- 「情報を補う」ダッシュボード -------------------------------------------
+// 操作の対象(scope)に対して、タイトル・説明文・タグがどれだけ埋まっているか。
+let _enrichTimer = null;
+let _enrichSeq = 0;
+let _enrichNeedFetch = null;   // 直近のステータスで「未取得あり」のID
+
+function scheduleEnrichStatus() {
+  clearTimeout(_enrichTimer);
+  _enrichTimer = setTimeout(refreshEnrichStatus, 250);
+}
+
+async function refreshEnrichStatus() {
+  const dash = document.getElementById("enrichDash");
+  if (!dash || !API_BASE) return;
+  const ids = currentScope().ids;
+  const seq = ++_enrichSeq;
+  let st = null;
+  if (ids.length) {
+    try {
+      st = await api("/enrich/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookmark_ids: ids }),
+      });
+    } catch (_) {}
+  }
+  if (seq !== _enrichSeq) return;   // 新しい問い合わせが走っていたら捨てる
+  _enrichNeedFetch = st ? st.need_fetch_ids : null;
+  dash.classList.toggle("stale", !st);
+  const rows = { title: st?.with_title, desc: st?.with_description, tags: st?.with_tags };
+  for (const [k, n] of Object.entries(rows)) {
+    const row = dash.querySelector(`[data-k="${k}"]`);
+    if (!row) continue;
+    const total = st?.total || 0;
+    const pct = st && total ? Math.round((n / total) * 100) : 0;
+    row.querySelector(".enrich-bar > i").style.width = `${pct}%`;
+    row.querySelector(".enrich-n").textContent = st ? `${n.toLocaleString()} / ${total.toLocaleString()}（${pct}%）` : "—";
+    row.classList.toggle("done", !!st && total > 0 && n >= total);
+  }
 }
 
 document.addEventListener("click", (e) => {
@@ -1346,6 +1388,7 @@ function handleCommand(cmd) {
     case "network.proxy-check":  return cmdNetworkProxyCheck();
     case "network.link-check":   return cmdLinkCheck();
     case "autotag.offline":      return cmdAutotagOffline();
+    case "enrich.all":           return cmdEnrichAll();
     case "ai.classify":
     case "classify.ai":          return cmdAiClassify();
     case "ai.settings":          return cmdAiSettings();
@@ -1788,6 +1831,32 @@ async function cmdNetworkFetchPreview() {
   if (!ids) return;
   await runSseCommand("/network/fetch-preview", { bookmark_ids: ids }, "説明文取得");
   toast("説明文の取得が完了しました");
+}
+
+// タイトル・説明文（Webから）→ タグ（ローカル）を1ボタンで順に実行する。
+// 取得は既に埋まっている項目を飛ばし、未取得のものだけに通信する。
+async function cmdEnrichAll() {
+  const sc = currentScope();
+  if (!sc.ids.length) return toast("対象のブックマークがありません", "error");
+  await refreshEnrichStatus();   // 直前の状態で判定する
+  const need = _enrichNeedFetch ? new Set(_enrichNeedFetch) : null;
+  const fetchIds = need ? sc.ids.filter((id) => need.has(id)) : sc.ids;
+
+  const ok = await confirmDialog(
+    `次を順に実行します。\n\n` +
+    `1. タイトル・説明文をWebから取得（未取得の ${fetchIds.length} 件のみ。各URLにアクセスします）\n` +
+    `2. タイトル・説明文・URLからタグを付ける（${sc.ids.length} 件、ローカル処理）\n\n` +
+    `対象: ${sc.label}`,
+    { okLabel: "実行", cancelLabel: "キャンセル" }
+  );
+  if (!ok) return;
+
+  if (fetchIds.length) {
+    await runSseCommand("/network/fetch-preview", { bookmark_ids: fetchIds }, "タイトル・説明文取得");
+  }
+  await runSseCommand("/autotag/local", { bookmark_ids: sc.ids }, "自動タグ付け");
+  await refreshEnrichStatus();
+  toast("タイトル・説明文・タグの取得が完了しました");
 }
 
 async function cmdNetworkProxyCheck() {
@@ -3063,7 +3132,7 @@ async function cmdAiClassify() {
 
   // フォルダをスコープに実行した場合のみ、そのフォルダを「このrunの対象」
   // として記録する。適用時、ここに残った未選択・未提案のブックマークは
-  // Archiveへ寄せて元フォルダごと削除する対象になる。選択中/全体スコープ
+  // 「その他」へ寄せて元フォルダごと削除する対象になる。選択中/全体スコープ
   // では「まとめて空にすべき単一フォルダ」が存在しないため対象にしない。
   opts.archiveScopePaths = scope.kind === "folder" && scope.folderPath ? [scope.folderPath] : [];
 
@@ -3210,10 +3279,10 @@ async function openAiClassifyOptions(count, ids) {
           <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">1回のリクエストに含める件数</div>
             <div style="display:flex;align-items:center;gap:10px">
-              <input id="aico-chunk" type="range" min="10" max="100" step="5" value="40" style="flex:1;accent-color:${C.accent}">
+              <input id="aico-chunk" type="range" min="10" max="300" step="10" value="150" style="flex:1;accent-color:${C.accent}">
               <span id="aico-chunk-n" style="color:${C.hi};font-size:12px;min-width:96px;text-align:right"></span>
             </div>
-            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5">大きいほどAPI呼び出し回数とプロンプト再送分が減りますが、1回あたりの精度は落ちやすくなります。</div>
+            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5">大きいほどAIが全体を見て分類でき、フォルダ名の一貫性が上がり、API呼び出しとプロンプト再送も減ります（既定150件）。大きすぎると1回の失敗の影響が増え、応答が長くなって途中で切れることがあります。</div>
           </div>
           <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">追加指示（任意）</div>
@@ -3610,13 +3679,13 @@ function openAiReviewModal(total, opts) {
         <button id="ai-retry-btn" style="background:transparent;border:1px solid ${C.red};border-radius:5px;color:${C.red};font-size:11px;padding:5px 12px;cursor:pointer;white-space:nowrap;font-family:inherit">失敗分だけ再実行</button>
       </div>
 
-      <div id="ai-review-list" style="flex:1 1 0;overflow-y:auto;padding:10px 20px;display:none;flex-direction:column;gap:6px"></div>
+      <div id="ai-review-list" style="flex:1 1 0;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:10px 20px;display:none;flex-direction:column;gap:6px"></div>
 
       <div id="ai-modal-actions" style="display:none;padding:11px 20px;border-top:1px solid ${C.border};flex:0 0 auto;align-items:center;justify-content:space-between;gap:12px">
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:${C.mid};font-size:11px"
-          title="フォルダを対象に実行した場合、そのフォルダに取り残された(未選択・AIが提案しなかった)ブックマークは「<日時> Archive」フォルダへ移動したうえで、元フォルダを削除します。">
+          title="フォルダを対象に実行した場合、そのフォルダに取り残された(未選択・AIが提案しなかった)ブックマークは「その他」フォルダへ移動したうえで、元フォルダを削除します。">
           <input type="checkbox" id="ai-prune-empty" style="cursor:pointer;accent-color:${C.accent};margin:0">
-          元フォルダを整理して削除(取り残しはArchiveへ)
+          元フォルダを整理して削除(取り残しは「その他」へ)
         </label>
         <div style="display:flex;align-items:center;gap:10px">
           <span id="ai-selected-count" style="color:${C.mid};font-size:11px"></span>
@@ -3625,6 +3694,7 @@ function openAiReviewModal(total, opts) {
         </div>
       </div>
 
+      <style>#ai-review-list > * { flex: 0 0 auto; }</style>
       <datalist id="ai-folder-list"></datalist>
     </div>`;
   document.body.appendChild(div);
@@ -4063,6 +4133,8 @@ async function applyAiReview() {
         moves,
         prune_empty_source: pruneEmpty,
         archive_scope_paths: pruneEmpty ? (_aiReview.opts?.archiveScopePaths || []) : [],
+        // 取り残し(未選択・AI未提案)は、AI自身の分類不能グループと同じ「その他」へ
+        leftover_folder: `${_aiReview.base ? _aiReview.base + "/" : ""}その他`,
       }),
     });
     closeAiReviewModal();
@@ -4072,7 +4144,7 @@ async function applyAiReview() {
       updateUndoRedoButtons(h.undo_count, h.redo_count);
     } catch (_) {}
     const prunedMsg = res.pruned ? `、空フォルダ ${res.pruned} 件削除` : "";
-    const archivedMsg = res.archived ? `、取り残し ${res.archived} 件をArchiveへ` : "";
+    const archivedMsg = res.archived ? `、取り残し ${res.archived} 件を「その他」へ` : "";
     toast(`${res.applied} 件移動しました (スキップ: ${res.skipped})${prunedMsg}${archivedMsg} — Ctrl+Z で取り消せます`);
   } catch (e) {
     toast(`適用失敗: ${e.message}`, "error");

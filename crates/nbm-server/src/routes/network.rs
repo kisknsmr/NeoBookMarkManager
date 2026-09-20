@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
         .route("/network/fix-titles", post(network_fix_titles))
         .route("/network/fetch-preview", post(network_fetch_preview))
         .route("/network/link-check", post(network_link_check))
+        .route("/enrich/status", post(enrich_status))
         .route("/network/proxy-check", get(network_proxy_check))
 }
 
@@ -54,6 +55,57 @@ impl NetworkProgress {
             description: None,
         }
     }
+}
+
+// --- Enrichment status ------------------------------------------------------
+
+#[derive(Serialize)]
+struct EnrichStatus {
+    total: usize,
+    /// Has a title in the tree, or one fetched from the web (kept in the DB).
+    with_title: usize,
+    with_description: usize,
+    with_tags: usize,
+    /// Ids that still lack a title or a description, i.e. worth fetching.
+    need_fetch_ids: Vec<String>,
+}
+
+/// How much of the given bookmarks is already filled in. Feeds the dashboard
+/// above the "fill in info" buttons and lets the one-button run skip work that
+/// is already done.
+async fn enrich_status(
+    State(state): State<AppState>,
+    Json(body): Json<NetworkBatchBody>,
+) -> Json<EnrichStatus> {
+    let items = state.resolve_bookmarks(&body.bookmark_ids).await;
+    let ids: Vec<String> = items.iter().map(|b| b.id.clone()).collect();
+    let (fetched, tagged) = match &state.inner.db {
+        Some(db) => (
+            db.get_meta_bulk(&ids).unwrap_or_default(),
+            db.get_all_tags_map().unwrap_or_default(),
+        ),
+        None => Default::default(),
+    };
+    let mut st = EnrichStatus {
+        total: items.len(),
+        with_title: 0,
+        with_description: 0,
+        with_tags: 0,
+        need_fetch_ids: Vec::new(),
+    };
+    for bm in &items {
+        let has_title = !bm.title.trim().is_empty()
+            || fetched.get(&bm.id).is_some_and(|t| !t.trim().is_empty());
+        let has_desc = !bm.description.trim().is_empty();
+        let has_tags = tagged.get(&bm.id).is_some_and(|t| !t.trim().is_empty());
+        st.with_title += usize::from(has_title);
+        st.with_description += usize::from(has_desc);
+        st.with_tags += usize::from(has_tags);
+        if !has_title || !has_desc {
+            st.need_fetch_ids.push(bm.id.clone());
+        }
+    }
+    Json(st)
 }
 
 /// What a metadata fetch does with what it finds. Both endpoints fetch exactly

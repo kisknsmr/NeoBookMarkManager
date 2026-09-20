@@ -23,8 +23,8 @@ priority_terms = Python, Power BI, SharePoint, AWS
 [AI]
 # モデル名（google-generativeai）
 model = gemini-2.5-flash-lite
-# チャンクサイズ（30〜50推奨）
-chunk_size = 40
+# 1回のリクエストに含める件数（既定150。大きいほど全体を見て分類できる）
+chunk_size = 150
 # 送信前サニタイズ（クエリ除去）: true/false
 sanitize_urls = true
 # 上の api_key が無料枠かどうかの自己申告: true/false（未設定なら「未申告」）
