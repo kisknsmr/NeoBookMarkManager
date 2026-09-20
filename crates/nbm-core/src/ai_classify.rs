@@ -331,6 +331,102 @@ pub fn build_prompt(
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1: plan the folder structure for the whole list
+// ---------------------------------------------------------------------------
+//
+// Filing bookmarks in independent chunks means each chunk only sees its own
+// slice: a lone price-comparison site in an early chunk has no "Shopping"
+// folder to go to yet, so it lands in the catch-all. Deciding the folders once,
+// from the complete list, and then filing every chunk against that fixed set
+// makes the result independent of where the chunk boundaries fall.
+
+/// Most folders the planning stage may propose.
+pub const PLAN_MAX_FOLDERS: usize = 60;
+
+/// Fields for the planning payload: only what says what a bookmark *is*. The
+/// full text is not needed to pick folder names, and the whole library goes in
+/// one request.
+pub fn plan_fields(fields: FieldSelection) -> FieldSelection {
+    FieldSelection { title: fields.title, url: false, tags: fields.tags, description: false }
+}
+
+pub fn build_plan_prompt(
+    priority_terms: &[String],
+    custom_prompt: Option<&str>,
+    existing_folders: &[String],
+) -> String {
+    let terms = priority_terms
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut prompt = format!(
+        "You are an expert Librarian. Below is the COMPLETE list of bookmarks that will be \
+organized. Do NOT file them. Design only the FOLDER STRUCTURE that would organize this whole list.\n\
+\n\
+INPUT: {{\"bookmarks\": [...]}}; each has `index` and `domain` and MAY have `title` and `tags`.\n\
+Judge a site by its domain and title, not by the wording of one page.\n\
+\n\
+RULES:\n\
+- Every folder must be able to hold at least 2 of these bookmarks.\n\
+- Make sure every recurring kind of site has a home, so that a lone bookmark of that kind can still \
+be filed into it later. Example: price-comparison and shopping sites belong in one shopping folder, \
+not in a catch-all.\n\
+- Specific over general (\"Cloud Infrastructure\" over \"Tech\"), concise names (\"Python\", not \
+\"Python Resources\").\n\
+- Up to two levels: a single name or \"Parent/Child\". Use a parent only when it has two or more \
+sizeable children. Never nest deeper.\n\
+- NEVER use these names: \"Misc\", \"Others\", \"Other\", \"Links\", \"Work\", \"General\", \
+\"Ungrouped\", \"Unsorted\", \"Uncategorized\", \"未分類\", \"その他\".\n\
+- Priority terms, if any bookmark matches one, MUST be folders (exact spelling, case-sensitive): [{terms}]\n\
+- At most {PLAN_MAX_FOLDERS} folders.\n"
+    );
+    if !existing_folders.is_empty() {
+        let list = existing_folders.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n");
+        prompt.push_str(&format!(
+            "\nFOLDERS THAT ALREADY EXIST (reuse them exactly as written instead of inventing near-duplicates; \
+you may add new ones):\n{list}\n"
+        ));
+    }
+    prompt.push_str("\nOUTPUT VALID JSON ONLY, no code fences: {\"folders\": [\"Name\", \"Parent/Child\"]}");
+    if let Some(custom) = custom_prompt {
+        prompt = format!("USER OVERRIDE INSTRUCTIONS:\n{custom}\n\n{prompt}");
+    }
+    prompt
+}
+
+/// Clean the model's folder plan: sanitize paths, drop catch-all names and
+/// duplicates (including spelling variants), cap the count.
+pub fn clean_plan(folders: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw in folders {
+        let f = sanitize_folder_path(&raw);
+        if f.is_empty() || is_unsorted_sentinel(&f) {
+            continue;
+        }
+        if seen.insert(folder_key(&f)) {
+            out.push(f);
+        }
+        if out.len() >= PLAN_MAX_FOLDERS {
+            break;
+        }
+    }
+    out
+}
+
+/// Tokens the planning request adds on top of the per-chunk requests.
+pub fn estimate_plan_input_tokens(
+    items: &[BookmarkItem],
+    prompt_len: usize,
+    fields: FieldSelection,
+    sanitize_urls: bool,
+) -> usize {
+    let tok = |n: usize| n.div_ceil(4).max(1);
+    tok(prompt_len) + tok(build_batch_payload(items, plan_fields(fields), sanitize_urls).len())
+}
+
+// ---------------------------------------------------------------------------
 // Folder-name canonicalization
 // ---------------------------------------------------------------------------
 
@@ -649,6 +745,41 @@ mod tests {
         // index and domain are always present.
         assert_eq!(v["domain"], "example.com");
         assert_eq!(v["index"], 0);
+    }
+
+    #[test]
+    fn clean_plan_drops_catchalls_duplicates_and_caps() {
+        let plan = clean_plan(vec![
+            "Shopping".into(),
+            "shopping".into(),          // spelling variant of the above
+            "その他".into(),             // catch-all is never a planned folder
+            "Misc".into(),
+            "Language Learning/Thai".into(),
+            "".into(),
+        ]);
+        assert_eq!(plan, vec!["Shopping".to_string(), "Language Learning/Thai".to_string()]);
+
+        let many: Vec<String> = (0..200).map(|i| format!("Folder{i}")).collect();
+        assert_eq!(clean_plan(many).len(), PLAN_MAX_FOLDERS);
+    }
+
+    #[test]
+    fn plan_prompt_states_the_rules_and_reuses_existing_folders() {
+        let p = build_plan_prompt(&["Python".into()], None, &["Development".into()]);
+        assert!(p.contains("COMPLETE list"));
+        assert!(p.contains("\"Python\""));
+        assert!(p.contains("- Development"));
+        assert!(p.contains("{\"folders\""));
+        let none = build_plan_prompt(&[], Some("focus on work"), &[]);
+        assert!(none.starts_with("USER OVERRIDE INSTRUCTIONS:
+focus on work"));
+        assert!(!none.contains("ALREADY EXIST"));
+    }
+
+    #[test]
+    fn plan_payload_leaves_out_url_and_description() {
+        let f = plan_fields(FieldSelection { title: true, url: true, tags: true, description: true });
+        assert!(f.title && f.tags && !f.url && !f.description);
     }
 
     #[test]

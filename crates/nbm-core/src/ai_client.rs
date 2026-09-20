@@ -76,6 +76,107 @@ pub fn parse_retry_after_secs(msg: &str) -> Option<f64> {
     rest[..end].trim().parse::<f64>().ok()
 }
 
+/// Why a request failed, and whether the caller should try again straight away.
+enum PostErr {
+    /// An HTTP-level rejection (quota, bad key, retired model…). Retrying at
+    /// once would only double up on whatever refused us, so this goes back to
+    /// the caller's backoff instead.
+    Fatal(String),
+    /// A transport hiccup or an unreadable body: worth another immediate go.
+    Soft(String),
+}
+
+/// POST one prompt to `generateContent` and return the model's raw text.
+async fn post_generate(
+    client: &reqwest::Client,
+    endpoint: &str,
+    prompt_text: &str,
+    timeout_secs: u64,
+) -> Result<String, PostErr> {
+    let req_body = serde_json::json!({
+        "contents": [{"parts": [{"text": prompt_text}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    });
+
+    let resp = client
+        .post(endpoint)
+        .json(&req_body)
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .send()
+        .await
+        .map_err(|e| PostErr::Soft(e.to_string()))?;
+
+    let status = resp.status();
+    let status_code = status.as_u16();
+    if !status.is_success() {
+        // Gemini's error body (e.g. `{"error":{"message":"API key not
+        // valid","status":"INVALID_ARGUMENT"}}`) is far more diagnostic than the
+        // bare status code — surface it instead of discarding it.
+        let body = resp.text().await.unwrap_or_default();
+        let detail = extract_gemini_error_message(&body)
+            .unwrap_or_else(|| body.chars().take(300).collect());
+        return Err(PostErr::Fatal(if detail.is_empty() {
+            format!("HTTP {status_code}")
+        } else {
+            format!("HTTP {status_code}: {detail}")
+        }));
+    }
+
+    let text = resp.text().await.map_err(|e| PostErr::Soft(e.to_string()))?;
+    Ok(serde_json::from_str::<GeminiResponse>(&text)
+        .ok()
+        .and_then(|g| g.candidates.into_iter().next())
+        .and_then(|c| c.content.parts.into_iter().next())
+        .map(|p| p.text)
+        .unwrap_or(text))
+}
+
+#[derive(serde::Deserialize)]
+struct FoldersResponse {
+    folders: Vec<String>,
+}
+
+/// Ask the model for the folder structure of the *whole* list, before any
+/// bookmark is filed. The answer is only folder names, so it stays small no
+/// matter how many bookmarks go in.
+pub async fn call_gemini_folders(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    prompt: &str,
+    items: &[ai_classify::BookmarkItem],
+    sanitize_urls: bool,
+    fields: ai_classify::FieldSelection,
+) -> Result<Vec<String>, String> {
+    let data_json = ai_classify::build_batch_payload(items, fields, sanitize_urls);
+    let full_prompt = format!("{prompt}\n\n{data_json}");
+    let endpoint = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    );
+
+    let mut last_err = String::from("no response");
+    for _ in 0..2u8 {
+        // A whole-library payload is large, so allow more time than a chunk.
+        let raw_text = match post_generate(client, &endpoint, &full_prompt, 180).await {
+            Ok(t) => t,
+            Err(PostErr::Fatal(m)) => return Err(m),
+            Err(PostErr::Soft(m)) => { last_err = m; continue; }
+        };
+        let Some(json_str) = extract_gemini_json(&raw_text) else {
+            last_err = "no JSON in response".into();
+            continue;
+        };
+        let parsed = serde_json::from_str::<FoldersResponse>(&json_str)
+            .map(|r| r.folders)
+            .or_else(|_| serde_json::from_str::<Vec<String>>(&json_str));
+        match parsed {
+            Ok(folders) => return Ok(folders),
+            Err(e) => last_err = format!("JSON parse: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
 pub async fn call_gemini_batch(
     client: &reqwest::Client,
     api_key: &str,
@@ -86,10 +187,6 @@ pub async fn call_gemini_batch(
     fields: ai_classify::FieldSelection,
 ) -> Result<Vec<ai_classify::AiMove>, String> {
     use ai_classify::AiMove;
-
-    fn truncate_chars(s: &str, max: usize) -> String {
-        s.chars().take(max).collect()
-    }
 
     // Payload construction lives in nbm-core so the cost estimator measures
     // exactly what gets transmitted here.
@@ -111,55 +208,11 @@ pub async fn call_gemini_batch(
                  Output ONLY that JSON object, nothing else."
             )
         };
-        let req_body = serde_json::json!({
-            "contents": [{"parts": [{"text": prompt_text}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-        });
-
-        let resp = match client
-            .post(&endpoint)
-            .json(&req_body)
-            .timeout(std::time::Duration::from_secs(60))
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => { last_err = e.to_string(); continue; }
-        };
-
-        let status = resp.status();
-        let status_code = status.as_u16();
-        if !status.is_success() {
-            // Gemini's error body (e.g. `{"error":{"message":"API key not
-            // valid","status":"INVALID_ARGUMENT"}}`) is far more diagnostic
-            // than the bare status code — surface it instead of discarding it.
-            let body = resp.text().await.unwrap_or_default();
-            let detail = extract_gemini_error_message(&body)
-                .unwrap_or_else(|| truncate_chars(&body, 300));
-            let msg = if detail.is_empty() {
-                format!("HTTP {status_code}")
-            } else {
-                format!("HTTP {status_code}: {detail}")
-            };
-            // Don't loop back into the JSON-format retry here: that would fire
-            // another request immediately, doubling up on whatever rate limit
-            // or outage just rejected us. Return so the caller's backoff
-            // (which can honor the server's suggested retry delay) applies
-            // before anything is sent again.
-            return Err(msg);
-        }
-
-        let text: String = match resp.text().await {
+        let raw_text = match post_generate(client, &endpoint, &prompt_text, 60).await {
             Ok(t) => t,
-            Err(e) => { last_err = e.to_string(); continue; }
+            Err(PostErr::Fatal(m)) => return Err(m),
+            Err(PostErr::Soft(m)) => { last_err = m; continue; }
         };
-
-        let raw_text = serde_json::from_str::<GeminiResponse>(&text)
-            .ok()
-            .and_then(|g| g.candidates.into_iter().next())
-            .and_then(|c| c.content.parts.into_iter().next())
-            .map(|p| p.text)
-            .unwrap_or_else(|| text.clone());
 
         let json_str = match extract_gemini_json(&raw_text) {
             Some(s) => s,

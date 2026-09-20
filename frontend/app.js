@@ -3282,7 +3282,7 @@ async function openAiClassifyOptions(count, ids) {
               <input id="aico-chunk" type="range" min="10" max="300" step="10" value="150" style="flex:1;accent-color:${C.accent}">
               <span id="aico-chunk-n" style="color:${C.hi};font-size:12px;min-width:96px;text-align:right"></span>
             </div>
-            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5">大きいほどAIが全体を見て分類でき、フォルダ名の一貫性が上がり、API呼び出しとプロンプト再送も減ります（既定150件）。大きすぎると1回の失敗の影響が増え、応答が長くなって途中で切れることがあります。</div>
+            <div style="color:${C.lo};font-size:11px;margin-top:5px;line-height:1.5">複数回に分かれる場合は、まず全件からフォルダ構成を決め、その構成に沿って各回を振り分けるので、件数の切り方で結果はほぼ変わりません。大きいほどAPI呼び出しが減りますが、1回の失敗の影響が増え、応答が長くなって途中で切れることがあります（既定150件）。</div>
           </div>
           <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">追加指示（任意）</div>

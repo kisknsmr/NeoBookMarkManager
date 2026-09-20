@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use futures_util::stream::Stream;
 use nbm_core::ai_classify::{self, AiMove, ClassifyProgress, CostEstimate, FieldSelection};
 use nbm_core::ai_client::{
-    call_gemini_batch, is_model_unavailable_error, is_quota_error, parse_retry_after_secs,
+    call_gemini_batch, call_gemini_folders, is_model_unavailable_error, is_quota_error, parse_retry_after_secs,
 };
 use nbm_core::tree;
 use serde::{Deserialize, Serialize};
@@ -421,6 +421,26 @@ impl ClassifyRun {
             out_price,
         );
 
+        let mut cost = cost;
+        if items.len() > chunk_size {
+            // The folder-planning request sends the whole list once more.
+            let plan_prompt = ai_classify::build_plan_prompt(
+                &priority_terms,
+                body.custom_prompt.as_deref(),
+                &known_folders,
+            );
+            let extra = ai_classify::estimate_plan_input_tokens(
+                &items,
+                plan_prompt.len(),
+                fields,
+                body.sanitize_urls,
+            );
+            cost.input_tokens_est += extra;
+            if let (Some(c), Some(price)) = (cost.input_cost_usd.as_mut(), in_price) {
+                *c += extra as f64 / 1_000_000.0 * price;
+            }
+        }
+
         let log_dir = ai_log::dir_from_config_path(state.inner.config_ini_path.as_deref());
         ai_log::append(log_dir.as_deref(), &format!(
             "==== {} classify run start ==== model={} fresh={} items={} chunk_size={} chunks={} \
@@ -452,38 +472,22 @@ impl ClassifyRun {
         let _ = self.tx.send(event).await;
     }
 
-    /// Send one chunk, retrying transient failures. `Err` carries the last
-    /// error once the attempts are spent.
-    async fn send_chunk(
+    /// Run one request, retrying transient failures with the backoff Gemini asks
+    /// for. `Err` carries the last error once the attempts are spent.
+    async fn with_retry<T, Fut>(
         &self,
-        batch: &[ai_classify::BookmarkItem],
         processed: usize,
-    ) -> Result<Vec<AiMove>, String> {
-        // Rebuilt per chunk so each request sees the folders the previous
-        // chunks settled on. Without this, independent chunks invent
-        // "Development", "Dev Tools" and "Programming" for the same idea.
-        let prompt = ai_classify::build_prompt(
-            &self.priority_terms,
-            self.custom_prompt.as_deref(),
-            &self.known_folders,
-            self.fresh,
-        );
+        mut call: impl FnMut() -> Fut,
+    ) -> Result<T, String>
+    where
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
         let total = self.items.len();
         let mut last_err = String::new();
 
         for attempt in 0..CHUNK_ATTEMPTS {
-            match call_gemini_batch(
-                &self.client,
-                &self.api_key,
-                &self.model,
-                &prompt,
-                batch,
-                self.sanitize_urls,
-                self.fields,
-            )
-            .await
-            {
-                Ok(moves) => return Ok(moves),
+            match call().await {
+                Ok(v) => return Ok(v),
                 Err(e) => {
                     last_err = e;
                     let Some(wait_secs) = retry_delay(&last_err, attempt) else {
@@ -504,6 +508,87 @@ impl ClassifyRun {
             }
         }
         Err(last_err)
+    }
+
+    /// Send one chunk.
+    async fn send_chunk(
+        &self,
+        batch: &[ai_classify::BookmarkItem],
+        processed: usize,
+    ) -> Result<Vec<AiMove>, String> {
+        // Rebuilt per chunk so each request sees the folders the previous
+        // chunks settled on. Without this, independent chunks invent
+        // "Development", "Dev Tools" and "Programming" for the same idea.
+        let prompt = ai_classify::build_prompt(
+            &self.priority_terms,
+            self.custom_prompt.as_deref(),
+            &self.known_folders,
+            self.fresh,
+        );
+        self.with_retry(processed, || {
+            call_gemini_batch(
+                &self.client,
+                &self.api_key,
+                &self.model,
+                &prompt,
+                batch,
+                self.sanitize_urls,
+                self.fields,
+            )
+        })
+        .await
+    }
+
+    /// Stage 1 of a multi-chunk run: decide the folder structure from the whole
+    /// list, so every chunk files against the same fixed set of folders instead
+    /// of each inventing its own. Best effort — if it fails the chunks simply
+    /// fall back to learning folders as they go.
+    async fn plan_folders(&mut self) {
+        let total = self.items.len();
+        self.emit(ClassifyProgress {
+            error: Some("全体のフォルダ構成を検討しています…".to_string()),
+            ..progress("waiting", 0, total)
+        })
+        .await;
+
+        let prompt = ai_classify::build_plan_prompt(
+            &self.priority_terms,
+            self.custom_prompt.as_deref(),
+            &self.known_folders,
+        );
+        let fields = ai_classify::plan_fields(self.fields);
+        let outcome = self
+            .with_retry(0, || {
+                call_gemini_folders(
+                    &self.client,
+                    &self.api_key,
+                    &self.model,
+                    &prompt,
+                    &self.items,
+                    self.sanitize_urls,
+                    fields,
+                )
+            })
+            .await;
+
+        match outcome {
+            Ok(raw) => {
+                let plan = ai_classify::clean_plan(raw);
+                ai_log::append(self.log_dir.as_deref(), &format!(
+                    "[{}] plan ok: {} folders: {}",
+                    ai_log::timestamp(), plan.len(), plan.join(" | ")
+                ));
+                for f in plan {
+                    if !self.known_folders.iter().any(|k| k == &f) {
+                        self.known_folders.push(f);
+                    }
+                }
+            }
+            Err(e) => ai_log::append(self.log_dir.as_deref(), &format!(
+                "[{}] plan failed, continuing chunk by chunk: {e}",
+                ai_log::timestamp()
+            )),
+        }
     }
 
     /// Fold newly invented folder names into the vocabulary for later chunks.
@@ -536,13 +621,22 @@ impl ClassifyRun {
         })
         .await;
 
-        // The folders that existed before this run. `known_folders` grows with
-        // AI-invented names as chunks complete, so the min-group rule needs the
-        // original set to tell "filed into an existing folder" from "created a
-        // new folder for one bookmark".
-        let existing_folders = self.known_folders.clone();
         let batches: Vec<Vec<ai_classify::BookmarkItem>> =
             self.items.chunks(self.chunk_size).map(<[_]>::to_vec).collect();
+
+        // More than one chunk: settle the folder structure from the whole list
+        // first, so the result does not depend on where the chunks were cut.
+        if batches.len() > 1 {
+            self.plan_folders().await;
+        }
+
+        // The folders that are settled before any chunk is filed: those already
+        // in the tree plus the plan. `known_folders` keeps growing with
+        // AI-invented names as chunks complete, so the min-group rule needs this
+        // fixed set to tell "filed into a planned folder" from "created a new
+        // folder for one bookmark" — a lone bookmark of a planned kind is
+        // exactly what the plan exists to catch.
+        let existing_folders = self.known_folders.clone();
 
         let mut all_moves: Vec<AiMove> = Vec::new();
         let mut processed = 0usize;
