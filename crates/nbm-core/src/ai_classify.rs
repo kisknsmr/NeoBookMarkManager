@@ -401,7 +401,7 @@ pub fn clean_plan(folders: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for raw in folders {
-        let f = sanitize_folder_path(&raw);
+        let f = cap_depth(&sanitize_folder_path(&raw));
         if f.is_empty() || is_unsorted_sentinel(&f) {
             continue;
         }
@@ -531,6 +531,37 @@ pub fn redirect_unsorted_sentinels(mut moves: Vec<AiMove>) -> Vec<AiMove> {
     for m in &mut moves {
         if is_unsorted_sentinel(&m.folder) {
             m.folder = FRESH_CATCHALL.to_string();
+        }
+    }
+    moves
+}
+
+/// Deepest folder path the AI may create, counted from where it starts
+/// building (so "Guitar/Gear" is 2). The prompt asks for this; nothing made the
+/// model obey it.
+pub const MAX_NEW_FOLDER_DEPTH: usize = 2;
+
+/// Keep only the first [`MAX_NEW_FOLDER_DEPTH`] segments of a path.
+fn cap_depth(folder: &str) -> String {
+    folder
+        .split('/')
+        .take(MAX_NEW_FOLDER_DEPTH)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Enforce the two-level limit on folders the AI invented. A folder that already
+/// exists in the tree is left alone — reusing a deep folder someone built is not
+/// the model nesting too far. Anything deeper is filed at its second level
+/// instead ("Guitar/Gear/Amps" → "Guitar/Gear").
+pub fn cap_folder_depth(mut moves: Vec<AiMove>, existing_folders: &[String]) -> Vec<AiMove> {
+    let existing: std::collections::HashSet<String> =
+        existing_folders.iter().map(|f| folder_key(f)).collect();
+    for m in &mut moves {
+        if m.folder.split('/').count() > MAX_NEW_FOLDER_DEPTH
+            && !existing.contains(&folder_key(&m.folder))
+        {
+            m.folder = cap_depth(&m.folder);
         }
     }
     moves
@@ -677,6 +708,27 @@ mod tests {
         );
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(kept.iter().all(|m| m.folder == "Guitar"), "{kept:?}");
+    }
+
+    #[test]
+    fn folders_the_ai_invents_never_go_past_two_levels() {
+        let moves = vec![
+            mv("a", "Guitar/Gear/Amps"),
+            mv("b", "Guitar/Gear"),
+            mv("c", "Music/Old/Deep/Folder"),   // exists in the tree: left alone
+            mv("d", "Shopping"),
+        ];
+        let out = cap_folder_depth(moves, &["Music/Old/Deep/Folder".into()]);
+        let folder = |id: &str| out.iter().find(|m| m.bookmark_id == id).unwrap().folder.clone();
+        assert_eq!(folder("a"), "Guitar/Gear");
+        assert_eq!(folder("b"), "Guitar/Gear");
+        assert_eq!(folder("c"), "Music/Old/Deep/Folder");
+        assert_eq!(folder("d"), "Shopping");
+    }
+
+    #[test]
+    fn the_folder_plan_is_capped_at_two_levels_too() {
+        assert_eq!(clean_plan(vec!["A/B/C/D".into()]), vec!["A/B".to_string()]);
     }
 
     #[test]

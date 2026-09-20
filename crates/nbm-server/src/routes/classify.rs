@@ -747,6 +747,9 @@ impl ClassifyRun {
                 ai_log::timestamp(), dist.len()
             ));
         }
+        // The two-level limit is only a request in the prompt; enforce it here,
+        // before the size rule counts folders.
+        let all_moves = ai_classify::cap_folder_depth(all_moves, &existing_folders);
         let final_moves = if self.fresh {
             // Full reorganization: nothing gets dropped, undersized/unsorted
             // moves are redirected to the catch-all instead.
