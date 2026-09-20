@@ -536,6 +536,48 @@ pub fn redirect_unsorted_sentinels(mut moves: Vec<AiMove>) -> Vec<AiMove> {
     moves
 }
 
+/// Fold a lone bookmark into its parent folder when the siblings add up.
+///
+/// The model is told to prefer specific folders and may nest two levels, so it
+/// tends to answer with "Guitar/Jazz", "Guitar/Karaoke", "Guitar/Blogs"… one
+/// bookmark each. Judged folder by folder every one of those is a singleton and
+/// gets thrown out, even though together they are an obvious "Guitar" group.
+/// Counting by path instead: a singleton whose parent holds two or more
+/// bookmarks (its own included) is filed into the parent.
+fn roll_up_small_folders(
+    mut moves: Vec<AiMove>,
+    existing: &std::collections::HashSet<String>,
+) -> Vec<AiMove> {
+    let mut direct: HashMap<String, usize> = HashMap::new();
+    let mut subtree: HashMap<String, usize> = HashMap::new();
+    for m in &moves {
+        *direct.entry(m.folder.clone()).or_insert(0) += 1;
+        let mut path = m.folder.as_str();
+        loop {
+            *subtree.entry(path.to_string()).or_insert(0) += 1;
+            match path.rfind('/') {
+                Some(i) => path = &path[..i],
+                None => break,
+            }
+        }
+    }
+    for m in &mut moves {
+        if m.folder == FRESH_CATCHALL
+            || direct[&m.folder] >= 2
+            || existing.contains(&folder_key(&m.folder))
+        {
+            continue;
+        }
+        if let Some(i) = m.folder.rfind('/') {
+            let parent = m.folder[..i].to_string();
+            if !is_unsorted_sentinel(&parent) && subtree[&parent] >= 2 {
+                m.folder = parent;
+            }
+        }
+    }
+    moves
+}
+
 /// Apply the "a new folder needs at least 2 bookmarks" rule.
 ///
 /// `existing_folders` are folders that already exist in the user's tree; a
@@ -550,6 +592,7 @@ pub fn enforce_min_group_size(moves: Vec<AiMove>, existing_folders: &[String]) -
 
     let existing: std::collections::HashSet<String> =
         existing_folders.iter().map(|f| folder_key(f)).collect();
+    let moves = roll_up_small_folders(moves, &existing);
 
     let mut counts: HashMap<String, usize> = HashMap::new();
     for m in &moves { *counts.entry(m.folder.clone()).or_insert(0) += 1; }
@@ -570,6 +613,7 @@ pub fn enforce_min_group_size_or_catchall(moves: Vec<AiMove>, existing_folders: 
 
     let existing: std::collections::HashSet<String> =
         existing_folders.iter().map(|f| folder_key(f)).collect();
+    let moves = roll_up_small_folders(moves, &existing);
 
     let mut counts: HashMap<String, usize> = HashMap::new();
     for m in &moves { *counts.entry(m.folder.clone()).or_insert(0) += 1; }
@@ -605,6 +649,40 @@ mod tests {
     #[test]
     fn sanitize_clean_url() {
         assert_eq!(sanitize_url("https://example.com/path"), "https://example.com/path");
+    }
+
+    #[test]
+    fn lone_children_of_one_parent_are_filed_into_the_parent() {
+        // The shape from a real run: every guitar site got its own sub-folder.
+        let moves = vec![
+            mv("a", "Guitar/Jazz"),
+            mv("b", "Guitar/Karaoke"),
+            mv("c", "Guitar/Blogs"),
+            mv("d", "Shopping"),
+            mv("e", "Shopping"),
+            mv("f", "Lonely"),
+        ];
+        let out = enforce_min_group_size_or_catchall(moves, &[]);
+        let folder = |id: &str| out.iter().find(|m| m.bookmark_id == id).unwrap().folder.clone();
+        for id in ["a", "b", "c"] {
+            assert_eq!(folder(id), "Guitar", "{out:?}");
+        }
+        assert_eq!(folder("d"), "Shopping");
+        assert_eq!(folder("f"), FRESH_CATCHALL, "a genuine loner still goes to the catch-all");
+
+        // Outside fresh mode the same rescue applies instead of dropping them.
+        let kept = enforce_min_group_size(
+            vec![mv("a", "Guitar/Jazz"), mv("b", "Guitar/Karaoke"), mv("f", "Lonely")],
+            &[],
+        );
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().all(|m| m.folder == "Guitar"), "{kept:?}");
+    }
+
+    #[test]
+    fn a_lone_child_of_an_otherwise_empty_parent_is_not_rescued() {
+        let out = enforce_min_group_size_or_catchall(vec![mv("a", "Guitar/Jazz")], &[]);
+        assert_eq!(out[0].folder, FRESH_CATCHALL);
     }
 
     #[test]

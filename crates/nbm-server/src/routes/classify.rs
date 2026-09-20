@@ -726,6 +726,27 @@ impl ClassifyRun {
         // cannot become the largest group, then merge spelling variants so the
         // min-group rule counts merged folders rather than variants.
         let raw_move_count = all_moves.len();
+        // What the model actually answered, before the post-processing below
+        // reshapes it. Without this a large catch-all cannot be told apart
+        // from "the model gave up" versus "the size rule demoted its folders".
+        {
+            let mut dist: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            for m in &all_moves {
+                *dist.entry(m.folder.as_str()).or_insert(0) += 1;
+            }
+            let mut dist: Vec<(&str, usize)> = dist.into_iter().collect();
+            dist.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let text = dist
+                .iter()
+                .take(80)
+                .map(|(f, n)| format!("{f}({n})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            ai_log::append(self.log_dir.as_deref(), &format!(
+                "[{}] raw folders ({} distinct): {text}",
+                ai_log::timestamp(), dist.len()
+            ));
+        }
         let final_moves = if self.fresh {
             // Full reorganization: nothing gets dropped, undersized/unsorted
             // moves are redirected to the catch-all instead.
