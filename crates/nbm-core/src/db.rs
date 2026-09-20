@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
 
-pub const CURRENT_VERSION: i64 = 3;
+pub const CURRENT_VERSION: i64 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -109,6 +109,7 @@ impl Db {
                 (0, 1) => migrate_0_to_1(&conn)?,
                 (1, 2) => migrate_1_to_2(&conn)?,
                 (2, 3) => migrate_2_to_3(&conn)?,
+                (3, 4) => migrate_3_to_4(&conn)?,
                 _ => unreachable!("missing migration {ver}->{}", ver + 1),
             }
             conn.execute("DELETE FROM schema_version;", [])?;
@@ -185,6 +186,49 @@ impl Db {
         Ok(())
     }
 
+    /// Remember that a web fetch was tried on this bookmark. `ok` is whether the
+    /// page could be read at all; `note` carries the failure reason.
+    pub fn record_fetch_attempt(&self, bookmark_id: &str, ok: bool, note: &str) -> Result<(), DbError> {
+        if bookmark_id.is_empty() {
+            return Ok(());
+        }
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO fetch_attempt(bookmark_id, ok, note, attempted_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(bookmark_id) DO UPDATE SET
+               ok = excluded.ok, note = excluded.note, attempted_at = excluded.attempted_at;",
+            params![bookmark_id, ok as i64, note, iso_now()],
+        )?;
+        Ok(())
+    }
+
+    /// The bookmarks (among `bookmark_ids`) a fetch has been tried on, mapped to
+    /// whether that fetch succeeded.
+    pub fn get_fetch_attempts(
+        &self,
+        bookmark_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, bool>, DbError> {
+        let mut out = std::collections::HashMap::new();
+        if bookmark_ids.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.connect()?;
+        // Chunked: SQLite caps the number of bound parameters per statement.
+        for chunk in bookmark_ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT bookmark_id, ok FROM fetch_attempt WHERE bookmark_id IN ({placeholders});");
+            let mut stmt = conn.prepare(&sql)?;
+            let params_vec: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params_vec.as_slice(), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)))?;
+            for row in rows {
+                let (id, ok) = row?;
+                out.insert(id, ok);
+            }
+        }
+        Ok(out)
+    }
+
     /// Get the fetched title for a bookmark, if any.
     pub fn get_meta(&self, bookmark_id: &str) -> Result<Option<String>, DbError> {
         let conn = self.connect()?;
@@ -233,6 +277,7 @@ impl Db {
     pub fn clear_all_meta(&self) -> Result<(), DbError> {
         let conn = self.connect()?;
         conn.execute("DELETE FROM bookmark_meta;", [])?;
+        conn.execute("DELETE FROM fetch_attempt;", [])?;
         Ok(())
     }
 
@@ -243,6 +288,7 @@ impl Db {
         let mut conn = self.connect()?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM bookmark_meta;", [])?;
+        tx.execute("DELETE FROM fetch_attempt;", [])?;
         tx.execute("DELETE FROM url_tags;", [])?;
         tx.commit()?;
         Ok(())
@@ -321,6 +367,21 @@ impl Db {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn migrate_3_to_4(conn: &Connection) -> Result<(), DbError> {
+    // One row per bookmark the web fetch has been tried on, whatever came back.
+    // It lets the app tell "not fetched yet" from "fetched, nothing there", so a
+    // page with no title or description stops counting as unfinished work.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS fetch_attempt (
+           bookmark_id  TEXT PRIMARY KEY NOT NULL,
+           ok           INTEGER NOT NULL,
+           note         TEXT NOT NULL DEFAULT '',
+           attempted_at TEXT NOT NULL
+         );",
+    )?;
+    Ok(())
 }
 
 fn migrate_2_to_3(conn: &Connection) -> Result<(), DbError> {
@@ -422,6 +483,21 @@ mod tests {
         let mut bak = tmp.as_os_str().to_owned();
         bak.push(".bak-v1");
         assert!(std::path::Path::new(&bak).exists());
+    }
+
+    #[test]
+    fn fetch_attempts_round_trip_and_clear_with_the_session() {
+        let tmp = tempfile_path();
+        let db = Db::open(&tmp).unwrap();
+        db.record_fetch_attempt("a", true, "").unwrap();
+        db.record_fetch_attempt("b", false, "timeout").unwrap();
+        db.record_fetch_attempt("b", false, "dns").unwrap(); // replaces, no duplicate
+        let got = db.get_fetch_attempts(&["a".into(), "b".into(), "c".into()]).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got["a"], true);
+        assert_eq!(got["b"], false);
+        db.clear_session_data().unwrap();
+        assert!(db.get_fetch_attempts(&["a".into()]).unwrap().is_empty());
     }
 
     #[test]

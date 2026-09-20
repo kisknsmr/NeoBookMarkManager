@@ -66,7 +66,14 @@ struct EnrichStatus {
     with_title: usize,
     with_description: usize,
     with_tags: usize,
-    /// Ids that still lack a title or a description, i.e. worth fetching.
+    /// Fetch was tried but the page gave no title / no description. Counted as
+    /// dealt with, not as work still to do.
+    title_unavailable: usize,
+    description_unavailable: usize,
+    /// Bookmarks whose fetch was tried and still lack something; the one-button
+    /// run leaves them alone (the individual buttons retry them).
+    given_up: usize,
+    /// Ids not yet tried that lack a title or a description, i.e. worth fetching.
     need_fetch_ids: Vec<String>,
 }
 
@@ -79,10 +86,11 @@ async fn enrich_status(
 ) -> Json<EnrichStatus> {
     let items = state.resolve_bookmarks(&body.bookmark_ids).await;
     let ids: Vec<String> = items.iter().map(|b| b.id.clone()).collect();
-    let (fetched, tagged) = match &state.inner.db {
+    let (fetched, tagged, attempted) = match &state.inner.db {
         Some(db) => (
             db.get_meta_bulk(&ids).unwrap_or_default(),
             db.get_all_tags_map().unwrap_or_default(),
+            db.get_fetch_attempts(&ids).unwrap_or_default(),
         ),
         None => Default::default(),
     };
@@ -91,6 +99,9 @@ async fn enrich_status(
         with_title: 0,
         with_description: 0,
         with_tags: 0,
+        title_unavailable: 0,
+        description_unavailable: 0,
+        given_up: 0,
         need_fetch_ids: Vec::new(),
     };
     for bm in &items {
@@ -101,8 +112,15 @@ async fn enrich_status(
         st.with_title += usize::from(has_title);
         st.with_description += usize::from(has_desc);
         st.with_tags += usize::from(has_tags);
+        let tried = attempted.contains_key(&bm.id);
+        st.title_unavailable += usize::from(!has_title && tried);
+        st.description_unavailable += usize::from(!has_desc && tried);
         if !has_title || !has_desc {
-            st.need_fetch_ids.push(bm.id.clone());
+            if tried {
+                st.given_up += 1;
+            } else {
+                st.need_fetch_ids.push(bm.id.clone());
+            }
         }
     }
     Json(st)
@@ -163,6 +181,13 @@ async fn fetch_metadata(
                     Ok((title, desc)) => (Some(title), Some(desc), "ok".to_string()),
                     Err(e) => (None, None, format!("error: {e}")),
                 };
+
+                // Note that this bookmark was tried, whatever came back, so a page
+                // with nothing to read is not chased again on every "fetch all".
+                if let Some(db) = &state.inner.db {
+                    let note = status.strip_prefix("error: ").unwrap_or("");
+                    let _ = db.record_fetch_attempt(&bm.id, status == "ok", note);
+                }
 
                 if status == "ok" {
                     if let (Persist::DescriptionIntoTree, Some(desc)) = (persist, &description) {

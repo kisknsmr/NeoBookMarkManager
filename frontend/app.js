@@ -621,6 +621,7 @@ function refreshContext() {
 let _enrichTimer = null;
 let _enrichSeq = 0;
 let _enrichNeedFetch = null;   // 直近のステータスで「未取得あり」のID
+let _enrichGivenUp = 0;        // 取得を試みて取得できなかった件数
 
 function scheduleEnrichStatus() {
   clearTimeout(_enrichTimer);
@@ -644,16 +645,28 @@ async function refreshEnrichStatus() {
   }
   if (seq !== _enrichSeq) return;   // 新しい問い合わせが走っていたら捨てる
   _enrichNeedFetch = st ? st.need_fetch_ids : null;
+  _enrichGivenUp = st ? st.given_up : 0;
   dash.classList.toggle("stale", !st);
-  const rows = { title: st?.with_title, desc: st?.with_description, tags: st?.with_tags };
-  for (const [k, n] of Object.entries(rows)) {
+  // 取得を試みて何も無かった分(取得不可)も「対応済み」に数え、グレーで区別する。
+  const rows = {
+    title: [st?.with_title, st?.title_unavailable],
+    desc: [st?.with_description, st?.description_unavailable],
+    tags: [st?.with_tags, 0],
+  };
+  for (const [k, [n, u]] of Object.entries(rows)) {
     const row = dash.querySelector(`[data-k="${k}"]`);
     if (!row) continue;
     const total = st?.total || 0;
-    const pct = st && total ? Math.round((n / total) * 100) : 0;
-    row.querySelector(".enrich-bar > i").style.width = `${pct}%`;
-    row.querySelector(".enrich-n").textContent = st ? `${n.toLocaleString()} / ${total.toLocaleString()}（${pct}%）` : "—";
-    row.classList.toggle("done", !!st && total > 0 && n >= total);
+    const handled = (n || 0) + (u || 0);
+    const pct = st && total ? Math.round((handled / total) * 100) : 0;
+    const w = (x) => (st && total ? (x / total) * 100 : 0);
+    row.querySelector(".enrich-bar > i").style.width = `${w(n || 0)}%`;
+    row.querySelector(".enrich-bar > b").style.width = `${w(u || 0)}%`;
+    row.querySelector(".enrich-n").innerHTML = st
+      ? `${handled.toLocaleString()} / ${total.toLocaleString()}（${pct}%）` +
+        (u ? `<small>取得不可 ${u.toLocaleString()}</small>` : "")
+      : "—";
+    row.classList.toggle("done", !!st && total > 0 && handled >= total);
   }
 }
 
@@ -1845,6 +1858,7 @@ async function cmdEnrichAll() {
   const ok = await confirmDialog(
     `次を順に実行します。\n\n` +
     `1. タイトル・説明文をWebから取得（未取得の ${fetchIds.length} 件のみ。各URLにアクセスします）\n` +
+    (_enrichGivenUp ? `   ※取得を試みて取得できなかった ${_enrichGivenUp} 件は飛ばします（個別ボタンで再試行できます）\n` : "") +
     `2. タイトル・説明文・URLからタグを付ける（${sc.ids.length} 件、ローカル処理）\n\n` +
     `対象: ${sc.label}`,
     { okLabel: "実行", cancelLabel: "キャンセル" }

@@ -951,8 +951,10 @@ mark.search-hl {
 }
 .enrich-row { display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
 .enrich-name { color: var(--text-mid); }
-.enrich-bar { height: 6px; border-radius: 999px; background: var(--surface-3, #2a2a2a); overflow: hidden; }
+.enrich-bar { height: 6px; border-radius: 999px; background: var(--surface-3, #2a2a2a); overflow: hidden; display: flex; }
 .enrich-bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s; }
+.enrich-bar > b { display: block; height: 100%; width: 0; background: var(--text-lo); transition: width .25s; }
 .enrich-row.done .enrich-bar > i { background: #7bd88f; }
-.enrich-n { color: var(--text-hi); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+.enrich-n { color: var(--text-hi); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; white-space: nowrap; }
+.enrich-n small { color: var(--text-lo); font-size: 10.5px; margin-left: 4px; }
 .enrich-dash.stale .enrich-n { color: var(--text-lo); }
