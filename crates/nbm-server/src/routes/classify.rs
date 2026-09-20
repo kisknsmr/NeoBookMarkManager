@@ -19,6 +19,7 @@ use nbm_core::tree;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use crate::ai_log;
 use crate::error::ApiResult;
 use crate::settings;
 use crate::sse;
@@ -65,6 +66,13 @@ struct ClassifyAiBody {
     /// the user has agreed to the switch in the quota-exhausted prompt.
     #[serde(default)]
     use_paid_key: bool,
+    /// "選んだブックマークだけを見て、フォルダ構成を一から作り直す" mode:
+    /// the existing tree's folder vocabulary is withheld from the prompt and
+    /// unclassifiable/undersized groups are redirected to a catch-all instead
+    /// of being dropped. False keeps today's "既存フォルダを優先して使う"
+    /// behavior.
+    #[serde(default)]
+    fresh: bool,
 }
 
 #[derive(Deserialize)]
@@ -273,10 +281,12 @@ async fn classify_estimate(
     let items = classify_items(&state, &body.bookmark_ids, fields).await;
 
     // The vocabulary is part of the prompt, so it has to be part of the estimate.
+    let vocab = if body.fresh { Vec::new() } else { known_folders(&state).await };
     let prompt = ai_classify::build_prompt(
         &settings::priority_terms(&state),
         body.custom_prompt.as_deref(),
-        &known_folders(&state).await,
+        &vocab,
+        body.fresh,
     );
 
     let (in_price, out_price) = settings::ai_pricing_for_model(&state, &body.model);
@@ -342,11 +352,17 @@ struct ClassifyRun {
     /// Grows as chunks complete, so later chunks reuse the folder names earlier
     /// ones settled on instead of inventing synonyms.
     known_folders: Vec<String>,
+    /// "選んだブックマークだけを見て、フォルダ構成を一から作り直す" mode —
+    /// see the field doc on `ClassifyAiBody::fresh`.
+    fresh: bool,
     /// Whether this run is on the billing-enabled key, which only changes how
     /// a quota rejection is worded.
     use_paid_key: bool,
     cost: CostEstimate,
     tx: mpsc::Sender<ClassifyProgress>,
+    /// Where to append this run's plain-text log, or `None` when no
+    /// `config.ini` path is configured (e.g. in tests).
+    log_dir: Option<std::path::PathBuf>,
 }
 
 impl ClassifyRun {
@@ -383,13 +399,17 @@ impl ClassifyRun {
 
         let fields = body.field_selection();
         let items = classify_items(state, &body.bookmark_ids, fields).await;
-        let known_folders = known_folders(state).await;
+        // Fresh mode ("選んだブックマークだけを見て、フォルダ構成を一から
+        // 作り直す") withholds the existing tree's vocabulary entirely, so the
+        // model never sees a "reuse this exactly" instruction for it.
+        let known_folders = if body.fresh { Vec::new() } else { known_folders(state).await };
         let priority_terms = settings::priority_terms(state);
         let chunk_size = body.chunk_size.max(1);
+        let fresh = body.fresh;
 
         let cost = ai_classify::estimate_cost(
             &items,
-            ai_classify::build_prompt(&priority_terms, body.custom_prompt.as_deref(), &known_folders)
+            ai_classify::build_prompt(&priority_terms, body.custom_prompt.as_deref(), &known_folders, fresh)
                 .len(),
             chunk_size,
             fields,
@@ -397,6 +417,14 @@ impl ClassifyRun {
             in_price,
             out_price,
         );
+
+        let log_dir = ai_log::dir_from_config_path(state.inner.config_ini_path.as_deref());
+        ai_log::append(log_dir.as_deref(), &format!(
+            "==== {} classify run start ==== model={} fresh={} items={} chunk_size={} chunks={} \
+             fields(title={} url={} tags={} description={}) known_folders={}",
+            ai_log::timestamp(), body.model, fresh, items.len(), chunk_size, cost.chunks,
+            fields.title, fields.url, fields.tags, fields.description, known_folders.len(),
+        ));
 
         Ok(Self {
             client: state.inner.http_client.clone(),
@@ -409,8 +437,10 @@ impl ClassifyRun {
             chunk_size,
             items,
             known_folders,
+            fresh,
             use_paid_key: body.use_paid_key,
             cost,
+            log_dir,
             tx,
         })
     }
@@ -433,6 +463,7 @@ impl ClassifyRun {
             &self.priority_terms,
             self.custom_prompt.as_deref(),
             &self.known_folders,
+            self.fresh,
         );
         let total = self.items.len();
         let mut last_err = String::new();
@@ -515,7 +546,18 @@ impl ClassifyRun {
 
         for (i, batch) in batches.iter().enumerate() {
             let chunk_index = i + 1;
-            match self.send_chunk(batch, processed).await {
+            let outcome = self.send_chunk(batch, processed).await;
+            ai_log::append(self.log_dir.as_deref(), &match &outcome {
+                Ok(moves) => format!(
+                    "[{}] chunk {}/{} ({} items): ok, moves={}",
+                    ai_log::timestamp(), chunk_index, batches.len(), batch.len(), moves.len()
+                ),
+                Err(e) => format!(
+                    "[{}] chunk {}/{} ({} items): error: {e}",
+                    ai_log::timestamp(), chunk_index, batches.len(), batch.len()
+                ),
+            });
+            match outcome {
                 Ok(moves) => {
                     processed += batch.len();
                     self.learn_folders(&moves);
@@ -583,13 +625,29 @@ impl ClassifyRun {
             }
         }
 
-        // Order matters: drop the "could not classify" markers first so they
+        // Order matters: handle the "could not classify" markers first so they
         // cannot become the largest group, then merge spelling variants so the
         // min-group rule counts merged folders rather than variants.
-        let final_moves = ai_classify::enforce_min_group_size(
-            ai_classify::canonicalize_folder_names(ai_classify::drop_unsorted_sentinels(all_moves)),
-            &existing_folders,
-        );
+        let raw_move_count = all_moves.len();
+        let final_moves = if self.fresh {
+            // Full reorganization: nothing gets dropped, undersized/unsorted
+            // moves are redirected to the catch-all instead.
+            ai_classify::enforce_min_group_size_or_catchall(
+                ai_classify::canonicalize_folder_names(ai_classify::redirect_unsorted_sentinels(all_moves)),
+                &existing_folders,
+            )
+        } else {
+            ai_classify::enforce_min_group_size(
+                ai_classify::canonicalize_folder_names(ai_classify::drop_unsorted_sentinels(all_moves)),
+                &existing_folders,
+            )
+        };
+        let catchall_count = final_moves.iter().filter(|m| m.folder == ai_classify::FRESH_CATCHALL).count();
+        ai_log::append(self.log_dir.as_deref(), &format!(
+            "==== {} classify run end ==== raw_moves={} final_moves={} catchall={} (dropped_by_postprocess={})",
+            ai_log::timestamp(), raw_move_count, final_moves.len(), catchall_count,
+            raw_move_count.saturating_sub(final_moves.len()),
+        ));
         self.emit(ClassifyProgress {
             chunk_moves: Some(final_moves),
             ..progress("done", total, total)
@@ -650,6 +708,23 @@ struct ClassifyApplyBody {
     /// When true, delete source folders left empty by the moves (UI toggle).
     #[serde(default)]
     prune_empty_source: bool,
+    /// Folders that were the explicit scope of this classification run (e.g.
+    /// the one folder the user pointed "一から作り直す" at). Only meaningful
+    /// together with `prune_empty_source`.
+    ///
+    /// A scope folder that still has bookmarks left in it after the moves —
+    /// because the AI didn't propose anything for them, or the user left them
+    /// unchecked in the review list — has those leftovers swept into one
+    /// timestamped "<timestamp> Archive" folder at the root before the scope
+    /// folder is deleted. Without this, "run AI classify on this folder"
+    /// only ever added new folders next to the untouched original, which
+    /// reads as an addition rather than the reorganization it was meant to
+    /// be. Folders NOT listed here keep the old, conservative behavior:
+    /// pruned only when they end up genuinely empty on their own — a folder
+    /// that merely donated one bookmark as a side effect must never have its
+    /// unrelated remaining contents swept away.
+    #[serde(default)]
+    archive_scope_paths: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -659,6 +734,9 @@ struct ClassifyApplyResp {
     skipped: usize,
     /// Number of now-empty source folders removed (0 when toggle off).
     pruned: usize,
+    /// Bookmarks swept into the timestamped Archive folder (0 unless a scope
+    /// folder in `archive_scope_paths` still had leftovers).
+    archived: usize,
 }
 
 async fn classify_ai_apply(
@@ -668,7 +746,7 @@ async fn classify_ai_apply(
     // This is the largest bulk mutation in the app — hundreds of bookmarks in
     // one call — so it goes through the same undo snapshot as every other edit.
     if body.moves.is_empty() {
-        return Ok(Json(ClassifyApplyResp { ok: true, applied: 0, skipped: 0, pruned: 0 }));
+        return Ok(Json(ClassifyApplyResp { ok: true, applied: 0, skipped: 0, pruned: 0, archived: 0 }));
     }
 
     let resp = state
@@ -699,21 +777,98 @@ async fn classify_ai_apply(
                 }
             }
 
-            let pruned = if body.prune_empty_source {
+            let (pruned, archived) = if body.prune_empty_source {
                 // Never prune a folder we just filled: with merging enabled a
                 // source folder can also be a destination.
                 let prunable: std::collections::HashSet<String> =
                     sources.difference(&targets).cloned().collect();
-                prune_empty_source_folders(root, &prunable)
+
+                let scope: std::collections::HashSet<&String> =
+                    body.archive_scope_paths.iter().collect();
+                let mut archived = 0usize;
+                let mut archive_folder: Option<String> = None;
+                for path in prunable.iter().filter(|p| scope.contains(p)) {
+                    let Some(folder) = tree::find_folder(root, path) else { continue };
+                    let mut leftover_ids = Vec::new();
+                    collect_bookmark_ids_recursive(folder, &mut leftover_ids);
+                    if leftover_ids.is_empty() {
+                        continue;
+                    }
+                    let archive_path = archive_folder
+                        .get_or_insert_with(|| {
+                            let name = format!("{} Archive", archive_timestamp());
+                            find_or_create_folder(root, &name);
+                            name
+                        })
+                        .clone();
+                    for id in &leftover_ids {
+                        if tree::move_bookmark(root, id, &archive_path).is_ok() {
+                            archived += 1;
+                        }
+                    }
+                }
+
+                (prune_empty_source_folders(root, &prunable), archived)
             } else {
-                0
+                (0, 0)
             };
 
-            ClassifyApplyResp { ok: true, applied, skipped, pruned }
+            ClassifyApplyResp { ok: true, applied, skipped, pruned, archived }
         })
         .await;
 
     Ok(Json(resp))
+}
+
+/// Every bookmark id under `node`, recursing into sub-folders. Used to sweep
+/// a to-be-deleted scope folder's leftovers into the Archive folder before
+/// pruning it.
+fn collect_bookmark_ids_recursive(node: &nbm_core::Node, out: &mut Vec<String>) {
+    for child in &node.children {
+        if child.is_folder() {
+            collect_bookmark_ids_recursive(child, out);
+        } else {
+            out.push(child.bookmark_id.clone());
+        }
+    }
+}
+
+/// UTC "YYYYMMDD HHMMSS" for the Archive folder name. Hand-rolled (no chrono
+/// dependency) to match `nbm_core::db`'s epoch-seconds-only convention
+/// elsewhere in this codebase, just formatted as a calendar date instead of
+/// a raw integer.
+fn archive_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    format_timestamp(secs)
+}
+
+fn format_timestamp(epoch_secs: i64) -> String {
+    let days = epoch_secs.div_euclid(86400);
+    let time_of_day = epoch_secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let hh = time_of_day / 3600;
+    let mm = (time_of_day % 3600) / 60;
+    let ss = time_of_day % 60;
+    format!("{y:04}{m:02}{d:02} {hh:02}{mm:02}{ss:02}")
+}
+
+/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 (UTC) -> (year,
+/// month, day). http://howardhinnant.github.io/date_algorithms.html
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 }.div_euclid(146097);
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Normalise a destination path from the review UI, or `None` when it names no
@@ -874,5 +1029,136 @@ mod tests {
         assert!((secs - 24.5).abs() < 0.01, "got {secs}");
         let capped = retry_delay("429. Please retry in 900.0s.", 0).unwrap();
         assert_eq!(capped, MAX_BACKOFF_SECS);
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 1700000000s (a widely-cited reference epoch value) is 2023-11-14 UTC.
+        assert_eq!(civil_from_days(1_700_000_000 / 86400), (2023, 11, 14));
+        assert_eq!(civil_from_days(365), (1971, 1, 1));
+    }
+
+    #[test]
+    fn format_timestamp_renders_date_and_time() {
+        // 1700000000 = 2023-11-14 22:13:20 UTC.
+        assert_eq!(format_timestamp(1_700_000_000), "20231114 221320");
+    }
+
+    #[test]
+    fn collect_bookmark_ids_recurses_into_subfolders() {
+        let mut root = Node::new_root();
+        let mut folder = Node::new_folder("Scope");
+        folder.children.push(Node::new_bookmark("a", "https://a.test/"));
+        let mut sub = Node::new_folder("Sub");
+        sub.children.push(Node::new_bookmark("b", "https://b.test/"));
+        folder.children.push(sub);
+        root.children.push(folder);
+
+        let scope = tree::find_folder(&root, "Scope").unwrap();
+        let mut ids = Vec::new();
+        collect_bookmark_ids_recursive(scope, &mut ids);
+        assert_eq!(ids.len(), 2, "{ids:?}");
+    }
+
+    #[test]
+    fn apply_archives_leftovers_from_the_declared_scope_only() {
+        let mut root = Node::new_root();
+        // Scope folder: one bookmark gets a move, one is left behind
+        // (unchecked / no AI suggestion) — it must be archived, not left in
+        // place or silently dropped.
+        let mut scope = Node::new_folder("Untidy");
+        scope.children.push({
+            let mut b = Node::new_bookmark("moved", "https://moved.test/");
+            b.bookmark_id = "moved".into();
+            b
+        });
+        scope.children.push({
+            let mut b = Node::new_bookmark("left-behind", "https://left.test/");
+            b.bookmark_id = "left".into();
+            b
+        });
+        root.children.push(scope);
+        // Unrelated donor folder: only coincidentally loses one bookmark to
+        // this same apply call. Its other bookmark must NOT be swept away —
+        // it was never part of this run's scope.
+        let mut donor = Node::new_folder("Donor");
+        donor.children.push({
+            let mut b = Node::new_bookmark("donated", "https://donated.test/");
+            b.bookmark_id = "donated".into();
+            b
+        });
+        donor.children.push({
+            let mut b = Node::new_bookmark("unrelated", "https://unrelated.test/");
+            b.bookmark_id = "unrelated".into();
+            b
+        });
+        root.children.push(donor);
+
+        let body = ClassifyApplyBody {
+            moves: vec![
+                ApplyMoveItem { bookmark_id: "moved".into(), folder_path: "Topic".into() },
+                ApplyMoveItem { bookmark_id: "donated".into(), folder_path: "Topic".into() },
+            ],
+            prune_empty_source: true,
+            archive_scope_paths: vec!["Untidy".into()],
+        };
+
+        let mut applied = 0usize;
+        let mut sources: HashSet<String> = HashSet::new();
+        let mut targets: HashSet<String> = HashSet::new();
+        for mv in &body.moves {
+            let target = sanitize_destination(&mv.folder_path).unwrap();
+            if let Some((src, _)) = tree::locate_bookmark(&root, &mv.bookmark_id) {
+                sources.insert(src);
+            }
+            find_or_create_folder(&mut root, &target);
+            tree::move_bookmark(&mut root, &mv.bookmark_id, &target).unwrap();
+            applied += 1;
+            targets.insert(target);
+        }
+        assert_eq!(applied, 2);
+
+        let prunable: HashSet<String> = sources.difference(&targets).cloned().collect();
+        let scope: HashSet<&String> = body.archive_scope_paths.iter().collect();
+        let mut archived = 0usize;
+        let mut archive_folder: Option<String> = None;
+        for path in prunable.iter().filter(|p| scope.contains(p)) {
+            let folder = tree::find_folder(&root, path).unwrap();
+            let mut leftover_ids = Vec::new();
+            collect_bookmark_ids_recursive(folder, &mut leftover_ids);
+            if leftover_ids.is_empty() {
+                continue;
+            }
+            let archive_path = archive_folder
+                .get_or_insert_with(|| {
+                    let name = format!("{} Archive", archive_timestamp());
+                    find_or_create_folder(&mut root, &name);
+                    name
+                })
+                .clone();
+            for id in &leftover_ids {
+                if tree::move_bookmark(&mut root, id, &archive_path).is_ok() {
+                    archived += 1;
+                }
+            }
+        }
+        let pruned = prune_empty_source_folders(&mut root, &prunable);
+
+        assert_eq!(archived, 1, "only the scoped folder's leftover must be archived");
+        assert_eq!(pruned, 1, "the now-empty scope folder must be removed");
+        assert_eq!(count_children_named(&root, "Untidy"), 0, "scope folder must be gone");
+        assert_eq!(
+            count_children_named(&root, "Donor"), 1,
+            "an incidental donor folder must survive with its unrelated bookmark intact"
+        );
+        let donor = tree::find_folder(&root, "Donor").unwrap();
+        assert_eq!(donor.count_bookmarks(), 1, "unrelated donor bookmark must not be swept away");
+        assert!(
+            tree::locate_bookmark(&root, "left").is_some(),
+            "the leftover bookmark must still exist somewhere (archived, not deleted)"
+        );
+        let (archive_path, _) = tree::locate_bookmark(&root, "left").unwrap();
+        assert!(archive_path.ends_with("Archive"), "got {archive_path:?}");
     }
 }

@@ -32,6 +32,13 @@ You will receive a JSON object with:
    - NEVER use these names: "Misc", "Others", "Other", "Links", "Work", "General",
      "Ungrouped", "Unsorted", "Uncategorized", "未分類", "その他". A bookmark that
      would land in one of these must be omitted from the output instead.
+   - **Up to two levels of nesting are allowed**: `folder` may be a single name
+     ("Development") or a two-level path `"Parent/Child"` (e.g.
+     "Language Learning/Thai", "Language Learning/English") when a broader
+     theme naturally splits into two or more specific, sizeable sub-themes
+     that share the same parent. Do not nest deeper than two levels, and do
+     not create a sub-theme for a parent that has only one sub-theme —
+     just use the parent name alone in that case.
 
 **CRITICAL OUTPUT RULES:**
 - OUTPUT VALID JSON ONLY.

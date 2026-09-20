@@ -3053,12 +3053,19 @@ async function cmdAiClassify() {
   if (!state.bookmarks.length) return toast("ブックマークがありません", "error");
 
   // 対象はスコープバーで既に決まっている（訊き直さない）。
-  const ids = currentScope().ids;
+  const scope = currentScope();
+  const ids = scope.ids;
   if (!ids.length) return toast("対象のブックマークがありません", "error");
 
   // フィールド選択・モデル・追加指示をモーダルで受け取る
   const opts = await openAiClassifyOptions(ids.length, ids);
   if (!opts) return; // cancelled
+
+  // フォルダをスコープに実行した場合のみ、そのフォルダを「このrunの対象」
+  // として記録する。適用時、ここに残った未選択・未提案のブックマークは
+  // Archiveへ寄せて元フォルダごと削除する対象になる。選択中/全体スコープ
+  // では「まとめて空にすべき単一フォルダ」が存在しないため対象にしない。
+  opts.archiveScopePaths = scope.kind === "folder" && scope.folderPath ? [scope.folderPath] : [];
 
   await runAiClassify(ids, opts);
 }
@@ -3072,6 +3079,7 @@ async function runAiClassify(ids, opts) {
     model: opts.model,
     chunk_size: opts.chunkSize,
     use_paid_key: false,
+    fresh: !!opts.fresh,
   };
 
   // 承認ゲート: 送信前にトークン量とコストを見積もり、ユーザーの承認を得る。
@@ -3159,6 +3167,27 @@ async function openAiClassifyOptions(count, ids) {
         </div>
         <div style="padding:14px 20px;display:flex;flex-direction:column;gap:14px">
           <div>
+            <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">分類方針</div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">
+                <input type="radio" name="aico-strategy" id="aico-strategy-reuse" value="reuse" checked
+                  style="cursor:pointer;accent-color:${C.accent};margin:3px 0 0">
+                <div>
+                  <div style="color:${C.hi};font-size:13px">今の分類に合わせて仕分ける</div>
+                  <div style="color:${C.lo};font-size:11px;margin-top:2px">既存フォルダを優先して使う</div>
+                </div>
+              </label>
+              <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer">
+                <input type="radio" name="aico-strategy" id="aico-strategy-fresh" value="fresh"
+                  style="cursor:pointer;accent-color:${C.accent};margin:3px 0 0">
+                <div>
+                  <div style="color:${C.hi};font-size:13px">選んだブックマークだけを見て、フォルダ構成を一から作り直す</div>
+                  <div style="color:${C.lo};font-size:11px;margin-top:2px">既存フォルダは無視。対象フォルダは整理後に空にして削除。分類できないものは「その他」フォルダへ</div>
+                </div>
+              </label>
+            </div>
+          </div>
+          <div>
             <div style="color:${C.mid};font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">新しいフォルダの作成先</div>
             <input id="aico-base" list="aico-folder-list" value="${escHtml(defaultBase)}"
               style="width:100%;box-sizing:border-box;background:${C.bg3};border:1px solid ${C.border};border-radius:5px;color:${C.hi};font-size:12px;padding:6px 8px;outline:none;font-family:inherit">
@@ -3198,6 +3227,22 @@ async function openAiClassifyOptions(count, ids) {
         </div>
       </div>`;
     document.body.appendChild(modal);
+
+    // --- 分類方針（今の分類に合わせる / 一から作り直す）---
+    // 「一から作り直す」を選んだときは、作成先の既定値をスコープフォルダの
+    // 直下ではなく一段上（親、なければルート）に切り替える。ユーザーが既に
+    // 手で書き換えていた場合はそちらを尊重して上書きしない。
+    const baseInputEl = modal.querySelector("#aico-base");
+    let baseTouched = false;
+    baseInputEl.addEventListener("input", () => { baseTouched = true; });
+    const strategyRadios = modal.querySelectorAll('input[name="aico-strategy"]');
+    for (const r of strategyRadios) {
+      r.addEventListener("change", () => {
+        if (baseTouched) return;
+        const fresh = modal.querySelector("#aico-strategy-fresh").checked;
+        baseInputEl.value = fresh ? aiFreshDefaultBaseFolder() : defaultBase;
+      });
+    }
 
     const fieldsEl = modal.querySelector("#aico-fields");
     for (const f of FIELDS) {
@@ -3346,6 +3391,7 @@ async function openAiClassifyOptions(count, ids) {
         model: modelSel.value,
         chunkSize: parseInt(chunkEl.value, 10),
         baseFolder: modal.querySelector("#aico-base").value.trim(),
+        fresh: modal.querySelector("#aico-strategy-fresh").checked,
       });
 
       // 材料が大きく欠けている場合だけ、明示的に確認を挟む。
@@ -3452,6 +3498,21 @@ function aiDefaultBaseFolder() {
   return "_AI";
 }
 
+/// 「選んだブックマークだけを見て、フォルダ構成を一から作り直す」場合の
+/// 既定の作成先。元のフォルダの中に新設すると、対象フォルダ自体が空になっ
+/// て消えるべき、という結果と矛盾するので、一段上（親、なければルート）に
+/// 作る。フォルダ以外のスコープ（選択中・全体）はそもそも「片付けるべき
+/// 元フォルダ」がないので、ルート直下でよい。
+function aiFreshDefaultBaseFolder() {
+  const sc = currentScope();
+  if (sc.kind === "folder" && sc.folderPath) {
+    const parts = sc.folderPath.split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+  }
+  return "";
+}
+
 /// AI が返したフォルダ名を実際の移動先パスに変換する。
 /// 既存フォルダをそのまま指してきた場合はその場所へ（＝統合）、
 /// 新しく考えた名前なら作成先ベースの下に作る。
@@ -3552,9 +3613,10 @@ function openAiReviewModal(total, opts) {
       <div id="ai-review-list" style="flex:1 1 0;overflow-y:auto;padding:10px 20px;display:none;flex-direction:column;gap:6px"></div>
 
       <div id="ai-modal-actions" style="display:none;padding:11px 20px;border-top:1px solid ${C.border};flex:0 0 auto;align-items:center;justify-content:space-between;gap:12px">
-        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:${C.mid};font-size:11px">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;color:${C.mid};font-size:11px"
+          title="フォルダを対象に実行した場合、そのフォルダに取り残された(未選択・AIが提案しなかった)ブックマークは「<日時> Archive」フォルダへ移動したうえで、元フォルダを削除します。">
           <input type="checkbox" id="ai-prune-empty" style="cursor:pointer;accent-color:${C.accent};margin:0">
-          空になった元フォルダを削除
+          元フォルダを整理して削除(取り残しはArchiveへ)
         </label>
         <div style="display:flex;align-items:center;gap:10px">
           <span id="ai-selected-count" style="color:${C.mid};font-size:11px"></span>
@@ -3567,6 +3629,14 @@ function openAiReviewModal(total, opts) {
     </div>`;
   document.body.appendChild(div);
   _aiModal = div;
+
+  // 「一から作り直す」で実行した場合は、対象フォルダが空になったら消える
+  // のが期待される結果なので、削除チェックを既定でONにしておく
+  // （ユーザーはOFFに戻せる）。
+  if (opts?.fresh) {
+    const pruneEl = div.querySelector("#ai-prune-empty");
+    if (pruneEl) pruneEl.checked = true;
+  }
 
   const list = document.getElementById("ai-folder-list");
   for (const p of existingFolderPaths()) {
@@ -3989,7 +4059,11 @@ async function applyAiReview() {
     const res = await api("/classify/ai-apply", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ moves, prune_empty_source: pruneEmpty }),
+      body: JSON.stringify({
+        moves,
+        prune_empty_source: pruneEmpty,
+        archive_scope_paths: pruneEmpty ? (_aiReview.opts?.archiveScopePaths || []) : [],
+      }),
     });
     closeAiReviewModal();
     await reload();
@@ -3998,7 +4072,8 @@ async function applyAiReview() {
       updateUndoRedoButtons(h.undo_count, h.redo_count);
     } catch (_) {}
     const prunedMsg = res.pruned ? `、空フォルダ ${res.pruned} 件削除` : "";
-    toast(`${res.applied} 件移動しました (スキップ: ${res.skipped})${prunedMsg} — Ctrl+Z で取り消せます`);
+    const archivedMsg = res.archived ? `、取り残し ${res.archived} 件をArchiveへ` : "";
+    toast(`${res.applied} 件移動しました (スキップ: ${res.skipped})${prunedMsg}${archivedMsg} — Ctrl+Z で取り消せます`);
   } catch (e) {
     toast(`適用失敗: ${e.message}`, "error");
   }
@@ -4018,6 +4093,7 @@ async function retryFailedChunks({ usePaidKey = false } = {}) {
     model: opts.model,
     chunk_size: opts.chunkSize,
     use_paid_key: paid,
+    fresh: !!opts.fresh,
   };
 
   let est;

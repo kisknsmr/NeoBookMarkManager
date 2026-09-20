@@ -97,7 +97,7 @@ async fn domain_statistics_counts_bookmarks_per_host() {
 }
 
 #[tokio::test]
-async fn sort_by_domain_orders_bookmarks_and_keeps_folders_first() {
+async fn sort_by_domain_orders_bookmarks_and_moves_folders_after() {
     let app = app().await;
     // Shuffle so the sort has something to do.
     let dup = app.bookmark_id("Dup").await;
@@ -114,9 +114,10 @@ async fn sort_by_domain_orders_bookmarks_and_keeps_folders_first() {
 
     let (_, tree) = app.get("/tree").await;
     let work = &tree["children"][0];
+    let last = work["children"].as_array().unwrap().last().unwrap();
     assert_eq!(
-        work["children"][0]["title"], "Nested",
-        "folders are hoisted above bookmarks"
+        last["title"], "Nested",
+        "folders must sort after every direct bookmark"
     );
 }
 

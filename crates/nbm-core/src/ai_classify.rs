@@ -252,6 +252,32 @@ CRITICAL OUTPUT RULES (SAFETY OVERRIDE):
 - Only include moves you are confident about; if none, return {"moves":[]}.
 "#;
 
+/// Canonical catch-all folder name used only in "fresh classification" mode
+/// (build_prompt's `fresh: true`) when a bookmark does not fit any theme.
+/// The base prompt otherwise forbids this class of name and tells the model
+/// to omit unclassifiable bookmarks entirely — fresh mode needs the opposite
+/// (every input index must land somewhere), so this override explicitly lifts
+/// that restriction for this one designated name.
+pub const FRESH_CATCHALL: &str = "その他";
+
+const FRESH_MODE_OVERRIDE: &str = r#"
+
+FRESH CLASSIFICATION MODE (FULL REORGANIZATION) — OVERRIDES ABOVE:
+- These bookmarks were selected for a full re-organization from scratch.
+  Ignore whatever folder they currently live in — decide placement purely
+  from their content (title/url/domain/tags/description), even when that
+  content is thin (domain and URL only).
+- This OVERRIDES the "only include moves you are confident about; if none,
+  return {"moves":[]}" line above. In this mode an empty or partial result is
+  WRONG. Every single input index MUST appear in exactly one move — use a
+  low confidence value (e.g. 0.3) for a shaky guess instead of leaving it out.
+- The "minimum group size 2" rule still applies to ordinary theme groups. But
+  bookmarks that do not fit any theme must NOT be omitted — put them in one
+  single group named exactly "その他" (reuse this exact name, do not invent
+  variants like "Other" or "Misc"). This is the one exception to the "never
+  use these names" rule above — it is the designated catch-all for this mode.
+"#;
+
 /// `known_folders` carries the folders that already exist in the tree plus
 /// every folder produced by earlier chunks of the same run. Without it each
 /// chunk names groups from scratch, so a 260-bookmark run split into 7 requests
@@ -260,6 +286,7 @@ pub fn build_prompt(
     priority_terms: &[String],
     custom_prompt: Option<&str>,
     known_folders: &[String],
+    fresh: bool,
 ) -> String {
     let terms_str = priority_terms
         .iter()
@@ -284,11 +311,19 @@ pub fn build_prompt(
              - If a bookmark fits one of these, you MUST reuse the entry EXACTLY as written.\n\
              - Invent a new folder name only when none of the above is a reasonable fit.\n\
              - NEVER create a near-duplicate of a listed entry (e.g. \"Dev Tools\" or\n\
-               \"Programming\" when \"Development\" is already listed).\n"
+               \"Programming\" when \"Development\" is already listed).\n\
+             - A listed entry may be a two-level \"Parent/Child\" path. You MAY add a new\n\
+               sibling child under an already-listed parent even if that exact child isn't\n\
+               listed (e.g. \"Language Learning/Thai\" is listed and you find Spanish\n\
+               bookmarks — use \"Language Learning/Spanish\", reusing the \"Language Learning\"\n\
+               parent exactly). Still never nest deeper than two levels total.\n"
         ));
     }
 
     prompt.push_str(SCHEMA_OVERRIDE);
+    if fresh {
+        prompt.push_str(FRESH_MODE_OVERRIDE);
+    }
     if let Some(custom) = custom_prompt {
         prompt = format!("USER OVERRIDE INSTRUCTIONS:\n{custom}\n\n{prompt}");
     }
@@ -392,6 +427,19 @@ pub fn drop_unsorted_sentinels(moves: Vec<AiMove>) -> Vec<AiMove> {
     moves.into_iter().filter(|m| !is_unsorted_sentinel(&m.folder)).collect()
 }
 
+/// Fresh-mode counterpart of [`drop_unsorted_sentinels`]: a "could not
+/// classify" marker is redirected to [`FRESH_CATCHALL`] instead of dropped, so
+/// the bookmark still ends up somewhere rather than being silently left in
+/// its original location.
+pub fn redirect_unsorted_sentinels(mut moves: Vec<AiMove>) -> Vec<AiMove> {
+    for m in &mut moves {
+        if is_unsorted_sentinel(&m.folder) {
+            m.folder = FRESH_CATCHALL.to_string();
+        }
+    }
+    moves
+}
+
 /// Apply the "a new folder needs at least 2 bookmarks" rule.
 ///
 /// `existing_folders` are folders that already exist in the user's tree; a
@@ -413,6 +461,34 @@ pub fn enforce_min_group_size(moves: Vec<AiMove>, existing_folders: &[String]) -
     moves
         .into_iter()
         .filter(|m| counts[&m.folder] >= 2 || existing.contains(&folder_key(&m.folder)))
+        .collect()
+}
+
+/// Fresh-mode counterpart of [`enforce_min_group_size`]: a move that fails the
+/// rule is redirected to [`FRESH_CATCHALL`] instead of dropped, so a full
+/// reorganization never silently loses a bookmark. [`FRESH_CATCHALL`] itself
+/// is exempt from the size check — it is allowed to be the whole point of a
+/// small remainder group.
+pub fn enforce_min_group_size_or_catchall(moves: Vec<AiMove>, existing_folders: &[String]) -> Vec<AiMove> {
+    if moves.is_empty() { return moves; }
+
+    let existing: std::collections::HashSet<String> =
+        existing_folders.iter().map(|f| folder_key(f)).collect();
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for m in &moves { *counts.entry(m.folder.clone()).or_insert(0) += 1; }
+
+    moves
+        .into_iter()
+        .map(|mut m| {
+            if m.folder != FRESH_CATCHALL
+                && counts[&m.folder] < 2
+                && !existing.contains(&folder_key(&m.folder))
+            {
+                m.folder = FRESH_CATCHALL.to_string();
+            }
+            m
+        })
         .collect()
 }
 
@@ -577,7 +653,7 @@ mod tests {
 
     #[test]
     fn prompt_lists_known_folders() {
-        let p = build_prompt(&[], None, &["Development".into(), "Machine Learning".into()]);
+        let p = build_prompt(&[], None, &["Development".into(), "Machine Learning".into()], false);
         assert!(p.contains("- Development"));
         assert!(p.contains("- Machine Learning"));
         assert!(p.contains("EXISTING FOLDER VOCABULARY"));
@@ -585,8 +661,60 @@ mod tests {
 
     #[test]
     fn prompt_without_known_folders_has_no_vocabulary_section() {
-        let p = build_prompt(&[], None, &[]);
+        let p = build_prompt(&[], None, &[], false);
         assert!(!p.contains("EXISTING FOLDER VOCABULARY"));
+    }
+
+    #[test]
+    fn fresh_mode_adds_override_and_default_omits_it() {
+        let normal = build_prompt(&[], None, &[], false);
+        assert!(!normal.contains("FRESH CLASSIFICATION MODE"));
+
+        let fresh = build_prompt(&[], None, &[], true);
+        assert!(fresh.contains("FRESH CLASSIFICATION MODE"));
+        assert!(fresh.contains(FRESH_CATCHALL));
+    }
+
+    #[test]
+    fn redirect_sentinels_keeps_bookmark_but_renames_folder() {
+        let moves = vec![
+            mv("a", "ungrouped"),
+            mv("b", "_AI/unsorted"),
+            mv("c", "Development"),
+        ];
+        let result = redirect_unsorted_sentinels(moves);
+        assert_eq!(result.len(), 3, "no bookmark should be dropped: {result:?}");
+        assert_eq!(result[0].folder, FRESH_CATCHALL);
+        assert_eq!(result[1].folder, FRESH_CATCHALL);
+        assert_eq!(result[2].folder, "Development");
+    }
+
+    #[test]
+    fn min_group_or_catchall_redirects_instead_of_dropping() {
+        let moves = vec![
+            mv("a", "Big"),
+            mv("b", "Big"),
+            mv("c", "Small"),
+        ];
+        let result = enforce_min_group_size_or_catchall(moves, &[]);
+        assert_eq!(result.len(), 3, "no bookmark should be dropped: {result:?}");
+        assert!(result.iter().any(|m| m.bookmark_id == "c" && m.folder == FRESH_CATCHALL));
+    }
+
+    #[test]
+    fn min_group_or_catchall_exempts_catchall_from_size_rule() {
+        let moves = vec![mv("a", FRESH_CATCHALL)];
+        let result = enforce_min_group_size_or_catchall(moves, &[]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].folder, FRESH_CATCHALL);
+    }
+
+    #[test]
+    fn min_group_or_catchall_keeps_singleton_for_existing_folder() {
+        let moves = vec![mv("a", "Development")];
+        let existing = vec!["Development".to_string()];
+        let result = enforce_min_group_size_or_catchall(moves, &existing);
+        assert_eq!(result[0].folder, "Development");
     }
 
     fn mv(id: &str, folder: &str) -> AiMove {

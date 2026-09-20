@@ -115,7 +115,8 @@ pub fn merge_duplicate_folders(root: &mut Node, parent_path: &str) -> Result<usi
 // --- Sort by domain --------------------------------------------------------
 
 /// Sort the direct bookmark children of `folder_path` by domain, then by title.
-/// Sub-folders are kept in place (moved to the front, preserving their relative order).
+/// Sub-folders are moved to the back (after all direct bookmarks), preserving
+/// their relative order.
 pub fn sort_by_domain(root: &mut Node, folder_path: &str) -> Result<usize, OrganizeError> {
     let folder = find_folder_mut(root, folder_path)
         .ok_or_else(|| OrganizeError::FolderNotFound(folder_path.to_string()))?;
@@ -128,8 +129,8 @@ pub fn sort_by_domain(root: &mut Node, folder_path: &str) -> Result<usize, Organ
         let db = normalize_domain(&b.url);
         da.cmp(&db).then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
-    folders.append(&mut bookmarks);
-    folder.children = folders;
+    bookmarks.append(&mut folders);
+    folder.children = bookmarks;
     Ok(count)
 }
 
@@ -616,5 +617,31 @@ mod tests {
         sort_by_domain(&mut root, "Mixed").unwrap();
         let titles: Vec<_> = root.children[0].children.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(titles, ["A", "M", "Z"]);
+    }
+
+    #[test]
+    fn sort_by_domain_moves_folders_after_bookmarks() {
+        let mut root = Node::new_root();
+        let mut folder = Node::new_folder("Mixed");
+        let bm = |title: &str, url: &str| {
+            let mut b = Node::new_bookmark(title, url);
+            b.bookmark_id = crate::tree::ensure_bookmark_ids_return(title);
+            b
+        };
+        folder.children.push(Node::new_folder("SubB"));
+        folder.children.push(bm("Z", "https://z.example.com/"));
+        folder.children.push(Node::new_folder("SubA"));
+        folder.children.push(bm("A", "https://a.example.com/"));
+        root.children.push(folder);
+        sort_by_domain(&mut root, "Mixed").unwrap();
+        let entries: Vec<_> = root.children[0]
+            .children
+            .iter()
+            .map(|c| (c.title.as_str(), c.is_folder()))
+            .collect();
+        assert_eq!(
+            entries,
+            [("A", false), ("Z", false), ("SubB", true), ("SubA", true)]
+        );
     }
 }

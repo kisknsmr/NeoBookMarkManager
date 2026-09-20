@@ -15,6 +15,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
+pub mod ai_log;
 pub mod error;
 pub mod routes;
 pub mod settings;

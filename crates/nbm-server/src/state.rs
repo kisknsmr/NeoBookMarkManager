@@ -285,15 +285,20 @@ impl AppState {
 
 /// Decide what happens to the DB session metadata (fetched titles + tags) when a
 /// bookmark file is opened, by comparing the file's `(path, content_hash)` to
-/// the fingerprint stored at the last save.
+/// the fingerprint stored at the last reconcile (open OR save).
 ///
-/// - Same path AND same hash → returns `true` (resumable): metadata is kept and
-///   the frontend asks the user whether to continue editing.
+/// - Same path AND same hash → returns `true` (resumable): metadata is kept.
 /// - Otherwise (different file, externally modified, or first run) → clears
 ///   meta + tags and returns `false`.
 ///
-/// The new fingerprint is NOT written here; that happens on save so it always
-/// reflects the on-disk content.
+/// The fingerprint is then (re)written to `(path, content_hash)` either way,
+/// so a later reopen of this same, still-unmodified file recognizes it as the
+/// same session. Earlier this was only written on explicit save, which meant
+/// fetched titles/descriptions/tags — none of which require a save to exist —
+/// were silently wiped on every relaunch unless the user had saved with that
+/// exact content first. Bookmark-level edits still only change the hash once
+/// actually saved, so external changes and genuinely different files are
+/// still detected exactly as before.
 pub(crate) fn reconcile_session_meta(db: &Db, path: &str, content_hash: &str) -> bool {
     let prev = db.get_open_state().ok().flatten();
     let resumable = matches!(
@@ -307,5 +312,52 @@ pub(crate) fn reconcile_session_meta(db: &Db, path: &str, content_hash: &str) ->
         eprintln!("[session] clearing session meta/tags (mismatch or no prior open_state)");
         let _ = db.clear_session_data();
     }
+    let _ = db.set_open_state(path, content_hash);
     resumable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tempfile_path() -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        p.push(format!("nbm-state-test-{stamp}.db"));
+        p
+    }
+
+    #[test]
+    fn reopening_the_same_unmodified_file_keeps_session_meta_without_a_save() {
+        let db = Db::open(tempfile_path()).unwrap();
+
+        // First-ever open: nothing to resume from yet, but this establishes
+        // the baseline fingerprint for next time.
+        assert!(!reconcile_session_meta(&db, "C:/bm.html", "hash-a"));
+
+        // Enrichment during this session (fetched title, auto-tag) is DB-only
+        // and never touches the file, so the on-disk hash stays "hash-a" even
+        // without an explicit save.
+        db.save_tags_for_url("b1", &["Dev".into()], "auto", None).unwrap();
+        assert_eq!(db.get_tags("b1").unwrap().len(), 1);
+
+        // Relaunching the app and reopening the exact same, still-unsaved
+        // file must recognize it as the same session and keep the tags —
+        // this used to wipe them because only `edit_save` recorded the
+        // fingerprint.
+        assert!(reconcile_session_meta(&db, "C:/bm.html", "hash-a"));
+        assert_eq!(
+            db.get_tags("b1").unwrap().len(),
+            1,
+            "tags must survive a relaunch without a save"
+        );
+
+        // A genuinely different file (or externally modified content) must
+        // still clear, exactly as before.
+        assert!(!reconcile_session_meta(&db, "C:/bm.html", "hash-b"));
+        assert_eq!(db.get_tags("b1").unwrap().len(), 0);
+
+        std::fs::remove_file(&db.path).ok();
+    }
 }
