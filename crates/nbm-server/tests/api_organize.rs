@@ -37,6 +37,15 @@ async fn dedupe_removes_bookmarks_sharing_a_url() {
 }
 
 #[tokio::test]
+async fn dedupe_rejects_an_unknown_mode() {
+    let app = app().await;
+    let (status, _) = app
+        .post("/organize/dedupe", json!({ "folder_path": "Work", "mode": "psychic" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn dedupe_on_an_unknown_folder_is_a_bad_request() {
     let app = app().await;
     let (status, _) = app

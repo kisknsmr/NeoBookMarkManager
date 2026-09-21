@@ -52,31 +52,252 @@ pub fn domain_statistics(root: &Node) -> Vec<(String, usize)> {
     vec
 }
 
-// --- Deduplicate bookmarks (same folder, same URL) -------------------------
+// --- Deduplicate bookmarks --------------------------------------------------
 
-/// Remove duplicate bookmarks inside `folder_path` (exact URL match, keep first).
-/// URLs in `exclude_urls` are never treated as duplicates (always kept as-is).
-pub fn dedupe_folder(
+/// How strictly two URLs must match to count as the same bookmark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DedupeMode {
+    /// Same page, spelled differently: scheme/host case, default ports, a
+    /// trailing slash, an empty query, tracking parameters (`utm_*`, `fbclid`…)
+    /// and parameter order. `http` and `https`, `www.` and a fragment still
+    /// distinguish two URLs.
+    #[default]
+    Safe,
+    /// Also treats `http`/`https` and a leading `www.` as the same, and ignores
+    /// the whole query string and the fragment. Catches old bookmarks saved
+    /// before a site moved to https, at the price of merging pages that differ
+    /// only by their query (`/watch?v=1` and `/watch?v=2`).
+    Loose,
+}
+
+impl DedupeMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "safe" => Some(Self::Safe),
+            "loose" => Some(Self::Loose),
+            _ => None,
+        }
+    }
+}
+
+/// Query parameters that only track where a visitor came from.
+fn is_tracking_param(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.starts_with("utm_")
+        || matches!(
+            k.as_str(),
+            "fbclid" | "gclid" | "yclid" | "igshid" | "mc_cid" | "mc_eid" | "msclkid"
+        )
+}
+
+/// A comparison key for a URL: two bookmarks are duplicates when their keys are
+/// equal. Never used to rewrite the stored URL.
+pub fn url_key(url: &str, mode: DedupeMode) -> String {
+    let url = url.trim();
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string(); // not a URL we understand: compare as written
+    };
+    let mut scheme = scheme.to_ascii_lowercase();
+
+    let (rest, fragment) = match rest.split_once('#') {
+        Some((r, f)) => (r, f),
+        None => (rest, ""),
+    };
+    let (rest, query) = match rest.split_once('?') {
+        Some((r, q)) => (r, q),
+        None => (rest, ""),
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+
+    let mut authority = authority.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => Some(":80"),
+        "https" => Some(":443"),
+        _ => None,
+    };
+    if let Some(port) = default_port {
+        if let Some(stripped) = authority.strip_suffix(port) {
+            authority = stripped.to_string();
+        }
+    }
+
+    let loose = mode == DedupeMode::Loose;
+    if loose {
+        if scheme == "http" {
+            scheme = "https".to_string();
+        }
+        if let Some(stripped) = authority.strip_prefix("www.") {
+            authority = stripped.to_string();
+        }
+    }
+
+    let path = path.trim_end_matches('/');
+
+    let query = if loose {
+        String::new()
+    } else {
+        let mut params: Vec<&str> = query
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .filter(|p| !is_tracking_param(p.split('=').next().unwrap_or("")))
+            .collect();
+        params.sort_unstable();
+        params.join("&")
+    };
+    let fragment = if loose { "" } else { fragment };
+
+    let mut key = format!("{scheme}://{authority}{path}");
+    if !query.is_empty() {
+        key.push('?');
+        key.push_str(&query);
+    }
+    if !fragment.is_empty() {
+        key.push('#');
+        key.push_str(fragment);
+    }
+    key
+}
+
+/// What to deduplicate.
+#[derive(Debug, Clone, Copy)]
+pub struct DedupeOptions {
+    /// Look through sub-folders too, so a bookmark saved in two different
+    /// folders is one duplicate. `false` compares only the folder's own
+    /// bookmarks, which is what this used to do unconditionally.
+    pub recursive: bool,
+    pub mode: DedupeMode,
+}
+
+impl Default for DedupeOptions {
+    fn default() -> Self {
+        Self { recursive: true, mode: DedupeMode::Safe }
+    }
+}
+
+/// Bookmarks are numbered in walk order (folder contents in stored order,
+/// descending into sub-folders as met). Both passes number them identically,
+/// which is how pass two knows which bookmark pass one meant.
+fn walk_collect(
+    node: &Node,
+    opts: DedupeOptions,
+    exclude: &HashSet<String>,
+    idx: &mut usize,
+    first: &mut HashMap<String, usize>,
+    donor: &mut HashMap<String, (String, String)>,
+    dups: &mut HashSet<usize>,
+) {
+    for child in &node.children {
+        match child.kind {
+            NodeKind::Bookmark => {
+                let i = *idx;
+                *idx += 1;
+                if child.url.is_empty() || is_excluded(&child.url, opts.mode, exclude) {
+                    continue;
+                }
+                let key = url_key(&child.url, opts.mode);
+                if first.contains_key(&key) {
+                    dups.insert(i);
+                    // The survivor may be the emptier of the two: remember the
+                    // first title/description any of them has.
+                    if let Some((t, d)) = donor.get_mut(&key) {
+                        if t.trim().is_empty() {
+                            *t = child.title.clone();
+                        }
+                        if d.trim().is_empty() {
+                            *d = child.description.clone();
+                        }
+                    }
+                } else {
+                    first.insert(key.clone(), i);
+                    donor.insert(key, (child.title.clone(), child.description.clone()));
+                }
+            }
+            NodeKind::Folder => {
+                if opts.recursive {
+                    walk_collect(child, opts, exclude, idx, first, donor, dups);
+                }
+            }
+        }
+    }
+}
+
+fn walk_apply(
+    node: &mut Node,
+    opts: DedupeOptions,
+    exclude: &HashSet<String>,
+    idx: &mut usize,
+    donor: &HashMap<String, (String, String)>,
+    dups: &HashSet<usize>,
+    removed: &mut usize,
+) {
+    let mut i = 0;
+    while i < node.children.len() {
+        match node.children[i].kind {
+            NodeKind::Bookmark => {
+                let n = *idx;
+                *idx += 1;
+                if dups.contains(&n) {
+                    node.children.remove(i);
+                    *removed += 1;
+                    continue;
+                }
+                let child = &mut node.children[i];
+                if !child.url.is_empty() && !is_excluded(&child.url, opts.mode, exclude) {
+                    if let Some((t, d)) = donor.get(&url_key(&child.url, opts.mode)) {
+                        if child.title.trim().is_empty() {
+                            child.title = t.clone();
+                        }
+                        if child.description.trim().is_empty() {
+                            child.description = d.clone();
+                        }
+                    }
+                }
+            }
+            NodeKind::Folder => {
+                if opts.recursive {
+                    walk_apply(&mut node.children[i], opts, exclude, idx, donor, dups, removed);
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// `exclude` is matched both as written and by comparison key, so an excluded
+/// `https://example.com/` also protects `https://example.com`.
+fn is_excluded(url: &str, mode: DedupeMode, exclude: &HashSet<String>) -> bool {
+    !exclude.is_empty()
+        && (exclude.contains(url) || exclude.iter().any(|e| url_key(e, mode) == url_key(url, mode)))
+}
+
+/// Remove duplicate bookmarks under `folder_path` (empty = the whole tree),
+/// keeping the first one met in walk order. When the survivor has no title or
+/// description and a removed copy did, it inherits them, so removing a
+/// duplicate never loses information. URLs in `exclude_urls` are never treated
+/// as duplicates. Returns how many bookmarks were removed.
+pub fn dedupe(
     root: &mut Node,
     folder_path: &str,
     exclude_urls: &HashSet<String>,
+    opts: DedupeOptions,
 ) -> Result<usize, OrganizeError> {
     let folder = find_folder_mut(root, folder_path)
         .ok_or_else(|| OrganizeError::FolderNotFound(folder_path.to_string()))?;
-    let mut seen: HashSet<String> = HashSet::new();
-    let before = folder.children.len();
-    folder.children.retain(|c| match c.kind {
-        NodeKind::Bookmark => {
-            let url = c.url.clone();
-            if url.is_empty() || exclude_urls.contains(&url) {
-                true // always keep blanks and excluded URLs
-            } else {
-                seen.insert(url)
-            }
-        }
-        NodeKind::Folder => true,
-    });
-    Ok(before - folder.children.len())
+
+    let mut first = HashMap::new();
+    let mut donor = HashMap::new();
+    let mut dups = HashSet::new();
+    walk_collect(folder, opts, exclude_urls, &mut 0, &mut first, &mut donor, &mut dups);
+    if dups.is_empty() {
+        return Ok(0);
+    }
+
+    let mut removed = 0;
+    walk_apply(folder, opts, exclude_urls, &mut 0, &donor, &dups, &mut removed);
+    Ok(removed)
 }
 
 // --- Merge duplicate folders (same name, same parent) ----------------------
@@ -456,12 +677,123 @@ mod tests {
         root
     }
 
+    fn bm(title: &str, url: &str) -> Node {
+        let mut b = Node::new_bookmark(title, url);
+        b.bookmark_id = crate::tree::ensure_bookmark_ids_return(title);
+        b
+    }
+
+    fn titles(root: &Node, path: &str) -> Vec<String> {
+        crate::tree::find_folder(root, path)
+            .unwrap()
+            .children
+            .iter()
+            .filter(|c| !c.is_folder())
+            .map(|c| c.title.clone())
+            .collect()
+    }
+
     #[test]
     fn dedupe_removes_exact_url_dups() {
         let mut root = sample();
-        let removed = dedupe_folder(&mut root, "Work", &HashSet::new()).unwrap();
+        let removed = dedupe(&mut root, "Work", &HashSet::new(), DedupeOptions::default()).unwrap();
         assert_eq!(removed, 1);
         assert_eq!(root.children[0].children.len(), 2);
+    }
+
+    #[test]
+    fn dedupe_looks_into_sub_folders_and_across_folders() {
+        let mut root = Node::new_root();
+        let mut work = Node::new_folder("Work");
+        work.children.push(bm("A", "https://a.test/"));
+        let mut deep = Node::new_folder("Deep");
+        deep.children.push(bm("A in sub-folder", "https://a.test/")); // parent vs sub-folder
+        deep.children.push(bm("Only here", "https://only.test/"));
+        work.children.push(deep);
+        root.children.push(work);
+        let mut other = Node::new_folder("Other");
+        other.children.push(bm("A elsewhere", "https://a.test/")); // sibling folder
+        root.children.push(other);
+
+        // Scoped to Work: reaches Work/Deep, but leaves Other alone.
+        let removed = dedupe(&mut root, "Work", &HashSet::new(), DedupeOptions::default()).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(titles(&root, "Work"), ["A"]);
+        assert_eq!(titles(&root, "Work/Deep"), ["Only here"]);
+        assert_eq!(titles(&root, "Other"), ["A elsewhere"]);
+
+        // The whole tree: the copy in the other folder goes too.
+        let removed = dedupe(&mut root, "", &HashSet::new(), DedupeOptions::default()).unwrap();
+        assert_eq!(removed, 1);
+        assert!(titles(&root, "Other").is_empty());
+        assert_eq!(titles(&root, "Work"), ["A"], "the first one met is the one kept");
+    }
+
+    #[test]
+    fn non_recursive_dedupe_compares_only_the_folders_own_bookmarks() {
+        let mut root = Node::new_root();
+        let mut work = Node::new_folder("Work");
+        work.children.push(bm("A", "https://a.test/"));
+        let mut deep = Node::new_folder("Deep");
+        deep.children.push(bm("A2", "https://a.test/"));
+        work.children.push(deep);
+        root.children.push(work);
+        let opts = DedupeOptions { recursive: false, ..Default::default() };
+        assert_eq!(dedupe(&mut root, "Work", &HashSet::new(), opts).unwrap(), 0);
+        assert_eq!(titles(&root, "Work/Deep"), ["A2"]);
+    }
+
+    #[test]
+    fn safe_mode_sees_through_cosmetic_differences_but_not_real_ones() {
+        let same = |a: &str, b: &str| url_key(a, DedupeMode::Safe) == url_key(b, DedupeMode::Safe);
+        assert!(same("https://Example.com/a/", "https://example.com/a"));
+        assert!(same("https://example.com", "https://example.com/"));
+        assert!(same("https://example.com:443/a", "https://example.com/a"));
+        assert!(same("http://example.com:80/a", "http://example.com/a"));
+        assert!(same("https://example.com/a?utm_source=x&id=1", "https://example.com/a?id=1"));
+        assert!(same("https://example.com/a?b=2&a=1", "https://example.com/a?a=1&b=2"));
+        assert!(same("https://example.com/a?", "https://example.com/a"));
+        // Not the same page:
+        assert!(!same("http://example.com/a", "https://example.com/a"));
+        assert!(!same("https://www.example.com/a", "https://example.com/a"));
+        assert!(!same("https://example.com/watch?v=1", "https://example.com/watch?v=2"));
+        assert!(!same("https://example.com/a#one", "https://example.com/a#two"));
+        assert!(!same("https://example.com/a", "https://example.com/b"));
+    }
+
+    #[test]
+    fn loose_mode_ignores_scheme_www_query_and_fragment() {
+        let same = |a: &str, b: &str| url_key(a, DedupeMode::Loose) == url_key(b, DedupeMode::Loose);
+        assert!(same("http://www.example.com/a", "https://example.com/a"));
+        assert!(same("https://example.com/watch?v=1", "https://example.com/watch?v=2"));
+        assert!(same("https://example.com/a#x", "https://example.com/a"));
+        assert!(!same("https://example.com/a", "https://example.com/b"));
+    }
+
+    #[test]
+    fn the_survivor_inherits_what_a_removed_copy_knew() {
+        let mut root = Node::new_root();
+        let mut keep = bm("", "https://a.test/");
+        keep.description = String::new();
+        let mut copy = bm("A", "https://a.test/#");
+        copy.url = "https://a.test".to_string();
+        copy.description = "the description".to_string();
+        root.children.push(keep);
+        root.children.push(copy);
+        assert_eq!(dedupe(&mut root, "", &HashSet::new(), DedupeOptions::default()).unwrap(), 1);
+        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children[0].title, "A");
+        assert_eq!(root.children[0].description, "the description");
+    }
+
+    #[test]
+    fn excluded_urls_are_never_deduplicated_even_by_another_spelling() {
+        let mut root = Node::new_root();
+        root.children.push(bm("A", "https://a.test/"));
+        root.children.push(bm("A2", "https://a.test"));
+        let exclude: HashSet<String> = ["https://a.test/".to_string()].into_iter().collect();
+        assert_eq!(dedupe(&mut root, "", &exclude, DedupeOptions::default()).unwrap(), 0);
+        assert_eq!(root.children.len(), 2);
     }
 
     #[test]

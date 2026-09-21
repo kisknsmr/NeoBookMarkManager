@@ -2082,16 +2082,34 @@ async function cmdAutotagOffline() {
 async function cmdOrganizeDedupe() {
   const sc = currentScope();
   const folder = sc.folderPath ?? "";
-  if (!(await confirmDialog(`同じURLのブックマークをまとめて1件にします。\n\n対象: ${sc.label}`,
-        { okLabel: "実行", cancelLabel: "キャンセル" }))) return;
+  // フォルダ/全体スコープでは、サブフォルダとフォルダをまたいだ重複も対象にする。
+  // 選択中スコープにはフォルダの概念がないので、全体を対象にする旨を明示する。
+  const where = sc.kind === "folder"
+    ? `「${folder || "ルート"}」とそのサブフォルダすべて`
+    : "全ブックマーク（フォルダをまたいだ重複を含む）";
+  if (!(await confirmDialog(
+    `同じURLのブックマークを、最初の1件だけ残して削除します。\n\n` +
+    `対象: ${where}\n` +
+    `※削除される側のタイトル・説明文が空でなければ、残る側に引き継ぎます。\n` +
+    `※元に戻す場合は、実行後に「元に戻す」を1回実行してください。`,
+    { okLabel: "次へ", cancelLabel: "キャンセル" }))) return;
+
+  const loose = await confirmDialog(
+    `どこまで「同じURL」とみなしますか?\n\n` +
+    `【厳密（既定）】末尾の「/」、大文字小文字、utm_ などの追跡パラメータの違いは同じとみなします。` +
+    `http と https、www の有無は区別します。\n\n` +
+    `【ゆるく】さらに http/https、www の有無、?以降のパラメータ、#以降を無視します。` +
+    `古い http のブックマークも拾えますが、?v=1 と ?v=2 のようなページ違いも同じ扱いになります。`,
+    { okLabel: "ゆるく", cancelLabel: "厳密" });
+
   try {
     const res = await api("/organize/dedupe", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folder_path: folder }),
+      body: JSON.stringify({ folder_path: folder, recursive: true, mode: loose ? "loose" : "safe" }),
     });
     await reload();
-    toast(`重複削除: ${res.count} 件削除しました`);
+    toast(res.count ? `重複削除: ${res.count} 件削除しました` : "重複は見つかりませんでした");
   } catch (e) {
     toast(`重複削除失敗: ${e.message}`, "error");
   }

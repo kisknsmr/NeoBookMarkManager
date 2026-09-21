@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use nbm_core::organize;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::settings;
 use crate::state::AppState;
 
@@ -39,7 +39,19 @@ impl OrganizeResp {
 
 #[derive(Deserialize)]
 struct DedupeBody {
+    /// Empty = the whole tree.
     folder_path: String,
+    /// Look through sub-folders too (default). `false` compares only the
+    /// folder's own bookmarks.
+    #[serde(default = "default_recursive")]
+    recursive: bool,
+    /// `"safe"` (default) or `"loose"` — see [`organize::DedupeMode`].
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+fn default_recursive() -> bool {
+    true
 }
 
 async fn organize_dedupe(
@@ -47,9 +59,15 @@ async fn organize_dedupe(
     Json(body): Json<DedupeBody>,
 ) -> ApiResult<OrganizeResp> {
     let exclude = settings::dedupe_exclude_urls(&state);
+    let mode = match body.mode.as_deref() {
+        None => organize::DedupeMode::Safe,
+        Some(m) => organize::DedupeMode::parse(m)
+            .ok_or_else(|| ApiError::bad_request(format!("unknown dedupe mode: {m}")))?,
+    };
+    let opts = organize::DedupeOptions { recursive: body.recursive, mode };
     state.backup_before_batch().await?;
     let count = state
-        .edit(|root| organize::dedupe_folder(root, &body.folder_path, &exclude))
+        .edit(|root| organize::dedupe(root, &body.folder_path, &exclude, opts))
         .await?;
     Ok(OrganizeResp::new(count))
 }
