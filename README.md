@@ -4,6 +4,8 @@
 
 対応環境: Windows（開発・動作確認とも Windows 11）。
 
+バージョン: **1.0.0** — 変更履歴は [CHANGELOG.md](CHANGELOG.md)、リリース手順は [RELEASING.md](RELEASING.md)。
+
 ---
 
 ## できること
@@ -178,6 +180,14 @@ api_key = あなたのAPIキー
 
 - `os error 5 / 拒绝访问` … アプリが起動中。終了してから再実行する。
 - `os error 1455 页面文件太小` / `STATUS_STACK_BUFFER_OVERRUN` … メモリ不足。`cargo tauri build --no-bundle -- -j 2` のように並列数を下げる。
+
+---
+
+## ライセンス
+
+**ライセンス未定**です。決まるまでは著作権者がすべての権利を留保します。
+このリポジトリが公開されていることは、再配布・改変版の公開・商用利用の許諾を意味しません。
+詳細は [LICENSE](LICENSE) を参照してください。
 
 ---
 

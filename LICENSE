@@ -1,0 +1,40 @@
+NeoBookMarkManager
+
+Copyright (c) 2026 kisknsmr. All rights reserved.
+
+ライセンス未定 / License undetermined
+------------------------------------
+
+このソフトウェアの配布・利用条件はまだ決まっていません。
+ライセンスを明示するまでは、すべての権利を著作権者が留保します。
+
+The terms under which this software may be used or distributed have not been
+decided yet. Until a license is stated here, all rights are reserved by the
+copyright holder.
+
+このリポジトリが公開されていることは、いかなる権利の許諾も意味しません。
+具体的には、明示的な許可なく以下を行うことはできません。
+
+  - ソースコードまたはビルド済みバイナリの再配布
+  - 改変版の公開
+  - 商用利用
+
+Publication of this repository does not grant any rights. In particular,
+without explicit permission you may not redistribute the source or built
+binaries, publish modified versions, or use it commercially.
+
+閲覧、および自分自身で使うためのビルドは妨げません。
+Reading the source, and building it for your own use, is not restricted.
+
+利用をご希望の場合は、リポジトリの Issue でご相談ください。
+To ask about using it, please open an issue on the repository.
+
+--
+サードパーティ製ライブラリ / Third-party components
+
+本ソフトウェアは Rust クレートおよび Tauri / WebView2 を利用しています。
+それぞれのライセンスは各配布元の条件に従います。依存の一覧は Cargo.lock を
+参照してください。
+
+This software builds on Rust crates and on Tauri / WebView2. Those remain under
+their own licenses; see Cargo.lock for the dependency list.

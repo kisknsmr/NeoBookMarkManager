@@ -10,6 +10,13 @@ members = [
 version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
+description = "ブックマークHTMLを整理・タグ付け・AI分類するデスクトップアプリ"
+authors = ["kisknsmr"]
+license-file = "LICENSE"
+repository = "https://github.com/kisknsmr/NeoBookMarkManager"
+readme = "README.md"
+# 配布はビルド済みEXE。crates.io には公開しない。
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

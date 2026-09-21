@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NeoBookMarkManager",
   "version": "1.0.0",
-  "identifier": "com.nbm.app",
+  "identifier": "com.kisknsmr.neobookmarkmanager",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -27,7 +27,10 @@
   },
   "bundle": {
     "active": false,
-    "targets": ["msi", "nsis"],
+    "targets": [
+      "msi",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,6 +40,12 @@
     ],
     "resources": {
       "icons/*": "icons/"
-    }
+    },
+    "publisher": "kisknsmr",
+    "copyright": "Copyright (c) 2026 kisknsmr. All rights reserved.",
+    "category": "Productivity",
+    "shortDescription": "ブックマーク整理ツール",
+    "longDescription": "ブックマークHTML（Netscape形式）を読み込み、整理・情報の補完・タグ付け・AI分類・リンク切れチェックを行うポータブルなデスクトップアプリ。",
+    "licenseFile": "../LICENSE"
   }
 }
