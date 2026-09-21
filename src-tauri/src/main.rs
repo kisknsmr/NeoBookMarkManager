@@ -151,8 +151,13 @@ fn main() {
     let api_base = format!("http://127.0.0.1:{port}");
     let init_script = format!("window.__NBM_API_BASE__ = '{}';", api_base);
 
-    let resolved = resolve_paths();
+    let mut resolved = resolve_paths();
     let db = Db::open(&resolved.db_path).ok().map(Arc::new);
+    // Pick up where the last session left off; the bootstrapped default is only
+    // the fallback for a first run.
+    if let Some(previous) = nbm_server::resume_file(db.as_deref()) {
+        resolved.bookmarks = Some(previous);
+    }
     let backup_mgr = Some(Arc::new(BackupManager::new(&resolved.backup_root, 30)));
 
     // Read proxy URL from config.ini if present.

@@ -25,6 +25,8 @@ async fn main() -> anyhow::Result<()> {
 
     let db = Db::open(&db_path).ok().map(Arc::new);
     let backup_mgr = Some(Arc::new(BackupManager::new(&project_root, 30)));
+    // No file named on the command line: continue with the last one.
+    let bookmarks_path = bookmarks_path.or_else(|| nbm_server::resume_file(db.as_deref()));
 
     let state_cfg = AppStateConfig {
         current_file: bookmarks_path.clone(),

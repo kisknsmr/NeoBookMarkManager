@@ -344,7 +344,7 @@ pub(crate) fn reconcile_session_meta(db: &Db, path: &str, content_hash: &str) ->
     let prev = db.get_open_state().ok().flatten();
     let resumable = matches!(
         prev,
-        Some((ref p, ref h)) if p == path && h == content_hash
+        Some((ref p, ref h)) if same_file(p, path) && h == content_hash
     );
     eprintln!(
         "[session] reconcile: current=({path:?}, {content_hash:?}) prev_open_state={prev:?} resumable={resumable}"
@@ -357,10 +357,64 @@ pub(crate) fn reconcile_session_meta(db: &Db, path: &str, content_hash: &str) ->
     resumable
 }
 
+/// Whether two path strings name the same file on disk.
+///
+/// String equality alone made the same file look like a different one whenever
+/// it was reached by a different spelling (relative vs absolute, `.` segments,
+/// a different drive-letter case), which silently threw the session data away.
+fn same_file(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The bookmark file the previous session was working on, when it still exists.
+///
+/// Startup used to open a fixed default (`data/bookmarks.html`, or the dev
+/// sample) no matter what. Because opening a file reconciles the DB against it,
+/// launching the app while working on any other file wiped that file's fetched
+/// titles and tags before the user could even open it — the session looked like
+/// it had never been resumable. Reopening the last file instead both restores
+/// the work in progress and leaves its session data intact.
+pub fn resume_file(db: Option<&Db>) -> Option<Utf8PathBuf> {
+    let (path, _hash) = db?.get_open_state().ok().flatten()?;
+    let path = Utf8PathBuf::from(path);
+    path.as_std_path().exists().then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn the_last_file_is_offered_again_only_while_it_exists() {
+        let db = Db::open(tempfile_path()).unwrap();
+        assert!(resume_file(Some(&db)).is_none(), "nothing recorded yet");
+        assert!(resume_file(None).is_none());
+
+        let mut file = std::env::temp_dir();
+        file.push(format!("nbm-resume-{}.html", stamp()));
+        std::fs::write(&file, "<DL><p>\n</DL><p>\n").unwrap();
+        let as_str = file.to_string_lossy().to_string();
+        db.set_open_state(&as_str, "hash").unwrap();
+        assert_eq!(resume_file(Some(&db)).unwrap().as_str(), as_str);
+
+        // The same file by another spelling is still the same session.
+        let dotted = file.parent().unwrap().join(".").join(file.file_name().unwrap());
+        assert!(reconcile_session_meta(&db, &dotted.to_string_lossy(), "hash"));
+
+        std::fs::remove_file(&file).unwrap();
+        assert!(resume_file(Some(&db)).is_none(), "a deleted file is not resumable");
+    }
+
+    fn stamp() -> u128 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    }
 
     fn tempfile_path() -> PathBuf {
         let mut p = std::env::temp_dir();

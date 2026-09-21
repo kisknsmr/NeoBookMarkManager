@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "nbm-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "camino",
@@ -2112,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "nbm-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "nbm-tauri"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "camino",

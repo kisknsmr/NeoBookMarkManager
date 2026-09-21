@@ -22,7 +22,7 @@ pub mod settings;
 pub mod sse;
 pub mod state;
 
-pub use state::{AppState, AppStateConfig, AppStateInner};
+pub use state::{resume_file, AppState, AppStateConfig, AppStateInner};
 
 pub fn router(state: AppState) -> Router {
     // The webview's origin depends on the platform, and missing the right one
